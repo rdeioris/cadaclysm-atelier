@@ -8,7 +8,7 @@ export class Camera {
     toWorld([sx, sy]) { return [(sx - this.ox) / this.scale, (this.h - sy - this.oy) / this.scale]; }
     zoomAt([sx, sy], f) {
         const [wx, wy] = this.toWorld([sx, sy]);
-        this.scale *= f;
+        this.scale = Math.max(0.01, Math.min(200, this.scale * f));
         const [nx, ny] = this.toScreen([wx, wy]);
         this.ox += sx - nx; this.oy -= sy - ny;
     }
@@ -73,12 +73,22 @@ export function hitTest(drawings, seams, world, tolerancePx, camera, nodes, sele
             for (const which of ["c1", "c2"])
                 if (Math.hypot(h[which][0] - x, h[which][1] - y) <= tol) return { kind: "handle", id: selectedId, index: h.index, which };
     }
-    let best = null, bestD = tol;
+    let best = null, bestD2 = tol * tol;
     for (const d of drawings) {
-        const s = d.samples;
-        for (let i = 0; i + 2 < s.length; i += 3) {
-            const dist = Math.hypot(s[i + 1] - x, s[i + 2] - y);
-            if (dist <= bestD) { bestD = dist; best = { d, s: s[i] }; }
+        const sm = d.samples, n = sm.length / 3;
+        if (n < 2) continue;
+        const end = d.sides?.[d.sides.length - 1] ?? sm[sm.length - 3] + 1;
+        for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n, a = i * 3, b = j * 3;
+            const ax = sm[a + 1], ay = sm[a + 2], dx = sm[b + 1] - ax, dy = sm[b + 2] - ay;
+            const l2 = dx * dx + dy * dy;
+            const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0;
+            const ex = x - (ax + t * dx), ey = y - (ay + t * dy), d2 = ex * ex + ey * ey;
+            if (d2 <= bestD2) {
+                bestD2 = d2;
+                const s1 = j === 0 ? end : sm[b];
+                best = { d, s: sm[a] + t * (s1 - sm[a]) };
+            }
         }
     }
     if (best) {
@@ -124,15 +134,29 @@ function grid(ctx, cam) {
     }
 }
 
-function nearestSample(d, x, y) {
-    const s = d.samples; let bi = 0, bd = Infinity;
-    for (let i = 0; i + 2 < s.length; i += 3) {
-        const q = Math.hypot(s[i + 1] - x, s[i + 2] - y);
-        if (q < bd) { bd = q; bi = i; }
+// Per drawing, once: the unit world-space normal at each notch, from the nearest sample's tangent.
+const notchNormals = new WeakMap();
+function normalsOf(d) {
+    let r = notchNormals.get(d);
+    if (r) return r;
+    r = [];
+    const s = d.samples;
+    for (const [nx, ny] of d.notches ?? []) {
+        let bi = 0, bd = Infinity;
+        for (let i = 0; i + 2 < s.length; i += 3) {
+            const q = Math.hypot(s[i + 1] - nx, s[i + 2] - ny);
+            if (q < bd) { bd = q; bi = i; }
+        }
+        const a = Math.max(bi - 3, 0), b = Math.min(bi + 3, s.length - 3);
+        const tx = s[b + 1] - s[a + 1], ty = s[b + 2] - s[a + 2], l = Math.hypot(tx, ty) || 1;
+        r.push([-ty / l, tx / l]);
     }
-    return bi;
+    notchNormals.set(d, r);
+    return r;
 }
 
+// cam.w/h are CSS pixels: the caller sizes the canvas by devicePixelRatio and calls
+// ctx.setTransform(dpr, 0, 0, dpr, 0, 0) before draw.
 export function draw(ctx, cam, state) {
     const { drawings = [], seams = [], selection = null, hover = null, nodes = [], overlay = null } = state;
     const selId = selection?.id ?? null;
@@ -155,15 +179,12 @@ export function draw(ctx, cam, state) {
             ctx.setLineDash(n.kind === "fold" ? [6, 4] : []); ctx.lineWidth = 1.2;
             ctx.strokeStyle = "#b0b6c0"; ctx.stroke(); ctx.setLineDash([]);
         }
-        for (const [nx, ny] of d.notches ?? []) {
-            const i = nearestSample(d, nx, ny), s = d.samples;
-            const a = Math.max(i - 3, 0), b = Math.min(i + 3, s.length - 3);
-            const [ax, ay] = cam.toScreen([s[a + 1], s[a + 2]]), [bx, by] = cam.toScreen([s[b + 1], s[b + 2]]);
-            const l = Math.hypot(bx - ax, by - ay) || 1, px = (-(by - ay) / l) * 6, py = ((bx - ax) / l) * 6;
+        const norms = normalsOf(d);
+        (d.notches ?? []).forEach(([nx, ny], k) => {
             const [cx, cy] = cam.toScreen([nx, ny]);
-            ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + px, cy + py);
+            ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + norms[k][0] * 6, cy - norms[k][1] * 6);
             ctx.lineWidth = 1.5; ctx.strokeStyle = sel ? ACCENT : "#d8dce2"; ctx.stroke();
-        }
+        });
         if (d.grain && d.grain.length >= 4) {
             const [g0x, g0y] = cam.toScreen([d.grain[0], d.grain[1]]), [g1x, g1y] = cam.toScreen([d.grain[2], d.grain[3]]);
             const ang = Math.atan2(g1y - g0y, g1x - g0x);

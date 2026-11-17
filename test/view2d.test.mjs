@@ -42,4 +42,20 @@ const ctx2 = { canvas: { width: 800, height: 600 } };
 const ctx = new Proxy({}, { get: (_, k) => (k in ctx2 ? ctx2[k] : (...a) => calls.push([k, ...a])), set: (_, k, v) => { ctx2[k] = v; return true; } });
 draw(ctx, c2, { drawings: [drawing], seams: [], selection: { kind: "pattern", id: "p1" }, hover: null, nodes, overlay: null });
 assert.ok(calls.filter((c) => c[0] === "stroke").length >= 3);
+
+// edge picking is to the segment between samples, interpolating s
+const zc = new Camera(800, 600); zc.scale = 40; zc.ox = 0; zc.oy = 300;
+const mid = hitTest([drawing], [], [40.5, 0], 8, zc, nodes, null);
+assert.equal(mid.kind, "edge"); assert.ok(Math.abs(mid.s - 40.5) < 1e-9, "s interpolated: " + mid.s);
+
+// pan moves a world point by the screen delta, y flipped
+const pc = new Camera(800, 600); pc.fit([0, 0, 100, 50], 40);
+const p0 = pc.toScreen([10, 10]); pc.pan(30, 20); const p1 = pc.toScreen([10, 10]);
+assert.ok(Math.abs(p1[0] - p0[0] - 30) < 1e-9 && Math.abs(p1[1] - p0[1] - 20) < 1e-9);
+// zoom clamp
+pc.zoomAt([0, 0], 1e9); assert.equal(pc.scale, 200); pc.zoomAt([0, 0], 1e-18); assert.equal(pc.scale, 0.01);
+
+// seam hit away from any outline
+const seam = { id: "s1", points_a: [200, 200, 220, 200], points_b: [] };
+assert.deepEqual(hitTest([drawing], [seam], [210, 200.1], 8, c2, nodes, null), { kind: "seam", id: "s1" });
 console.log("view2d: ok");
