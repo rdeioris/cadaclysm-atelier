@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, ItemMap } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap } from "../arrange.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
 const f = slotFrame("front", avatar, piece);
@@ -24,11 +24,19 @@ assert.ok(world.every((v, i) => Math.abs(v - slotPoint[i]) < 1e-9));
 assert.deepEqual(Array.from(frame12(b)).slice(9), [0, 0, -1], "back: z = (-x) cross y = -z");
 assert.deepEqual(Array.from(frame12(undefined)), [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
 assert.equal(frame12([1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1]).length, 12);
-const fl = floorFrame(avatar, [0, 0, 100, 50]);
+const fl = floorFrame(avatar);
+// two pieces 300 mm apart in 2D stay 300 mm apart on the floor
+const place = (x, y) => [0, 1, 2].map((i) => fl.origin[i] + x * fl.x[i] + y * fl.y[i]);
+const p1 = place(0, 0), p2 = place(300, 0), p3 = place(0, 200);
+assert.equal(p2[0] - p1[0], 300); assert.equal(p1[2] - p3[2], 200); assert.equal(p1[1], p2[1]);
+assert.ok(p1[0] > avatar[3]);
 assert.ok(fl.origin[0] > avatar[3], "floor pieces lie beside the avatar");
 assert.deepEqual(Array.from(frame12(fl)).slice(9).map((v) => v + 0), [0, 1, 0], "floor frame faces up");
 const seg = polylineSegments([0, 0, 10, 0], { origin: [1, 2, 3], x: [0, 0, 1], y: [0, 1, 0] });
 assert.deepEqual(seg, [1, 2, 3, 1, 2, 13]);
 const im = new ItemMap(); im.set(7, { kind: "pattern", id: "p1" });
 assert.deepEqual(im.resolve(7), { kind: "pattern", id: "p1" }); assert.equal(im.resolve(9), null);
+const ss = seamSegments({ points_a: [0, 0, 0, 10], points_b: [0, 0, 0, 10], reversed: true }, { origin: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0] }, { origin: [0, 0, 5], x: [1, 0, 0], y: [0, 1, 0] });
+assert.deepEqual(ss.slice(0, 12), [0, 0, 0, 0, 10, 0, 0, 0, 5, 0, 10, 5], "both ranges as lines");
+assert.deepEqual(ss.slice(12, 18), [0, 0, 0, 0, 10, 5], "reversed: first of a meets last of b");
 console.log("arrange: ok");

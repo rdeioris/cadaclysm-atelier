@@ -29,24 +29,22 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 // A frame as the extrude call takes it: origin, x, y, z (z = x cross y), twelve doubles.
 // `frame` is {origin,x,y}, twelve numbers already, or absent / "xy" (the floor plane).
 export function frame12(frame) {
-    if (Array.isArray(frame) && frame.length === 12) return Float64Array.from(frame);
+    if ((Array.isArray(frame) || frame instanceof Float64Array) && frame.length === 12) return Float64Array.from(frame);
     if (frame && typeof frame === "object" && frame.origin) return Float64Array.from([...frame.origin, ...frame.x, ...frame.y, ...cross(frame.x, frame.y)]);
     return Float64Array.from([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]);
 }
 
 // An unarranged pattern lies on the floor (the world x-z plane, y up) beside the avatar,
-// shifted by its 2D position: CLO's look before arrangement. 2D x -> world x, 2D y -> world -z.
-export function floorFrame(avatarBounds, patternBounds) {
+// keeping its 2D layout: 2D (x, y) -> world (x0 + x, floor, z0 - y), x0/z0 fixed beside the
+// avatar and not depending on the pattern, so pieces keep their 2D distances.
+export function floorFrame(avatarBounds) {
     const gap = 150;
-    return {
-        origin: [avatarBounds[3] + gap - patternBounds[0], avatarBounds[1], avatarBounds[5] + patternBounds[1]],
-        x: [1, 0, 0], y: [0, 0, -1],
-    };
+    return { origin: [avatarBounds[3] + gap, avatarBounds[1], avatarBounds[5]], x: [1, 0, 0], y: [0, 0, -1] };
 }
 
 // A frame for drawing: the node's own, or the floor one.
 export function drawFrame(node, avatarBounds, patternBounds) {
-    return node.frame && node.frame !== "xy" ? node.frame : floorFrame(avatarBounds, patternBounds);
+    return node.frame && node.frame !== "xy" ? node.frame : floorFrame(avatarBounds);
 }
 
 // 2D points (x, y pairs) through a frame, as 3D segments for showLines: consecutive points
@@ -58,22 +56,22 @@ export function polylineSegments(pts, frame) {
     return out;
 }
 
-// One seam as the segments joining its two placed ranges: the i-th point of one to the
-// i-th of the other (the second walked backwards when the seam is reversed), plus both
-// ranges themselves.
+// One seam as 3D segments: both placed ranges as polylines along the outlines, and
+// connectors joining evenly spaced points of the two ranges. Both ranges are in path order,
+// so a reversed seam pairs the first point of one with the last of the other.
 export function seamSegments(seam, frameA, frameB) {
     const fa = frame12(frameA), fb = frame12(frameB);
-    const map = (pts, f) => Array.from({ length: pts.length / 2 }, (_, i) => [0, 1, 2].map((k) => f[k] + pts[2 * i] * f[3 + k] + pts[2 * i + 1] * f[6 + k]));
-    const a = map(seam.points_a, fa);
-    let b = map(seam.points_b, fb);
-    // the two ranges run in the sewn direction already (the kernel orders them by `reversed`)
-    const n = Math.min(a.length, b.length), out = [];
-    if (!n) return out;
-    const steps = Math.min(n, 6);
+    const pa = seam.points_a, pb = seam.points_b;
+    const out = [...polylineSegments(pa, fa), ...polylineSegments(pb, fb)];
+    const na = pa.length / 2, nb = pb.length / 2;
+    if (!na || !nb) return out;
+    const at = (pts, f, i) => { const x = pts[2 * i], y = pts[2 * i + 1]; return [0, 1, 2].map((k) => f[k] + x * f[3 + k] + y * f[6 + k]); };
+    const steps = Math.min(Math.max(na, nb), 6);
     for (let s = 0; s < steps; s++) {
-        const i = Math.round((s * (a.length - 1)) / Math.max(steps - 1, 1));
-        const j = Math.round((s * (b.length - 1)) / Math.max(steps - 1, 1));
-        out.push(...a[i], ...b[j]);
+        const u = steps > 1 ? s / (steps - 1) : 0;
+        const i = Math.round(u * (na - 1));
+        const j = Math.round((seam.reversed ? 1 - u : u) * (nb - 1));
+        out.push(...at(pa, fa, i), ...at(pb, fb, j));
     }
     return out;
 }

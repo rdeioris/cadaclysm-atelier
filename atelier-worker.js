@@ -16,14 +16,18 @@ const ready = (async () => {
     return module;
 })();
 
-let canvasArrived;
-const viewerReady = new Promise((resolve) => { canvasArrived = resolve; });
+// `started` resolves once the viewer, the kernel and the Atelier all exist; every message
+// but `canvas` waits on it.
+let startedResolve, startedReject;
+const started = new Promise((resolve, reject) => { startedResolve = resolve; startedReject = reject; });
+started.catch(() => {});
 let viewer = null;
 let atelier = null;
 let avatar = null;                       // { scene, id, bounds, name }
 let drawn = [];                          // View item ids of the slabs and seam lines
 let selection = null;
 const items = new ItemMap();
+const slabs = new Map();                 // pattern id -> { item, colour }
 
 async function createViewer(canvas) {
     await ready;
@@ -50,22 +54,33 @@ function refresh3d() {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const bounds = avatar?.bounds ?? [-200, 0, -150, 200, 1700, 150];
     const frames = new Map();
+    let first = null;
+    slabs.clear();
     for (const d of atelier.drawings()) {
         const node = byId.get(d.id);
         const frame = drawFrame(node, bounds, d.bounds);
         frames.set(d.id, frame);
-        const solid = atelier.withOutline(d.id, (p) => k.cadaclysm_blacksmith_extrude(p, frame12(frame), 1));
         try {
-            const id = viewer.showSolid(solid, {
-                tolerance: 0.5, colour: selected(d.id) ? ACCENT : colours.get(node.fabric) ?? "#cccccc",
-                opacity: 0.85, material: "matte",
-            });
-            drawn.push(id); items.set(id, { kind: "pattern", id: d.id });
-        } finally { k.cadaclysm_blacksmith_solid_free(solid); }
+            const solid = atelier.withOutline(d.id, (p) => k.cadaclysm_blacksmith_extrude(p, frame12(frame), 1));
+            try {
+                const id = viewer.showSolid(solid, {
+                    tolerance: 0.5, colour: selected(d.id) ? ACCENT : colours.get(node.fabric) ?? "#cccccc",
+                    opacity: 0.85, material: "matte",
+                });
+                drawn.push(id); items.set(id, { kind: "pattern", id: d.id });
+                slabs.set(d.id, { item: id, colour: colours.get(node.fabric) ?? "#cccccc" });
+            } finally { k.cadaclysm_blacksmith_solid_free(solid); }
+        } catch (e) { first ??= e; }
     }
     const segs = [];
     for (const s of atelier.seams()) segs.push(...seamSegments(s, frames.get(s.a), frames.get(s.b)));
-    if (segs.length) drawn.push(viewer.showLines(segs, "#ffffff"));
+    try { if (segs.length) drawn.push(viewer.showLines(segs, "#ffffff")); } catch (e) { first ??= e; }
+    if (first) post({ kind: "error", text: String(first.message ?? first) });
+}
+
+// The selection's accent on the slabs already drawn.
+function paintSelection() {
+    for (const [id, s] of slabs) viewer.setColour(s.item, selected(id) ? ACCENT : s.colour);
 }
 
 function changed() {
@@ -83,7 +98,7 @@ function boxOf(vertices, origin) {
 }
 
 async function loadAvatar(bytes, name) {
-    const v = await viewerReady;
+    const v = viewer;
     if (avatar) { v.remove(avatar.id); avatar.scene.free(); avatar = null; }
     const scene = open(new Uint8Array(bytes), "step", undefined, "native");
     const id = v.showScene(scene);
@@ -102,12 +117,13 @@ function answer(data, make) {
 
 self.onmessage = async ({ data }) => {
     try {
+        if (data.cadaclysm) return;      // forwarded input: receiveControls hears it
         if (data.kind === "canvas") {
-            const creating = createViewer(data.canvas);
-            canvasArrived(creating);
-            viewer = await creating;
-            const wasm = await ready;
-            atelier = new Atelier(wasm);
+            try {
+                viewer = await createViewer(data.canvas);
+                atelier = new Atelier(await ready);
+                startedResolve();
+            } catch (e) { startedReject(e); throw e; }
             try {
                 const r = await fetch(new URL("./assets/f-M.stp", import.meta.url));
                 if (r.ok) await loadAvatar(await r.arrayBuffer(), "f-M");
@@ -116,7 +132,7 @@ self.onmessage = async ({ data }) => {
             changed();
             return;
         }
-        await viewerReady; await ready;
+        await started;
         switch (data.kind) {
             case "ops": atelier.apply(data.ops, data.message); changed(); break;
             case "preview": atelier.preview(data.ops); changed(); break;
@@ -131,13 +147,14 @@ self.onmessage = async ({ data }) => {
             case "importDxf": atelier.apply(atelier.fromDxf(data.text), "import"); changed(); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
             case "avatar": await loadAvatar(data.bytes, data.name); break;
-            case "select": selection = data.selection ?? null; refresh3d(); break;
+            case "select": selection = data.selection ?? null; paintSelection(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x, data.y);
                 post({ kind: "picked", selection: p ? items.resolve(p.item) : null });
                 break;
             }
             case "resize": viewer.resize?.(data.width, data.height, data.dpr); break;
+            case "input": break;      // forwardControls' own messages carry `cadaclysm` and are handled above
         }
     } catch (e) {
         post({ kind: "error", reqId: data.reqId, text: String(e && e.message ? e.message : e) });
