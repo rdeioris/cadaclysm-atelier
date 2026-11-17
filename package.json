@@ -1,0 +1,13 @@
+{
+  "name": "cadaclysm-atelier",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "start": "node scripts/serve.mjs",
+    "test": "node test/run.mjs",
+    "test:browser": "node test/browser.mjs"
+  },
+  "devDependencies": { "fflate": "0.8.3" }
+}
