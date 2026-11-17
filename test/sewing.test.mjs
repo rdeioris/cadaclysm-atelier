@@ -36,6 +36,18 @@ const edge = (id, s) => ({ kind: "edge", id, s, side: sides.findIndex((v, i) => 
     assert.deepEqual(r.ops, [{ op: "set", id: "s1", fields: { a_from: 120, a_to: 170 } }]);
     assert.deepEqual(r.removed, []);
 }
+// unchanged outline (or float noise): no ops
+{
+    const n3 = [...nodes, { id: "s1", kind: "garment.seam", a: "p1", b: "p2", a_from: 100 + 1e-11, a_to: 150, b_from: 250, b_to: 300, reversed: true, meta: { atelier: { a: [1, 0, 1], b: [3, 0, 1] } } }];
+    assert.deepEqual(reanchor(n3, drawings, "p1"), { ops: [], removed: [] });
+}
+// a free click with no valid side is ignored
+{
+    const t = makeSewingTool("free", { nodes, drawings });
+    assert.deepEqual(t.down([0, 0], { kind: "edge", id: "p1", s: 10, side: -1 }, {}), {});
+    t.down([0, 0], edge("p1", 10), {});
+    assert.deepEqual(t.down([0, 0], { kind: "edge", id: "p1", s: 60, side: 9 }, {}), {});
+}
 assert.notEqual(seamColour(0), seamColour(1));
 assert.equal(seamColour(0), seamColour(12));
 console.log("sewing: ok");

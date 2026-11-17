@@ -26,6 +26,11 @@ const frac = (sides, side, s) => {
 const arcOf = (sides, side, t) => sides[side] + t * (sides[side + 1] - sides[side]);
 const sidesOf = (ctx, id) => ctx.drawings.get(id)?.sides;
 
+const validSide = (ctx, hit) => {
+    const sides = sidesOf(ctx, hit.id);
+    return !!sides && hit.side >= 0 && hit.side < sides.length - 1;
+};
+
 // One pick on a piece: a whole side (segment sewing) as a range plus which end was nearer the click.
 function sidePick(ctx, hit) {
     const sides = sidesOf(ctx, hit.id);
@@ -68,7 +73,7 @@ export function makeSewingTool(name, ctx) {
     };
     return {
         down(w, hit) {
-            if (hit?.kind !== "edge" || !sidesOf(ctx, hit.id)) return {};
+            if (hit?.kind !== "edge" || !validSide(ctx, hit)) return {};
             if (!free) {
                 const p = sidePick(ctx, hit);
                 if (!p) return {};
@@ -114,8 +119,8 @@ export function reanchor(nodes, drawings, patternId) {
             const [sf, tf, tt, st = sf] = anchor[end];
             if (sf >= sideCount || st >= sideCount) { gone = true; break; }
             const from = arcOf(sides, sf, tf), to = arcOf(sides, st, tt);
-            if (from !== n[`${end}_from`]) fields[`${end}_from`] = from;
-            if (to !== n[`${end}_to`]) fields[`${end}_to`] = to;
+            if (Math.abs(from - n[`${end}_from`]) > 1e-6) fields[`${end}_from`] = from;
+            if (Math.abs(to - n[`${end}_to`]) > 1e-6) fields[`${end}_to`] = to;
         }
         if (gone) { dead.add(n.id); removed.push(n.id); }
         else if (Object.keys(fields).length) ops.push({ op: "set", id: n.id, fields });
