@@ -497,6 +497,15 @@ function download(name, text, type) {
 }
 const menu = {
     new() { cancelPreview(); fitNext = true; setSelection(null); change("new", { ops: newDocumentOps() }); },
+    // the sample garment beside the page: a T-shirt (tools/make-sample.mjs writes it)
+    async sample() {
+        const r = await fetch(new URL("./assets/tshirt.json", import.meta.url));
+        if (!r.ok) throw new Error(`the sample: ${r.status} ${r.statusText}`);
+        const text = await r.text();
+        cancelPreview(); fitNext = true; setSelection(null);
+        change("open", { text });
+        status("opened the sample: a T-shirt");
+    },
     open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("open", { text }); }); },
     save() { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); },
     importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text }); }); },
@@ -510,6 +519,7 @@ const menu = {
     },
 };
 $("menu-new").addEventListener("click", () => menu.new());
+$("menu-sample").addEventListener("click", () => menu.sample().catch((e) => status(e?.message ?? String(e), true)));
 $("menu-open").addEventListener("click", () => menu.open());
 $("menu-save").addEventListener("click", () => menu.save());
 $("menu-import-dxf").addEventListener("click", () => menu.importDxf());

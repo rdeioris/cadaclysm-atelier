@@ -144,7 +144,8 @@ self.onmessage = async ({ data }) => {
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
             case "mirror": answer(data, () => atelier.mirrored(data.id, data.axis)); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
-            case "open": atelier.load(data.text); changed(data.seq); break;
+            // an opened garment is framed with the avatar: its pieces may stand beyond the form
+            case "open": atelier.load(data.text); changed(data.seq); viewer.frame(); break;
             case "new": atelier.reset(data.ops); changed(data.seq); break;
             case "importDxf": atelier.apply(atelier.fromDxf(data.text), "import"); changed(data.seq); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;

@@ -3,13 +3,15 @@
 
 // Slot origins are fractions of the avatar's bounds (min xyz, max xyz); x and y are the
 // pattern's 2D axes in world space (y up, the avatar facing +z, the panel facing outward).
+// The bounds' width takes in the form's arms (f-M is 1334 mm across), so the side and arm
+// slots sit just past it: a fraction well beyond 1 would put them metres away.
 export const SLOTS = {
-    front:      { label: "Front",      origin: [0.5, 0.72, 1.6],  x: [1, 0, 0],  y: [0, 1, 0] },
-    back:       { label: "Back",       origin: [0.5, 0.72, -0.6], x: [-1, 0, 0], y: [0, 1, 0] },
-    left_side:  { label: "Left side",  origin: [1.8, 0.62, 0.5],  x: [0, 0, -1], y: [0, 1, 0] },
-    right_side: { label: "Right side", origin: [-0.8, 0.62, 0.5], x: [0, 0, 1],  y: [0, 1, 0] },
-    left_arm:   { label: "Left arm",   origin: [2.4, 0.8, 0.5],   x: [0, 0, -1], y: [0, 1, 0] },
-    right_arm:  { label: "Right arm",  origin: [-1.4, 0.8, 0.5],  x: [0, 0, 1],  y: [0, 1, 0] },
+    front:      { label: "Front",      origin: [0.5, 0.72, 1.6],   x: [1, 0, 0],  y: [0, 1, 0] },
+    back:       { label: "Back",       origin: [0.5, 0.72, -0.6],  x: [-1, 0, 0], y: [0, 1, 0] },
+    left_side:  { label: "Left side",  origin: [1.05, 0.62, 0.5],  x: [0, 0, -1], y: [0, 1, 0] },
+    right_side: { label: "Right side", origin: [-0.05, 0.62, 0.5], x: [0, 0, 1],  y: [0, 1, 0] },
+    left_arm:   { label: "Left arm",   origin: [1.2, 0.8, 0.5],    x: [0, 0, -1], y: [0, 1, 0] },
+    right_arm:  { label: "Right arm",  origin: [-0.2, 0.8, 0.5],   x: [0, 0, 1],  y: [0, 1, 0] },
 };
 
 // The `garment.pattern` frame field for `slot`: the piece's 2D bounds centre lands on the slot point.
