@@ -30,6 +30,7 @@ assert.ok(Math.abs(a.arcAt("p1", 2, 0.25) - 175) < 1e-6);
 // a seam, its draw data and meta round trip
 const r2 = m.addPattern(a.nodes(), { label: "Back", path: m.rectPath(200, 0, 100, 50), fabric: "f_x" });
 a.apply(r2.ops, "rect");
+assert.equal(a.f("garment_pattern_name")(a.g, a.f("garment_patterns")(a.g)[1]), "Back");
 const s = m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: 100, a_to: 150, b_from: 250, b_to: 300, reversed: true, anchor: { a: [1, 0, 1], b: [3, 0, 1] } });
 a.apply(s.ops, "sew");
 const sd = a.seams();
@@ -67,8 +68,23 @@ const dxf = a.toDxf();
 assert.match(dxf, /AAMA|BLOCK/);
 a.apply(a.fromDxf(dxf), "import");
 assert.equal(a.drawings().length, 4);
+assert.deepEqual(a.drawings().map((x) => x.label), ["Front", "Back", "Front 2", "Back 2"]);
 
-// issues: a seam with mismatched lengths shows up
-assert.ok(Array.isArray(a.issues()));
+// issues: a seam with mismatched lengths (50 mm against 100 mm) is flagged
+const mm = m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: 100, a_to: 150, b_from: 150, b_to: 250 });
+a.apply(mm.ops, "mismatch");
+const iss = a.issues();
+assert.ok(iss.length >= 1 && iss.every((i) => i.message.length > 0), "a length mismatch is reported");
+
+// a side shorter than 1 mm still gets its own entry
+const e = new Atelier(k);
+e.apply(m.newDocumentOps({ slug: "x", label: "X", params }), "new");
+e.apply(m.addPattern(e.nodes(), { label: "Nick", path: m.polyPath([[0, 0], [100, 0], [100, 0.3], [100, 50], [0, 50]]), fabric: "f_x" }).ops, "nick");
+const ns = e.drawing("p1").sides;
+assert.equal(ns.length, 6);
+assert.ok(Math.abs(ns[2] - ns[1] - 0.3) < 1e-6, "the 0.3 mm side is present");
+assert.equal(e.sideAt("p1", 100.1).side, 1);
+assert.equal(e.sideAt("p1", 100.5).side, 2);
+e.free();
 a.free(); b.free();
 console.log("kernel: ok");

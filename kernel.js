@@ -14,12 +14,14 @@ export class Atelier {
         this.d = this.f("document_new")("mm");
         this.g = 0;          // the evaluated garment handle (a copy), 0 when none
         this.previewing = null;
+        this.sidesCache = new Map();
     }
     free() { this.dropGarment(); this.f("document_free")(this.d); }
     dropGarment() { if (this.g) { this.f("garment_free")(this.g); this.g = 0; } }
     nodes() { return JSON.parse(this.f("document_nodes")(this.d)); }
 
     evaluate() {
+        this.sidesCache.clear();
         this.dropGarment();
         this.f("document_evaluate")(this.d, false);
         const has = this.nodes().some((n) => n.id === "garment");
@@ -38,6 +40,7 @@ export class Atelier {
         this.evaluate();
     }
     endPreview(commit) {
+        if (!this.previewing) return;
         const ops = this.previewing;
         this.previewing = null;
         this.f("document_end_preview")(this.d);
@@ -46,8 +49,9 @@ export class Atelier {
     undo() { this.f("document_undo")(this.d); this.evaluate(); }
     redo() { this.f("document_redo")(this.d); this.evaluate(); }
     save() { return this.f("document_save")(this.d); }
-    load(text) { this.dropGarment(); this.f("document_free")(this.d); this.d = this.f("document_load")(text); this.evaluate(); }
-    reset(ops) { this.dropGarment(); this.f("document_free")(this.d); this.d = this.f("document_new")("mm"); this.apply(ops, "new"); }
+    swapDocument(d) { this.dropGarment(); this.f("document_free")(this.d); this.d = d; }
+    load(text) { this.swapDocument(this.f("document_load")(text)); this.evaluate(); }
+    reset(ops) { this.swapDocument(this.f("document_new")("mm")); this.apply(ops, "new"); }
 
     patternIndex(id) {
         const g = m.byId(this.nodes()).get("garment");
@@ -72,7 +76,7 @@ export class Atelier {
             const perimeter = this.f("profile_length")(p, ACC)[0];
             const samples = [];
             this.rows(this.f("profile_divide_by_length")(p, STEP, ACC)).forEach((r, i) => samples.push(i * STEP, r[0], r[1]));
-            const sides = this.sideStarts(p, perimeter);
+            const sides = this.sidesOf(id);
             const bounds = Array.from(this.f("profile_bounds")(p));
             const notchRaw = Array.from(this.f("garment_pattern_notches")(this.g, pid));
             const notches = [];
@@ -111,35 +115,42 @@ export class Atelier {
             } finally { this.f("profile_free")(p); }
         } finally { this.f("document_free")(tmp); }
     }
-    // Arc length where each path segment starts, found by bisection on the segment index the
-    // kernel reports at an arc length, then the perimeter.
-    sideStarts(p, perimeter) {
-        const seg = (s) => this.f("profile_point_at_length")(p, Math.min(s, perimeter), ACC)[7];
+    // Arc length where each path segment starts. The segment index the kernel reports at an
+    // arc length never decreases along the loop, so each boundary is the smallest s whose
+    // segment is >= i, found by bisection (a side of any length is found).
+    sideStarts(p, perimeter, count) {
+        const seg = (s) => this.f("profile_point_at_length")(p, Math.min(Math.max(s, 0), perimeter), ACC)[7];
         const starts = [0];
-        let s = 0, cur = seg(0);
-        while (true) {
-            let lo = s, hi = perimeter, last = seg(perimeter);
-            if (last === cur) break;
-            let step = STEP;               // walk forward to bracket the next change
-            hi = s + step;
-            while (hi < perimeter && seg(hi) === cur) { lo = hi; hi += step; }
-            hi = Math.min(hi, perimeter);
-            for (let i = 0; i < 60 && hi - lo > 1e-9; i++) { const mid = (lo + hi) / 2; if (seg(mid) === cur) lo = mid; else hi = mid; }
+        for (let i = 1; i < count; i++) {
+            let lo = starts[i - 1], hi = perimeter;
+            for (let k = 0; k < 60 && hi - lo > 1e-9; k++) { const mid = (lo + hi) / 2; if (seg(mid) >= i) hi = mid; else lo = mid; }
             starts.push(hi);
-            s = hi; cur = seg(hi);
         }
         starts.push(perimeter);
         return starts;
     }
+    sidesOf(id) {
+        let c = this.sidesCache.get(id);
+        if (!c) {
+            const node = m.byId(this.nodes()).get(`${id}_outline`);
+            c = this.withOutline(id, (p) => {
+                const perimeter = this.f("profile_length")(p, ACC)[0];
+                return this.sideStarts(p, perimeter, node.path.segments.length);
+            });
+            this.sidesCache.set(id, c);
+        }
+        return c;
+    }
     sideAt(id, s) {
-        const { sides } = this.drawing(id);
+        const sides = this.sidesOf(id);
+        s = Math.min(Math.max(s, 0), sides[sides.length - 1] - 1e-9);
         let i = 0;
         while (i + 2 < sides.length && s >= sides[i + 1]) i++;
         const t = (s - sides[i]) / (sides[i + 1] - sides[i]);
         return { side: i, t: Math.round(t * 1e9) / 1e9 };
     }
     arcAt(id, side, t) {
-        const { sides } = this.drawing(id);
+        const sides = this.sidesOf(id);
         return sides[side] + t * (sides[side + 1] - sides[side]);
     }
 
@@ -192,7 +203,7 @@ export class Atelier {
                 let label = base;
                 for (let n = 2; taken.has(label); n++) label = `${base} ${n}`;
                 const add = m.addPattern(nodes, { label, path, fabric, allowance, grain: [gx, gy] });
-                add.ops[1].node.notches = notches;
+                add.ops.find((o) => o.node?.kind === "garment.pattern").node.notches = notches;
                 ops.push(...add.ops);
                 // keep `nodes` in step so the next id and the garment's list are right
                 nodes = nodes.concat(add.ops.filter((o) => o.op === "add").map((o) => o.node));
