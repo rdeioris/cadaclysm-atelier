@@ -10,8 +10,9 @@ height. The torso's landmark sections are scaled so their ellipse girth equals t
 sections between blend their neighbours' factors, and the torso stretches with height above the
 thigh cut. Bigger waists grow more in depth than in width (the belly).
 
+    CADACLYSM_BS_PY=<folder holding cadaclysm_blacksmith.py> \
     CADACLYSM_BLACKSMITH_LIBRARY=.../cadaclysm_blacksmith.dll \
-    python dressform_bs.py out_dir --style {form,arms} --body {female,male} --size {XS,S,M,L,XL}
+    python tools/dressform.py out_dir --style {form,arms} --body {female,male} --size {XS,S,M,L,XL}
 """
 import argparse
 import math
@@ -22,7 +23,9 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, os.environ.get("CADACLYSM_BS_PY", "R:/wt/atelier-m1/crates/cadaclysm-blacksmith-capi/examples"))
+if not os.environ.get("CADACLYSM_BS_PY"):
+    sys.exit("set CADACLYSM_BS_PY to the folder holding the blacksmith kernel's cadaclysm_blacksmith.py")
+sys.path.insert(0, os.environ["CADACLYSM_BS_PY"])
 from cadaclysm_blacksmith import Frame, Profile, Solid, write_step  # noqa: E402
 
 # Base torso sections (y, half-width a along x, half-depth b along z, z offset of the centre), and

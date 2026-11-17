@@ -22,6 +22,7 @@ kernel and checks that every seam's two sides match within 2 %.
   dropped (the kernel has no getter for them yet), and so are the 3D slots: imported pieces lie
   on the floor until arranged.
 - The sample's sleeve caps have zero ease: each cap half is exactly as long as its armhole.
+- Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
 - Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both
