@@ -5,7 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, setOutline, setPattern, polyPath } from "./model.js";
+import { addPattern, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
 const DRAG_PX = 3; // screen pixels: less movement than this is a click, not a drag
@@ -20,7 +20,6 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const add = (p, d) => [p[0] + d[0], p[1] + d[1]];
 const line = (pts) => ({ lines: [pts.map((p) => [...p])] });
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
-const patternCount = (ctx) => ctx.nodes.filter((n) => n.kind === "garment.pattern").length;
 
 function newPattern(ctx, label, path, extra = {}) {
     const r = addPattern(ctx.nodes, { label, path, fabric: ctx.fabric, ...extra });
@@ -51,7 +50,7 @@ const TOOLS = {
                 const from = a; a = null;
                 if (dist(w, from) < DRAG || Math.abs(w[0] - from[0]) < TINY || Math.abs(w[1] - from[1]) < TINY) return {}; // a plain click opens nothing
                 const pts = polyPath(corners(w, from).slice(0, 4));
-                return newPattern(ctx, `Piece ${patternCount(ctx) + 1}`, pts);
+                return newPattern(ctx, pieceLabel(ctx.nodes), pts);
             },
             key(k) { if (k === "Escape") { a = null; return { overlay: { lines: [] }, done: true }; } return {}; },
         };
@@ -67,7 +66,7 @@ const TOOLS = {
                 const j = (i + 1) % pts.length;
                 return out[i] || inn[j] ? { c1: out[i] ?? p, c2: inn[j] ?? pts[j] } : null;
             });
-            return newPattern(ctx, `Piece ${patternCount(ctx) + 1}`, polyPath(pts, curves));
+            return newPattern(ctx, pieceLabel(ctx.nodes), polyPath(pts, curves));
         };
         return {
             down(w) { downAt = w; dragTo = null; return {}; },
@@ -95,7 +94,8 @@ const TOOLS = {
     },
 
     edit(ctx) {
-        let start = null, hit = null, path0 = null, id = null;
+        const { DRAG } = tols(ctx);
+        let start = null, hit = null, path0 = null, id = null, sent = false;
         const preview = (w) => {
             const d = [w[0] - start[0], w[1] - start[1]];
             const path = clone(path0);
@@ -110,12 +110,23 @@ const TOOLS = {
                 if (h && (h.kind === "point" || h.kind === "handle" || h.kind === "edge")) {
                     id = h.id; path0 = outlineOf(ctx, id);
                     if (!path0) return {};
-                    start = w; hit = h;
+                    start = w; hit = h; sent = false;
                 }
                 return {};
             },
-            move(w) { return hit ? preview(w) : {}; },
-            up() { if (!hit) return {}; hit = null; return { endPreview: true }; },
+            // less travel than a drag is still a click: no preview yet
+            move(w) {
+                if (!hit || (!sent && dist(w, start) < DRAG)) return {};
+                sent = true;
+                return preview(w);
+            },
+            // a click (no preview went out) on a seamed edge selects the seam; a drag commits
+            up() {
+                if (!hit) return {};
+                const h = hit; hit = null;
+                if (sent) return { endPreview: true };
+                return h.seam ? { select: { kind: "seam", id: h.seam } } : {};
+            },
             key(k) { if (k === "Escape" && hit) { hit = null; return { cancel: true }; } return {}; },
         };
     },
@@ -159,9 +170,12 @@ const TOOLS = {
                 g.want = [w[0] - g.start[0], w[1] - g.start[1]];
                 g.start = null;
                 await g.busy;
-                if (g.live && (!g.asked || g.want[0] !== g.asked[0] || g.want[1] !== g.asked[1])) await pump(g);
+                const still = !g.asked && g.want[0] === 0 && g.want[1] === 0;    // a click: nothing to move
+                if (g.live && !still && (!g.asked || g.want[0] !== g.asked[0] || g.want[1] !== g.asked[1])) await pump(g);
                 g.live = false;
-                return { ...preview(g), endPreview: true };
+                // the preview is committed only when one went out
+                const p = preview(g);
+                return p.preview ? { ...p, endPreview: true } : {};
             },
             key(k) {
                 if (k !== "Escape" || !st.start) return {};
@@ -246,13 +260,6 @@ const TOOLS = {
     mirror(ctx) {
         const { DRAG } = tols(ctx);
         const pts = [];
-        const freeLabel = (label) => {
-            const taken = new Set(ctx.nodes.filter((n) => n.kind === "garment.pattern").map((n) => n.label));
-            const first = `${label} (mirror)`;
-            let l = first;
-            for (let k = 2; taken.has(l); k++) l = `${first} ${k}`;
-            return l;
-        };
         return {
             down() { return {}; },
             move(w) { return pts.length === 1 ? { overlay: line([pts[0], w]) } : {}; },
@@ -270,7 +277,7 @@ const TOOLS = {
                 const dx = axis[2] - axis[0], dy = axis[3] - axis[1], len = Math.hypot(dx, dy), ux = dx / len, uy = dy / len;
                 const grain = src.grain && (({ 0: gx, 1: gy }) => { const k = 2 * (gx * ux + gy * uy); return [k * ux - gx, k * uy - gy]; })(src.grain);
                 return Promise.resolve(ctx.request("mirror", { id, axis })).then((path) => ({
-                    ...newPattern(ctx, freeLabel(src.label ?? "Piece"), path, { layer: src.layer ?? 0, allowance: src.allowance, grain }),
+                    ...newPattern(ctx, freeLabel(ctx.nodes, `${src.label ?? "Piece"} (mirror)`), path, { layer: src.layer ?? 0, allowance: src.allowance, grain }),
                     overlay: { lines: [] },
                 }), () => ({})); // a failed kernel call: nothing added, the gesture is already reset
             },

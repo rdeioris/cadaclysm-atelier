@@ -53,9 +53,9 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     t.up([105, 3], null, {});
     const t2 = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
     t2.down([0, 0], { kind: "point", id: "p1", index: 0 }, {});
-    const q = t2.move([1, 2], null, {}).preview[0].fields.path;
-    assert.deepEqual(q.start, [1, 2]);
-    assert.deepEqual(q.segments[2].to, [1, 2]);
+    const q = t2.move([2, 3], null, {}).preview[0].fields.path;
+    assert.deepEqual(q.start, [2, 3]);
+    assert.deepEqual(q.segments[2].to, [2, 3]);
     // a handle moves alone
     const t3 = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
     t3.down([100, 10], { kind: "handle", id: "p1", index: 1, which: "c1" }, {});
@@ -172,9 +172,8 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const bad = makeTool("transform", ctx({ nodes, selection: sel, request: async () => { throw new Error("boom"); } }));
     bad.down([0, 0], { kind: "pattern", id: "p1" }, {});
     assert.deepEqual(await bad.move([10, 0], null, {}), {});
-    const up = await bad.up([10, 0], null, {});
-    assert.equal(up.endPreview, true);
-    assert.equal(up.preview, undefined);
+    // no preview went out: nothing to commit (M4)
+    assert.deepEqual(await bad.up([10, 0], null, {}), {});
     // Escape cancels; a reply arriving after the cancel is never a preview
     let release;
     const slow = makeTool("transform", ctx({ nodes, selection: sel, request: () => new Promise((r) => { release = () => r(m.rectPath(10, 0, 100, 50)); }) }));
@@ -239,6 +238,30 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     mi.down([0, 0], null, {}); mi.up([0, 0], null, {});
     mi.down([0, 50], null, {});
     assert.deepEqual(await mi.up([0, 50], null, {}), {});
+}
+// M4: a click without a drag sends no empty endPreview; I2: drawn pieces never repeat a label
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
+        { id: "p1", kind: "garment.pattern", label: "Piece 2", outline: "p1_outline" }];
+    const sel = { kind: "pattern", id: "p1" };
+    const ed = makeTool("edit", ctx({ nodes, selection: sel }));
+    ed.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    assert.deepEqual(ed.move([101, 0], null, {}), {}, "less than a drag: no preview");
+    assert.deepEqual(ed.up([101, 0], null, {}), {});
+    let asked = 0;
+    const tr = makeTool("transform", ctx({ nodes, selection: sel, request: async (k, p) => { asked++; return m.rectPath(p.matrix[2], p.matrix[5], 100, 50); } }));
+    tr.down([5, 5], { kind: "pattern", id: "p1" }, {});
+    assert.deepEqual(await tr.up([5, 5], null, {}), {});
+    assert.equal(asked, 0);
+    const labelOf = (r) => r.ops.find((o) => o.node?.kind === "garment.pattern").node.label;
+    const rc = makeTool("rectangle", ctx({ nodes }));
+    rc.down([0, 0], null, {});
+    assert.equal(labelOf(rc.up([50, 50], null, {})), "Piece 3");
+    const pg = makeTool("polygon", ctx({ nodes }));
+    for (const p of [[0, 0], [100, 0], [100, 50], [0, 0]]) { pg.down(p, null, {}); var pr = pg.up(p, null, {}); }
+    assert.equal(labelOf(pr), "Piece 3");
+    assert.equal(m.freeLabel(nodes, "Piece 2"), "Piece 2 2");
+    assert.equal(m.freeLabel(nodes, "Front"), "Front");
 }
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });

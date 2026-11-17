@@ -36,7 +36,7 @@ export function pointInRing(ring, [x, y]) {
 
 export function pointsOf(nodes, id) {
     const node = (nodes ?? []).find((n) => n.id === `${id}_outline`);
-    const path = node?.path ?? node?.params?.path;
+    const path = node?.path;
     const out = { points: [], handles: [] };
     if (!path) return out;
     out.points.push([...path.start]);
@@ -94,7 +94,10 @@ export function hitTest(drawings, seams, world, tolerancePx, camera, nodes, sele
         let side = 0;
         for (let i = 0; i < sides.length; i++) if (sides[i] <= best.s) side = i;
         side = Math.min(side, Math.max(sides.length - 2, 0));
-        return { kind: "edge", id: best.d.id, s: best.s, side };
+        // a seam lies on the outline: the edge hit names it too (the edit tool's click selects it)
+        const id = best.d.id;
+        const seam = (seams ?? []).find((sm) => (sm.a === id && polyHit(sm.points_a ?? [], world, tol)) || (sm.b === id && polyHit(sm.points_b ?? [], world, tol)));
+        return seam ? { kind: "edge", id, s: best.s, side, seam: seam.id } : { kind: "edge", id, s: best.s, side };
     }
     for (const sm of seams ?? [])
         if (polyHit(sm.points_a ?? [], world, tol) || polyHit(sm.points_b ?? [], world, tol)) return { kind: "seam", id: sm.id };

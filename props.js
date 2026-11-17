@@ -30,6 +30,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             { key: "allowance", label: "Allowance", unit: "mm", type: "numbers", value: n.allowance ?? [0] },
             { key: "grain", label: "Grain", unit: "", type: "numbers", value: n.grain ?? [0, 1] },
             { key: "slot", label: "Slot", unit: "", type: "select", value: n.meta?.atelier?.slot ?? "none", options: slots },
+            { key: "remove", label: "Remove piece", unit: "", type: "action", value: null },
         ];
     }
     if (selection.kind === "seam") {
@@ -75,7 +76,27 @@ export function validate(selection, nodes, key, value) {
     return null;
 }
 
-// ctx: {avatarBounds, drawings} for the slot field.
+// A seam's anchor after a typed end: that end's [side, tFrom, tTo(, sideTo)] from the typed arc
+// lengths and its piece's sides (the form sewing.js writes), so an outline edit re-anchors it to
+// the typed place. Without the sides the stale end is dropped. A "from" on a corner starts the
+// next side; a "to" on a corner ends the side before it.
+function typedAnchor(seam, end, after, drawings) {
+    const anchor = { ...seam.meta.atelier };
+    const sides = drawings?.get(seam[end])?.sides;
+    if (!sides || sides.length < 2) { delete anchor[end]; return anchor; }
+    const last = sides.length - 2;
+    const at = (s, isTo) => {
+        let i = sides.findIndex((v, k) => k <= last && (isTo ? s > v && s <= sides[k + 1] : s >= v && s < sides[k + 1]));
+        if (i < 0) i = isTo ? 0 : last;
+        const len = sides[i + 1] - sides[i];
+        return [i, len > 0 ? Math.min(1, Math.max(0, (s - sides[i]) / len)) : 0];
+    };
+    const [sf, tf] = at(after[`${end}_from`], false), [st, tt] = at(after[`${end}_to`], true);
+    anchor[end] = sf === st && tf <= tt ? [sf, tf, tt] : [sf, tf, tt, st];
+    return anchor;
+}
+
+// ctx: {avatarBounds, drawings} for the slot field and a typed seam end.
 export function opsFor(selection, nodes, key, value, ctx = {}) {
     const id = selection.id;
     if (selection.kind === "pattern") {
@@ -86,12 +107,17 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
             if (value !== "none" && !d) throw new Error("the pattern has no outline to place");
             return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds, d?.bounds));
         }
+        if (key === "remove") return model.removePattern(nodes, id);
         return model.setPattern(nodes, id, { [key]: value });
     }
     if (selection.kind === "seam") {
         if (key === "remove") return model.removeSeam(nodes, id);
         const v = key === "reversed" ? value === true || value === "true" : value;
-        return [{ op: "set", id, fields: { [key]: v } }];
+        const fields = { [key]: v };
+        const n = find(nodes, id);
+        const end = /^([ab])_(from|to)$/.exec(key)?.[1];
+        if (end && n?.meta?.atelier?.[end]) fields.meta = { ...n.meta, atelier: typedAnchor(n, end, { ...n, ...fields }, ctx.drawings) };
+        return [{ op: "set", id, fields }];
     }
     if (selection.kind === "fabric") {
         if (key === "label") return [{ op: "set", id, fields: { label: value } }];

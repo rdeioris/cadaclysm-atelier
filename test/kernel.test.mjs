@@ -23,10 +23,6 @@ assert.equal(d.grain.length, 4);
 // pattern handles follow the garment node's pattern order (checked by name)
 assert.equal(a.f("garment_pattern_name")(a.g, a.f("garment_patterns")(a.g)[0]), "Front");
 
-// side <-> arc length
-assert.deepEqual(a.sideAt("p1", 125), { side: 1, t: 0.5 });
-assert.ok(Math.abs(a.arcAt("p1", 2, 0.25) - 175) < 1e-6);
-
 // a seam, its draw data and meta round trip
 const r2 = m.addPattern(a.nodes(), { label: "Back", path: m.rectPath(200, 0, 100, 50), fabric: "f_x" });
 a.apply(r2.ops, "rect");
@@ -83,8 +79,6 @@ e.apply(m.addPattern(e.nodes(), { label: "Nick", path: m.polyPath([[0, 0], [100,
 const ns = e.drawing("p1").sides;
 assert.equal(ns.length, 6);
 assert.ok(Math.abs(ns[2] - ns[1] - 0.3) < 1e-6, "the 0.3 mm side is present");
-assert.equal(e.sideAt("p1", 100.1).side, 1);
-assert.equal(e.sideAt("p1", 100.5).side, 2);
 e.free();
 a.free(); b.free();
 console.log("kernel: ok");

@@ -19,6 +19,23 @@ export function nextId(nodes, prefix) {
     return `${prefix}${max + 1}`;
 }
 
+// A garment's pattern labels must be distinct (the kernel refuses a repeat).
+const labels = (nodes) => new Set(nodes.filter((n) => n.kind === "garment.pattern").map((n) => n.label));
+// `label`, or `label 2`, `label 3`... when it is taken.
+export function freeLabel(nodes, label) {
+    const taken = labels(nodes);
+    let l = label;
+    for (let k = 2; taken.has(l); k++) l = `${label} ${k}`;
+    return l;
+}
+// A drawn piece's label: `Piece n`, n from the piece count + 1 up to the first free one.
+export function pieceLabel(nodes) {
+    const taken = labels(nodes);
+    let n = nodes.filter((x) => x.kind === "garment.pattern").length + 1;
+    while (taken.has(`Piece ${n}`)) n++;
+    return `Piece ${n}`;
+}
+
 const pt = (p) => [Number(p[0]), Number(p[1])];
 
 export function polyPath(points, curves = []) {
