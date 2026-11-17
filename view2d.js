@@ -1,6 +1,8 @@
 // The 2D window's view: camera, picking and canvas drawing. Picking is screen-tolerance UI work
 // only (point-segment distances, even-odd ring tests); no geometry is computed here.
 
+import { seamColour } from "./sewing.js";
+
 export class Camera {
     constructor(w, h) { this.w = w; this.h = h; this.scale = 1; this.ox = 0; this.oy = 0; }
     resize(w, h) { this.w = w; this.h = h; }
@@ -21,10 +23,6 @@ export class Camera {
     }
 }
 
-// Local 12-hue seam palette; Task 7 moves it to sewing.seamColour.
-const SEAM_PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46a6b8",
-    "#d2a100", "#e05fb0", "#7a9a01", "#9a6324", "#008080", "#808000"];
-const seamColour = (i) => SEAM_PALETTE[((i % 12) + 12) % 12];
 const ACCENT = "#ff7a1a";
 
 export function pointInRing(ring, [x, y]) {

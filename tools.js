@@ -4,6 +4,7 @@
 // placed, and translation/mirroring go to the kernel through ctx.request.
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
+import { makeSewingTool } from "./sewing.js";
 import { addPattern, setOutline, setPattern, polyPath } from "./model.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -316,6 +317,7 @@ const TOOLS = {
 };
 
 export function makeTool(name, ctx) {
+    if (name === "segment" || name === "free") return makeSewingTool(name, ctx);
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
     return TOOLS[name](ctx);
 }
