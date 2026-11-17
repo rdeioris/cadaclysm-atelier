@@ -83,8 +83,9 @@ function paintSelection() {
     for (const [id, s] of slabs) viewer.setColour(s.item, selected(id) ? ACCENT : s.colour);
 }
 
-function changed() {
-    post({ kind: "doc", ...doc() });
+// `seq` echoes the request's own `seq`, so the page knows which change a `doc` answers.
+function changed(seq) {
+    post({ kind: "doc", seq: seq ?? null, ...doc() });
     refresh3d();
 }
 
@@ -134,17 +135,17 @@ self.onmessage = async ({ data }) => {
         }
         await started;
         switch (data.kind) {
-            case "ops": atelier.apply(data.ops, data.message); changed(); break;
-            case "preview": atelier.preview(data.ops); changed(); break;
-            case "endPreview": atelier.endPreview(data.commit); changed(); break;
-            case "undo": atelier.undo(); changed(); break;
-            case "redo": atelier.redo(); changed(); break;
+            case "ops": atelier.apply(data.ops, data.message); changed(data.seq); break;
+            case "preview": atelier.preview(data.ops); changed(data.seq); break;
+            case "endPreview": atelier.endPreview(data.commit); changed(data.seq); break;
+            case "undo": atelier.undo(); changed(data.seq); break;
+            case "redo": atelier.redo(); changed(data.seq); break;
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
             case "mirror": answer(data, () => atelier.mirrored(data.id, data.axis)); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
-            case "open": atelier.load(data.text); changed(); break;
-            case "new": atelier.reset(data.ops); changed(); break;
-            case "importDxf": atelier.apply(atelier.fromDxf(data.text), "import"); changed(); break;
+            case "open": atelier.load(data.text); changed(data.seq); break;
+            case "new": atelier.reset(data.ops); changed(data.seq); break;
+            case "importDxf": atelier.apply(atelier.fromDxf(data.text), "import"); changed(data.seq); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
             case "avatar": await loadAvatar(data.bytes, data.name); break;
             case "select": selection = data.selection ?? null; paintSelection(); break;

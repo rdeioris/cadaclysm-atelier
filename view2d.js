@@ -226,7 +226,8 @@ export function draw(ctx, cam, state) {
         }
     }
     if (overlay) {
-        for (const l of overlay.lines ?? []) { trace(ctx, cam, l); ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]); ctx.strokeStyle = ACCENT; ctx.stroke(); ctx.setLineDash([]); }
+        for (const l of overlay.lines ?? []) { trace(ctx, cam, l.flat()); // the tools give [x, y] pairs
+            ctx.lineWidth = 1.5; ctx.setLineDash([5, 3]); ctx.strokeStyle = ACCENT; ctx.stroke(); ctx.setLineDash([]); }
         for (const p of overlay.points ?? []) { const [px, py] = cam.toScreen(p); ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2); ctx.fillStyle = ACCENT; ctx.fill(); }
     }
     ctx.restore();

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atelier</title>
+<!-- unlisted: no link to it from the site, and kept out of search engines -->
+<meta name="robots" content="noindex">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="atelier.css">
+</head>
+<body>
+<header>
+    <h1>cadaclysm <span>atelier</span></h1>
+    <nav class="group" id="menu">
+        <button id="menu-new" title="A new garment">New</button>
+        <button id="menu-open" title="Open a garment (.json), Ctrl+O">Open</button>
+        <button id="menu-save" title="Save the garment (.json), Ctrl+S">Save</button>
+        <button id="menu-import-dxf" title="Add the pieces of an AAMA/ASTM DXF">Import DXF</button>
+        <button id="menu-export-dxf" title="Write the pieces as AAMA DXF">Export DXF</button>
+        <button id="menu-avatar" title="Load a dress form (STEP)">Avatar</button>
+    </nav>
+    <input type="file" id="file-in" hidden>
+</header>
+<main id="split">
+    <section class="pane" id="pane3d">
+        <div class="strip" id="tools3d">
+            <span class="tag">3D</span>
+            <button data-command="simulate" disabled title="arrives with the solver">Simulate</button>
+            <button data-command="arrange" title="Place the pieces around the avatar">Arrange</button>
+        </div>
+        <div class="well"><canvas id="view3d" tabindex="0"></canvas></div>
+    </section>
+    <div id="divider" title="Drag to resize; F2 / F3 maximise 2D / 3D"></div>
+    <section class="pane" id="pane2d">
+        <div class="strip" id="tools2d">
+            <span class="tag">2D</span>
+            <button data-tool="edit" title="Edit points and edges (Z)">Edit</button>
+            <button data-tool="transform" title="Move pieces (A)">Move</button>
+            <button data-tool="rectangle" title="Rectangle (S)">Rect</button>
+            <button data-tool="polygon" title="Polygon: click points, drag for curves, click the first to close (H)">Polygon</button>
+            <button data-tool="internal" title="Internal line on the selected piece (G); Enter or double click ends">Internal</button>
+            <button data-tool="notch" title="Notch: click an edge">Notch</button>
+            <button data-tool="dart" title="Dart: two edge points, then the apex">Dart</button>
+            <button data-tool="mirror" title="Mirror the selected piece across a two-click axis">Mirror</button>
+            <button data-tool="allowance" title="Seam allowance: click an edge, type mm, Enter">Allowance</button>
+            <button data-tool="grain" title="Grain line of the selected piece: drag">Grain</button>
+            <span class="sep"></span>
+            <button data-tool="segment" title="Segment sewing: pick two sides (N)">Sew sides</button>
+            <button data-tool="free" title="Free sewing: two clicks on each piece (M)">Sew free</button>
+            <span class="sep"></span>
+            <button data-command="fit" title="Fit the pieces (F)">Fit</button>
+        </div>
+        <div class="well"><canvas id="view2d" tabindex="0"></canvas></div>
+    </section>
+    <aside id="dock">
+        <div id="browser">
+            <h2>Fabrics</h2><ul id="browser-fabrics"></ul>
+            <h2>Patterns</h2><ul id="browser-patterns"></ul>
+            <h2>Seams</h2><ul id="browser-seams"></ul>
+            <h2>Avatar</h2><ul id="browser-avatar"></ul>
+        </div>
+        <div id="props"><p class="dim">Nothing selected</p></div>
+    </aside>
+</main>
+<footer>
+    <div id="status"><span id="status-text">loading the kernel…</span><span id="issues"></span></div>
+    <span id="fps" title="frames per second (with the solver)">—</span>
+    <span id="lic"></span>
+</footer>
+<script type="module" src="atelier.js"></script>
+</body>
+</html>
