@@ -256,26 +256,15 @@ async function check(cdp, base) {
         if (se2) throw new Error(`the status line says: ${se2}`);
         failIfErrors();
 
-        // an STL avatar (an ASCII tetrahedron): it replaces the dress form
+        // an STL avatar is refused with a message until the kernel reads STL
         const stlDir = mkdtempSync(join(tmpdir(), "atelier-stl-"));
         try {
             const stlFile = join(stlDir, "tetra.stl");
-            const V = [[0, 0, 0], [400, 0, 0], [0, 1700, 0], [0, 0, 300]];
-            const T = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
-            writeFileSync(stlFile, `solid t
-${T.map((t) => `facet normal 0 0 0
-outer loop
-${t.map((i) => `vertex ${V[i].join(" ")}
-`).join("")}endloop
-endfacet
-`).join("")}endsolid t
-`);
-            await pickInto("menu-avatar", stlFile, ".stl");
-            await until("the STL avatar", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "tetra"`), 30000);
-            await sleep(500);
+            writeFileSync(stlFile, "solid t\nendsolid t\n");
+            await pickInto("menu-avatar", stlFile, ".stp");
+            await until("the STL message", () => evaluate(`/STL avatars need/.test(document.getElementById("status-text").textContent)`), 30000);
+            if ((await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent`)) !== "f-M") throw new Error("the avatar changed");
         } finally { try { rmSync(stlDir, { recursive: true, force: true }); } catch { /* left behind */ } }
-        const se3 = await statusError();
-        if (se3) throw new Error(`the status line says: ${se3}`);
         failIfErrors();
 
         const shotPath = process.env.ATELIER_SHOT;
@@ -288,7 +277,7 @@ endfacet
         await sleep(300);
         failIfErrors();
         const backend = await evaluate(`document.getElementById("lic").textContent`);
-        console.log(`ok - atelier page: ${backend}; rectangle drawn, listed, selected, arranged, edited, saved, reopened, DXF round trip, STL avatar${shotPath ? `; screenshot ${shotPath}` : ""}`);
+        console.log(`ok - atelier page: ${backend}; rectangle drawn, listed, selected, arranged, edited, saved, reopened, DXF round trip, STL refused${shotPath ? `; screenshot ${shotPath}` : ""}`);
     } catch (e) {
         if (process.env.ATELIER_SHOT) {
             const shot = await send("Page.captureScreenshot", { format: "png" }).catch(() => null);

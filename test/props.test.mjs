@@ -33,4 +33,16 @@ assert.equal(validate({ kind: "pattern", id: "p1" }, two, "label", "Front"), nul
 assert.ok(validate({ kind: "pattern", id: "p1" }, two, "allowance", [-1]));
 assert.ok(validate({ kind: "pattern", id: "p1" }, two, "layer", 1.5));
 assert.equal(validate({ kind: "pattern", id: "p1" }, two, "layer", 2), null);
+const seam = { id: "s1", kind: "garment.seam", a: "p1", b: "p2", a_from: 0, a_to: 50, b_from: 0, b_to: 50, reversed: false };
+const withSeam = [...two, { id: "garment", kind: "garment.garment", patterns: ["p1", "p2"], seams: ["s1"] }, seam];
+const sSel = { kind: "seam", id: "s1" };
+assert.deepEqual(opsFor(sSel, withSeam, "reversed", "true"), [{ op: "set", id: "s1", fields: { reversed: true } }]);
+assert.deepEqual(opsFor(sSel, withSeam, "a_to", 60), [{ op: "set", id: "s1", fields: { a_to: 60 } }]);
+const rm = opsFor(sSel, withSeam, "remove", null);
+assert.ok(rm.some((o) => o.op === "remove" && o.id === "s1") && rm.some((o) => o.op === "set" && o.id === "garment" && o.fields.seams.length === 0));
+const fSel = { kind: "fabric", id: "f_cotton_jersey" };
+const pre = opsFor(fSel, nodes, "preset", "denim");
+assert.equal(pre[0].fields.density, presetParams("denim").density);
+assert.deepEqual(opsFor(fSel, nodes, "thickness", 0.7), [{ op: "set", id: "f_cotton_jersey", fields: { thickness: 0.7 } }]);
+assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front", { drawings }), /no avatar/);
 console.log("props: ok");

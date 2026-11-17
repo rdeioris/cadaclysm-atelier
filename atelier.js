@@ -131,7 +131,7 @@ const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? Strin
 const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
 function commitField(f, raw) {
     if (!selection) return;
-    const value = parseField(f, raw);
+    const value = f.type === "text" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
     try {
@@ -165,11 +165,19 @@ function fieldRow(f) {
         input.addEventListener("change", () => commitField(f, input.value));
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
     }
-    if (input) { input.dataset.key = f.key; dd.append(input); }
+    if (input) {
+        input.dataset.key = f.key; dd.append(input);
+        input.addEventListener("keydown", (e) => { if (e.key === "Tab") tabFrom = { key: f.key, dir: e.shiftKey ? -1 : 1, t: performance.now() }; });
+    }
     return [dt, dd];
 }
+let tabFrom = null;       // the field a Tab key left: its commit may rebuild the panel before the focus lands
 function renderProps() {
     const el = $("props");
+    // keep the focus across the rebuild: the field that has it, or the one a Tab was heading to
+    let focusKey = document.activeElement?.closest?.("#props") ? document.activeElement.dataset?.key ?? null : null;
+    const tab = tabFrom && performance.now() - tabFrom.t < 500 ? tabFrom : null;
+    tabFrom = null;
     const n = selection && selection.kind !== "avatar" ? nodes.find((x) => x.id === selection.id) : null;
     const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
@@ -183,6 +191,10 @@ function renderProps() {
         if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
     }
     el.replaceChildren(...kids);
+    const inputs = [...el.querySelectorAll("[data-key]")];
+    if (!focusKey && tab) { const i = inputs.findIndex((x) => x.dataset.key === tab.key); focusKey = inputs[i + tab.dir]?.dataset.key ?? null; }
+    const target = focusKey && inputs.find((x) => x.dataset.key === focusKey);
+    if (target) { target.focus(); target.select?.(); }
 }
 
 // ---- the fabric library: a preset added to the document ----------------------------------
@@ -486,14 +498,14 @@ function download(name, text, type) {
 const menu = {
     new() { cancelPreview(); fitNext = true; setSelection(null); change("new", { ops: newDocumentOps() }); },
     open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("open", { text }); }); },
-    save() { cancelPreview(); post({ kind: "save" }); },
+    save() { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); },
     importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text }); }); },
-    exportDxf() { post({ kind: "exportDxf" }); },
+    exportDxf() { document.activeElement?.blur(); post({ kind: "exportDxf" }); },
     avatar() {
-        pickFile(".stl,.stp,.step", async (f) => {
+        pickFile(".stp,.step", async (f) => {
+            if (/\.stl$/i.test(f.name)) { status("STL avatars need the kernel's STL reader; use STEP for now", true); return; }
             const bytes = await f.arrayBuffer();
-            const format = /\.stl$/i.test(f.name) ? "stl" : "step";
-            post({ kind: "avatar", bytes, format, name: f.name.replace(/\.[^.]+$/, "") }, [bytes]);
+            post({ kind: "avatar", bytes, name: f.name.replace(/\.[^.]+$/, "") }, [bytes]);
         });
     },
 };
@@ -535,6 +547,7 @@ worker.onmessage = ({ data: m }) => {
         case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "dxf": download("garment.dxf", m.text, "application/dxf"); status(`saved garment.dxf: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "error":
+            if (m.reqId == null) fitNext = false;
             if (m.reqId != null && waiting.has(m.reqId)) { waiting.get(m.reqId).reject(new Error(m.text)); waiting.delete(m.reqId); }
             else status(m.text, true);
             break;

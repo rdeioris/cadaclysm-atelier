@@ -5,7 +5,6 @@ import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
 import { Atelier } from "./kernel.js";
-import { parseStl } from "./stl.js";
 import { drawFrame, frame12, seamSegments, ItemMap, fabricColours, ACCENT } from "./arrange.js";
 
 const ready = (async () => {
@@ -99,14 +98,13 @@ function boxOf(vertices, origin) {
     return b;
 }
 
-async function loadAvatar(bytes, name, format = "step") {
+async function loadAvatar(bytes, name) {
     const v = viewer;
-    // read first: a bad file keeps the avatar already there. The web reader has no STL: stl.js reads it.
-    let scene = null, mesh = null, b;
-    if (format === "stl") { mesh = parseStl(bytes); b = mesh.bounds; }
-    else { scene = open(new Uint8Array(bytes), format, undefined, "native"); b = boxOf(scene.vertices(), scene.origin()); }
-    if (avatar) { v.remove(avatar.id); avatar.scene?.free(); avatar = null; }
-    const id = scene ? v.showScene(scene) : v.showMesh({ positions: mesh.positions, normals: mesh.normals, indices: mesh.indices, colour: "#c8c8cc" });
+    // read first: a bad file keeps the avatar already there
+    const scene = open(new Uint8Array(bytes), "step", undefined, "native");
+    const b = boxOf(scene.vertices(), scene.origin());
+    if (avatar) { v.remove(avatar.id); avatar.scene.free(); avatar = null; }
+    const id = v.showScene(scene);
     avatar = { scene, id, bounds: b, name };
     v.frame();
     post({ kind: "avatar", name, bounds: b });
@@ -150,7 +148,7 @@ self.onmessage = async ({ data }) => {
             case "new": atelier.reset(data.ops); changed(data.seq); break;
             case "importDxf": atelier.apply(atelier.fromDxf(data.text), "import"); changed(data.seq); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
-            case "avatar": await loadAvatar(data.bytes, data.name, data.format); break;
+            case "avatar": await loadAvatar(data.bytes, data.name); break;
             case "select": selection = data.selection ?? null; paintSelection(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x, data.y);

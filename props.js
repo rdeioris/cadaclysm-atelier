@@ -4,7 +4,6 @@ import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY } from "./fabrics.js";
 import { SLOTS, slotFields } from "./arrange.js";
 
-const DEFAULT_AVATAR = [-200, 0, -150, 200, 1700, 150];
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 
 // -> [{key, label, unit, type: "text"|"number"|"select"|"numbers"|"readonly"|"action", value, options?}]
@@ -16,7 +15,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
         return [
             { key: "name", label: "Name", unit: "", type: "readonly", value: avatar.name },
             { key: "bounds", label: "Size", unit: "mm", type: "readonly", value: size },
-            { key: "load", label: "Load STL / STEP", unit: "", type: "action", value: null },
+            { key: "load", label: "Load STEP", unit: "", type: "action", value: null },
         ];
     }
     const n = find(nodes, selection.id);
@@ -83,8 +82,9 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         if (key === "slot") {
             const n = find(nodes, id);
             const d = ctx.drawings?.get(id);
+            if (value !== "none" && !ctx.avatarBounds) throw new Error("no avatar to place the piece around");
             if (value !== "none" && !d) throw new Error("the pattern has no outline to place");
-            return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds ?? DEFAULT_AVATAR, d?.bounds));
+            return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds, d?.bounds));
         }
         return model.setPattern(nodes, id, { [key]: value });
     }
