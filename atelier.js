@@ -25,6 +25,8 @@ let pickedFabric = null;      // the fabric new pieces get, when the user chose 
 let hover = null, overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
 let previewing = false, previewPattern = null, pendingReanchor = null;
+let heldOps = [];             // reanchor ops waiting for the open preview to end
+let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
 let seq = 0;                  // the `seq` of the last doc-changing message sent
 let fitNext = false;
 
@@ -72,6 +74,7 @@ function exists(sel) {
 }
 function setSelection(sel) {
     selection = sel ? { kind: sel.kind, id: sel.id } : null;
+    selSeq++;
     if (selection?.kind === "fabric") pickedFabric = selection.id;
     post({ kind: "select", selection });
     markBrowser();
@@ -155,7 +158,8 @@ function renderProps() {
 // ---- tools --------------------------------------------------------------------------------
 function freshTool() {
     const ctx = {
-        nodes, drawings, fabric: currentFabric(), request,
+        nodes, drawings, request,
+        get fabric() { return currentFabric(); },
         get selection() { return selection; },
         get pxToWorld() { return 1 / cam.scale; },
     };
@@ -165,16 +169,30 @@ function freshTool() {
 function setTool(name) {
     toolName = name;
     for (const b of document.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === name);
-    if (previewing) { change("endPreview", { commit: false }); previewing = false; }
+    cancelPreview();
     overlay = null;
     freshTool();
     draw2d();
 }
 
 // Tool results are handled strictly in the order the tool gave them: each waits for the last.
+// A failure is reported and the queue goes on: the next result (an endPreview, say) is never lost.
 let queue = Promise.resolve();
+const toolFailed = (e) => status(`tool: ${e?.message ?? e}`, true);
 function apply(result) {
-    queue = queue.then(() => Promise.resolve(result)).then(handle, (e) => status(`tool: ${e.message ?? e}`, true));
+    queue = queue.then(() => result).then(handle).catch(toolFailed);
+}
+// Reanchor ops held while a preview was open go out once it has ended.
+function flushHeld() {
+    if (previewing || !heldOps.length) return;
+    const ops = heldOps; heldOps = [];
+    change("ops", { ops, message: "re-anchor seams" });
+}
+// End an open preview without committing it.
+function cancelPreview() {
+    if (previewing) change("endPreview", { commit: false });
+    previewing = false; previewPattern = null;
+    flushHeld();
 }
 function patternOfOps(ops) {
     const o = ops.find((x) => typeof x.id === "string" && x.id.endsWith("_outline"));
@@ -189,8 +207,9 @@ function handle(r) {
         previewing = false;
         if (previewPattern) pendingReanchor = { seq: s, id: previewPattern };
         previewPattern = null;
+        flushHeld();
     }
-    if (r.cancel) { if (previewing) change("endPreview", { commit: false }); previewing = false; previewPattern = null; }
+    if (r.cancel) cancelPreview();
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length ? r.overlay : null;
     if (r.select !== undefined) setSelection(r.select);
     if (r.done) setTool("edit");
@@ -204,8 +223,8 @@ for (const b of document.querySelectorAll("[data-command]")) b.addEventListener(
 function command(name) {
     if (name === "fit") fit2d();
     else if (name === "arrange") arrange();
-    else if (name === "undo") change("undo");
-    else if (name === "redo") change("redo");
+    else if (name === "undo") { cancelPreview(); change("undo"); }
+    else if (name === "redo") { cancelPreview(); change("redo"); }
     else if (name === "save") menu.save();
     else if (name === "open") menu.open();
     else if (name === "maximise2d") maximise("max2d");
@@ -302,7 +321,15 @@ c2.addEventListener("pointerup", (e) => {
     const w = cam.toWorld(p);
     if (tool) apply(tool.up(w, hitAt(w), mods(e, { detail, dblclick: detail === 2 })));
 });
-c2.addEventListener("pointercancel", () => { pan = null; drag2d = false; c2.classList.remove("panning"); });
+// The pointer taken away mid-drag: the preview is dropped and the gesture starts over.
+function dragLost() {
+    pan = null; c2.classList.remove("panning");
+    if (!drag2d) return;
+    drag2d = false;
+    queue = queue.then(() => { cancelPreview(); overlay = null; freshTool(); draw2d(); }).catch(toolFailed);
+}
+c2.addEventListener("pointercancel", dragLost);
+c2.addEventListener("lostpointercapture", dragLost);
 c2.addEventListener("pointerleave", () => { if (hover && !drag2d) { hover = null; draw2d(); } });
 c2.addEventListener("wheel", (e) => {
     e.preventDefault();
@@ -330,7 +357,7 @@ c3.addEventListener("pointerup", (e) => {
     if (e.button !== 0 || !down3d) return;
     const moved = Math.hypot(e.offsetX - down3d[0], e.offsetY - down3d[1]);
     down3d = null;
-    if (moved < CLICK_PX) { const dpr = devicePixelRatio || 1; post({ kind: "pick3d", x: e.offsetX * dpr, y: e.offsetY * dpr }); }
+    if (moved < CLICK_PX) { const dpr = devicePixelRatio || 1; post({ kind: "pick3d", x: e.offsetX * dpr, y: e.offsetY * dpr, seq: selSeq }); }
 });
 
 // ---- layout: the divider, F2 / F3 ---------------------------------------------------------
@@ -378,7 +405,7 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
         // the tool hears it first (a drag cancels), then back to edit
         if (tool) apply(tool.key("Escape"));
-        queue = queue.then(() => { if (toolName !== "edit") setTool("edit"); overlay = null; draw2d(); });
+        queue = queue.then(() => { if (toolName !== "edit") setTool("edit"); overlay = null; draw2d(); }).catch(toolFailed);
         return;
     }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
@@ -401,8 +428,8 @@ fileIn.addEventListener("change", async () => {
     if (f && then) then(f);
 });
 const menu = {
-    new() { fitNext = true; setSelection(null); change("new", { ops: newDocumentOps() }); },
-    open() { pickFile(".json,application/json", async (f) => { fitNext = true; change("open", { text: await f.text() }); }); },
+    new() { cancelPreview(); fitNext = true; setSelection(null); change("new", { ops: newDocumentOps() }); },
+    open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("open", { text }); }); },
     save() { post({ kind: "save" }); },
     importDxf() { pickFile(".dxf", async (f) => { fitNext = true; change("importDxf", { text: await f.text() }); }); },
     exportDxf() { post({ kind: "exportDxf" }); },
@@ -416,6 +443,16 @@ $("menu-export-dxf").addEventListener("click", () => menu.exportDxf());
 $("menu-avatar").addEventListener("click", () => menu.avatar());
 
 // ---- the worker's answers -----------------------------------------------------------------
+// The worker failed outright: nothing pending will be answered.
+function workerFailed(text) {
+    for (const w of waiting.values()) w.reject(new Error(text));
+    waiting.clear();
+    previewing = false; previewPattern = null; pendingReanchor = null; heldOps = [];
+    status(text, true);
+}
+worker.onerror = (e) => { e.preventDefault?.(); workerFailed(`worker: ${e.message || "failed"}`); };
+worker.onmessageerror = () => workerFailed("worker: a message could not be read");
+
 worker.onmessage = ({ data: m }) => {
     switch (m.kind) {
         case "ready":
@@ -431,7 +468,7 @@ worker.onmessage = ({ data: m }) => {
             renderBrowser();
             if (selection?.kind === "avatar") renderProps();
             break;
-        case "picked": setSelection(m.selection); break;
+        case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved": status(`saved: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "dxf": status(`DXF written: ${(m.text.length / 1024).toFixed(1)} KB`); break;
@@ -450,7 +487,7 @@ function onDoc(m) {
         const { id } = pendingReanchor;
         pendingReanchor = null;
         const r = reanchor(nodes, drawings, id);
-        if (r.ops.length) change("ops", { ops: r.ops, message: "re-anchor seams" });
+        if (r.ops.length) { heldOps.push(...r.ops); flushHeld(); }
         if (r.removed.length) status(`removed seam${r.removed.length === 1 ? "" : "s"} ${r.removed.join(", ")}: the side is gone`);
     }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }

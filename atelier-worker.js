@@ -151,7 +151,7 @@ self.onmessage = async ({ data }) => {
             case "select": selection = data.selection ?? null; paintSelection(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x, data.y);
-                post({ kind: "picked", selection: p ? items.resolve(p.item) : null });
+                post({ kind: "picked", seq: data.seq ?? null, selection: p ? items.resolve(p.item) : null });
                 break;
             }
             case "resize": viewer.resize?.(data.width, data.height, data.dpr); break;
