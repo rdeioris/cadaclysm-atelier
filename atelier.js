@@ -7,7 +7,7 @@ import * as model from "./model.js";
 import { PRESETS, presetParams } from "./fabrics.js";
 import { Camera, hitTest, draw } from "./view2d.js";
 import { makeTool } from "./tools.js";
-import { reanchor, seamColour } from "./sewing.js";
+import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { SLOTS, slotFields, fabricColours } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
@@ -25,8 +25,7 @@ let avatar = null;            // {name, bounds}
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let hover = null, overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
-let previewing = false, previewPattern = null, pendingReanchor = null;
-let heldOps = [];             // reanchor ops waiting for the open preview to end
+let previewing = false, previewPattern = null;
 let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
 let seq = 0;                  // the `seq` of the last doc-changing message sent
 let fitNext = false;
@@ -136,8 +135,8 @@ function commitField(f, raw) {
     if (err) { status(err, true); renderProps(); return; }
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, drawings });
-        if (ops.length) change("ops", { ops, message: `set ${f.key}` });
-        status(`${f.label}: set`);
+        if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
+        status(f.type === "action" ? f.label : `${f.label}: set`);
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
 }
 function fieldRow(f) {
@@ -197,6 +196,17 @@ function renderProps() {
     if (target) { target.focus(); target.select?.(); }
 }
 
+// The selected piece (with its seams) or seam out of the document: one undo step.
+function removeSelected() {
+    if (!selection || (selection.kind !== "pattern" && selection.kind !== "seam") || !nodes.some((n) => n.id === selection.id)) return false;
+    cancelPreview();
+    const kind = selection.kind;
+    change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${kind === "pattern" ? "piece" : "seam"}` });
+    status(kind === "pattern" ? "removed the piece" : "removed the seam");
+    setSelection(null);
+    return true;
+}
+
 // ---- the fabric library: a preset added to the document ----------------------------------
 {
     const sel = $("lib-select");
@@ -238,17 +248,10 @@ const toolFailed = (e) => status(`tool: ${e?.message ?? e}`, true);
 function apply(result) {
     queue = queue.then(() => result).then(handle).catch(toolFailed);
 }
-// Reanchor ops held while a preview was open go out once it has ended.
-function flushHeld() {
-    if (previewing || !heldOps.length) return;
-    const ops = heldOps; heldOps = [];
-    change("ops", { ops, message: "re-anchor seams" });
-}
 // End an open preview without committing it.
 function cancelPreview() {
     if (previewing) change("endPreview", { commit: false });
     previewing = false; previewPattern = null;
-    flushHeld();
 }
 function patternOfOps(ops) {
     const o = ops.find((x) => typeof x.id === "string" && x.id.endsWith("_outline"));
@@ -258,12 +261,11 @@ function handle(r) {
     if (!r) return;
     if (r.ops?.length) change("ops", { ops: r.ops });
     if (r.preview) { previewing = true; previewPattern = patternOfOps(r.preview) ?? previewPattern; change("preview", { ops: r.preview }); }
+    // the commit re-anchors the edited pattern's seams in the same undo step (the worker does it)
     if (r.endPreview) {
-        const s = change("endPreview", { commit: true });
+        change("endPreview", { commit: true, reanchor: previewPattern });
         previewing = false;
-        if (previewPattern) pendingReanchor = { seq: s, id: previewPattern };
         previewPattern = null;
-        flushHeld();
     }
     if (r.cancel) cancelPreview();
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length ? r.overlay : null;
@@ -465,6 +467,8 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
+    // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
+    if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
     if (tool) {
         const r = tool.key(e.key);
         if (r && Object.keys(r).length) { if (e.key === "Backspace" || e.key === "Enter") e.preventDefault(); apply(r); }
@@ -506,9 +510,10 @@ const menu = {
         change("open", { text });
         status("opened the sample: a T-shirt");
     },
-    open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("open", { text }); }); },
-    save() { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); },
-    importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text }); }); },
+    open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; setSelection(null); change("open", { text }); }); },
+    // after the tool results still queued (a drag's last step may be in flight): they are saved too
+    save() { queue = queue.then(() => { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); }).catch(toolFailed); },
+    importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text, fabric: currentFabric() }); }); },
     exportDxf() { document.activeElement?.blur(); post({ kind: "exportDxf" }); },
     avatar() {
         pickFile(".stp,.step", async (f) => {
@@ -531,7 +536,7 @@ $("menu-avatar").addEventListener("click", () => menu.avatar());
 function workerFailed(text) {
     for (const w of waiting.values()) w.reject(new Error(text));
     waiting.clear();
-    previewing = false; previewPattern = null; pendingReanchor = null; heldOps = [];
+    previewing = false; previewPattern = null;
     status(text, true);
 }
 worker.onerror = (e) => { e.preventDefault?.(); workerFailed(`worker: ${e.message || "failed"}`); };
@@ -552,6 +557,7 @@ worker.onmessage = ({ data: m }) => {
             renderBrowser();
             if (selection?.kind === "avatar") renderProps();
             break;
+        case "status": status(m.text); break;
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
@@ -568,13 +574,6 @@ function onDoc(m) {
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     if (!exists(selection)) { selection = null; post({ kind: "select", selection: null }); }
-    if (pendingReanchor && m.seq === pendingReanchor.seq) {
-        const { id } = pendingReanchor;
-        pendingReanchor = null;
-        const r = reanchor(nodes, drawings, id);
-        if (r.ops.length) { heldOps.push(...r.ops); flushHeld(); }
-        if (r.removed.length) status(`removed seam${r.removed.length === 1 ? "" : "s"} ${r.removed.join(", ")}: the side is gone`);
-    }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
     // A fresh tool for the new nodes, unless a gesture (and its previews) is under way.
     if (previewing || drag2d) toolStale = true; else freshTool();

@@ -1,5 +1,6 @@
 // Where a flat pattern stands around the avatar, and the pure helpers the worker draws with.
 // No kernel and no View in here, so Node can test it.
+import { seamColour } from "./sewing.js";
 
 // Slot origins are fractions of the avatar's bounds (min xyz, max xyz); x and y are the
 // pattern's 2D axes in world space (y up, the avatar facing +z, the panel facing outward).
@@ -45,7 +46,7 @@ export function floorFrame(avatarBounds) {
 }
 
 // A frame for drawing: the node's own, or the floor one.
-export function drawFrame(node, avatarBounds, patternBounds) {
+export function drawFrame(node, avatarBounds) {
     return node.frame && node.frame !== "xy" ? node.frame : floorFrame(avatarBounds);
 }
 
@@ -76,6 +77,24 @@ export function seamSegments(seam, frameA, frameB) {
         out.push(...at(pa, fa, i), ...at(pb, fb, j));
     }
     return out;
+}
+
+// Whether `selection` ({kind, id} or null) is the item of that kind and id.
+export const isSelected = (selection, kind, id) => !!selection && selection.kind === kind && selection.id === id;
+
+// The seams in the 3D window: one lines item per seam, in its 2D colour (the accent when
+// selected), so a seam is picked and highlighted on its own. -> {shown: [{item, id, colour}], error}
+export function showSeams(viewer, seams, frames, selection) {
+    const shown = [];
+    let error = null;
+    seams.forEach((s, i) => {
+        const colour = seamColour(i);
+        try {
+            const segs = seamSegments(s, frames.get(s.a), frames.get(s.b));
+            if (segs.length) shown.push({ item: viewer.showLines(segs, isSelected(selection, "seam", s.id) ? ACCENT : colour), id: s.id, colour });
+        } catch (e) { error ??= e; }
+    });
+    return { shown, error };
 }
 
 // View item ids -> what they are, for pick3d.

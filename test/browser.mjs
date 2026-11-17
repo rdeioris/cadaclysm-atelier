@@ -2,7 +2,8 @@
 // WebSocket: no dependency). It serves the repo with scripts/serve.mjs, opens the page, waits
 // for the worker's `ready`, then with real pointer and key events: draws a rectangle, drags a
 // corner, maximises, arranges, edits the properties (typing + Tab keeps the focus), adds a
-// library fabric, draws a second rectangle and sews the two with "Sew sides", types an
+// library fabric, draws a second rectangle and sews the two with "Sew sides", picks the seam in
+// 2D, deletes it and a piece (each undone), moves a piece with the Move tool, types an
 // allowance and saves with Ctrl+S (the download is read back), New and Open, refuses an STL
 // avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Each
 // step prints ok. Any console error or uncaught exception, in the page or its worker, fails.
@@ -304,6 +305,52 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok("second rectangle, segment-sewn: one seam");
+
+            // a click on the seam with the edit tool selects the seam (it lies on the outline);
+            // Delete removes it and Ctrl+Z brings it back
+            const seamOn = () => evaluate(`!!document.querySelector('#browser-seams li[data-kind=seam].on')`);
+            await evaluate(`document.querySelectorAll('#browser-patterns li[data-kind=pattern]')[1].click()`);
+            if (await seamOn()) throw new Error("the seam is still selected after picking a piece");
+            await click([a[0], (a[1] + b[1]) / 2]);
+            await until("the seam selected by a 2D click", seamOn, 30000);
+            await key("Delete", "Delete", 46);
+            await until("the seam deleted", async () => (await seamCount()) === 0, 30000);
+            await key("z", "KeyZ", 90, 2);
+            await until("the seam back after Ctrl+Z", async () => (await seamCount()) === 1, 30000);
+            // the second piece's "Remove piece" takes it and its seam; Ctrl+Z restores both
+            await evaluate(`document.querySelectorAll('#browser-patterns li[data-kind=pattern]')[1].click()`);
+            await until("the Remove piece button", () => evaluate(`!!${field("remove")}`), 30000);
+            await evaluate(`${field("remove")}.click()`);
+            await until("the piece removed", async () => (await patternCount()) === 1 && (await seamCount()) === 0, 30000);
+            await key("z", "KeyZ", 90, 2);
+            await until("the piece back after Ctrl+Z", async () => (await patternCount()) === 2 && (await seamCount()) === 1, 30000);
+            await noStatusError();
+            failIfErrors();
+            ok("seam picked in 2D, deleted, undone; piece removed with its seam, undone");
+
+            // the Move tool: a drag with pauses (several previews) moves the piece by exactly the drag
+            const outlineOf = (json, label) => {
+                const p = json.nodes.find((n) => n.kind === "garment.pattern" && n.label === label);
+                return json.nodes.find((n) => n.id === p.outline).path;
+            };
+            const saveNow = async () => { await key("s", "KeyS", 83, 2); return JSON.parse(await takeFile("garment.json")); };
+            const before = outlineOf(await saveNow(), "Piece 2");
+            const xs = [before.start[0], ...before.segments.map((s) => s.to[0])];
+            const worldPerPx = (Math.max(...xs) - Math.min(...xs)) / (d[0] - c[0]);
+            await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
+            const from = [(c[0] + d[0]) / 2, (c[1] + d[1]) / 2], by = [80, 40];
+            await mouse("mouseMoved", from[0], from[1], { buttons: 0 });
+            await mouse("mousePressed", from[0], from[1]);
+            for (let i = 1; i <= 8; i++) { await mouse("mouseMoved", from[0] + (by[0] * i) / 8, from[1] + (by[1] * i) / 8); await sleep(60); }
+            await mouse("mouseReleased", from[0] + by[0], from[1] + by[1]);
+            const after = outlineOf(await saveNow(), "Piece 2");     // the save waits for the drag's last step
+            await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+            const moved = [after.start[0] - before.start[0], after.start[1] - before.start[1]];
+            const want = [by[0] * worldPerPx, -by[1] * worldPerPx];
+            if (Math.hypot(moved[0] - want[0], moved[1] - want[1]) > 0.5) throw new Error(`the Move tool moved the piece by ${moved.map((v) => v.toFixed(2))}, not ${want.map((v) => v.toFixed(2))}`);
+            await noStatusError();
+            failIfErrors();
+            ok(`Move: the piece moved by exactly the drag (${moved.map((v) => v.toFixed(1)).join(", ")} mm)`);
 
             // 4. type an allowance into the field and press Ctrl+S at once: the save holds the typed value
             await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);

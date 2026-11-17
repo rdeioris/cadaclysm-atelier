@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, ACCENT } from "../arrange.js";
+import { seamColour } from "../sewing.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
 const f = slotFrame("front", avatar, piece);
@@ -54,4 +55,22 @@ assert.deepEqual(im.resolve(7), { kind: "pattern", id: "p1" }); assert.equal(im.
 const ss = seamSegments({ points_a: [0, 0, 0, 10], points_b: [0, 0, 0, 10], reversed: true }, { origin: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0] }, { origin: [0, 0, 5], x: [1, 0, 0], y: [0, 1, 0] });
 assert.deepEqual(ss.slice(0, 12), [0, 0, 0, 0, 10, 0, 0, 0, 5, 0, 10, 5], "both ranges as lines");
 assert.deepEqual(ss.slice(12, 18), [0, 0, 0, 0, 10, 5], "reversed: first of a meets last of b");
+// I6: one lines item per seam, in its 2D colour (the accent when selected), each its own pick target
+{
+    const calls = [];
+    const viewer = { showLines: (segs, colour) => { calls.push(colour); return 100 + calls.length; } };
+    const fr = { origin: [0, 0, 0], x: [1, 0, 0], y: [0, 1, 0] };
+    const seams = ["s1", "s2", "s3"].map((id) => ({ id, a: "p1", b: "p2", points_a: [0, 0, 0, 10], points_b: [5, 0, 5, 10], reversed: false }));
+    const frames = new Map([["p1", fr], ["p2", fr]]);
+    const { shown, error } = showSeams(viewer, seams, frames, { kind: "seam", id: "s2" });
+    assert.equal(error, null);
+    assert.deepEqual(shown.map((s) => [s.item, s.id, s.colour]), [[101, "s1", seamColour(0)], [102, "s2", seamColour(1)], [103, "s3", seamColour(2)]]);
+    assert.deepEqual(calls, [seamColour(0), ACCENT, seamColour(2)]);
+    assert.equal(isSelected({ kind: "seam", id: "s2" }, "seam", "s2"), true);
+    assert.equal(isSelected({ kind: "pattern", id: "s2" }, "seam", "s2"), false);
+    assert.equal(isSelected(null, "seam", "s2"), false);
+    const map = new ItemMap();
+    for (const s of shown) map.set(s.item, { kind: "seam", id: s.id });
+    assert.deepEqual(map.resolve(103), { kind: "seam", id: "s3" });
+}
 console.log("arrange: ok");
