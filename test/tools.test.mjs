@@ -1,0 +1,148 @@
+import assert from "node:assert/strict";
+import { makeTool } from "../tools.js";
+import { SHORTCUTS, toolOfKey } from "../shortcuts.js";
+import * as m from "../model.js";
+
+const base = m.newDocumentOps({ slug: "x", label: "X", params: Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1])) }).map((o) => o.node);
+const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null, fabric: "f_x", request: async () => { throw new Error("no kernel"); }, ...extra });
+
+// rectangle: drag gives one pattern
+{
+    const t = makeTool("rectangle", ctx());
+    t.down([10, 10], null, {});
+    const mv = t.move([60, 40], null, {});
+    assert.ok(mv.overlay.lines.length === 1);
+    const r = t.up([60, 40], null, {});
+    const add = r.ops.find((o) => o.op === "add" && o.node.kind === "profile.path");
+    assert.deepEqual(m.pathPoints(add.node.path), [[10, 10], [60, 10], [60, 40], [10, 40]]);
+    assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.fabric, "f_x");
+}
+// polygon: three corners and a curve, closed on the first point
+{
+    const t = makeTool("polygon", ctx());
+    const click = (p) => { t.down(p, null, {}); return t.up(p, null, {}); };
+    click([0, 0]);
+    click([100, 0]);
+    t.down([100, 50], null, {}); t.move([120, 50], null, {}); t.up([120, 50], null, {}); // a drag: a curve into this point
+    const r = click([0, 0]);
+    const path = r.ops.find((o) => o.node?.kind === "profile.path").node.path;
+    assert.deepEqual(m.pathPoints(path), [[0, 0], [100, 0], [100, 50]]);
+    assert.equal(path.segments[1].type, "bezier");
+    assert.equal(r.done, true);
+}
+// edit: drag a point previews then commits
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const t = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    const mv = t.move([110, -5], null, {});
+    assert.deepEqual(m.pathPoints(mv.preview[0].fields.path)[1], [110, -5]);
+    const up = t.up([110, -5], null, {});
+    assert.equal(up.endPreview, true);
+}
+// edit: moving a point drags the handles attached to it, and the closing segment for point 0
+{
+    const path = m.polyPath([[0, 0], [100, 0], [100, 50]], [null, { c1: [100, 10], c2: [100, 40] }, null]);
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const t = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    const p = t.move([105, 3], null, {}).preview[0].fields.path;
+    assert.deepEqual(p.segments[0].to, [105, 3]);
+    assert.deepEqual(p.segments[1].c1, [105, 13]);
+    assert.deepEqual(p.segments[1].c2, [100, 40]);
+    t.up([105, 3], null, {});
+    const t2 = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t2.down([0, 0], { kind: "point", id: "p1", index: 0 }, {});
+    const q = t2.move([1, 2], null, {}).preview[0].fields.path;
+    assert.deepEqual(q.start, [1, 2]);
+    assert.deepEqual(q.segments[2].to, [1, 2]);
+    // a handle moves alone
+    const t3 = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t3.down([100, 10], { kind: "handle", id: "p1", index: 1, which: "c1" }, {});
+    const h = t3.move([90, 10], null, {}).preview[0].fields.path;
+    assert.deepEqual(h.segments[1].c1, [90, 10]);
+    assert.deepEqual(h.segments[1].c2, [100, 40]);
+    assert.deepEqual(h.segments[0].to, [100, 0]);
+}
+// notch on an edge
+{
+    const nodes = [...base, { id: "p1", kind: "garment.pattern", notches: [] }];
+    const t = makeTool("notch", ctx({ nodes }));
+    const r = t.down([40, 0], { kind: "edge", id: "p1", s: 40, side: 0 }, {});
+    assert.deepEqual(r.ops[0].fields.notches, [{ at: 40, kind: "slit", depth: 6 }]);
+}
+// allowance per side
+{
+    const nodes = [...base, { id: "p1", kind: "garment.pattern", allowance: [10] }];
+    const drawings = new Map([["p1", { sides: [0, 100, 150, 250, 300] }]]);
+    const t = makeTool("allowance", ctx({ nodes, drawings }));
+    t.down([40, 0], { kind: "edge", id: "p1", s: 40, side: 0 }, {});
+    t.key("2"); t.key("5");
+    const r = t.key("Enter");
+    assert.deepEqual(r.ops[0].fields.allowance, [25, 10, 10, 10]);
+}
+// grain
+{
+    const nodes = [...base, { id: "p1", kind: "garment.pattern", grain: [0, 1] }];
+    const t = makeTool("grain", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t.down([0, 0], null, {});
+    const r = t.up([3, 4], null, {});
+    assert.deepEqual(r.ops[0].fields.grain, [0.6, 0.8]);
+}
+// mirror asks the kernel
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", label: "Front", outline: "p1_outline", fabric: "f_x", layer: 0 }];
+    let asked = null;
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async (k, p) => { asked = [k, p]; return m.rectPath(-100, 0, 100, 50); } }));
+    t.down([0, 0], null, {}); t.up([0, 0], null, {});
+    t.down([0, 50], null, {});
+    const r = await t.up([0, 50], null, {});
+    assert.deepEqual(asked, ["mirror", { id: "p1", axis: [0, 0, 0, 50] }]);
+    assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.label, "Front (mirror)");
+}
+// mirror: a taken label gets " 2", " 3"
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
+        { id: "p1", kind: "garment.pattern", label: "Front", outline: "p1_outline", fabric: "f_x", layer: 0 },
+        { id: "p2", kind: "garment.pattern", label: "Front (mirror)" }, { id: "p3", kind: "garment.pattern", label: "Front (mirror) 2" }];
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => m.rectPath(-100, 0, 100, 50) }));
+    t.down([0, 0], null, {}); t.up([0, 0], null, {});
+    t.down([0, 50], null, {});
+    const r = await t.up([0, 50], null, {});
+    assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.label, "Front (mirror) 3");
+}
+// transform: kernel translate, row-major matrix, one request in flight
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const asked = []; let inflight = 0, maxInflight = 0;
+    const request = async (k, p) => { asked.push([k, p]); maxInflight = Math.max(maxInflight, ++inflight); await new Promise((r) => setTimeout(r, 5)); inflight--; return m.rectPath(p.matrix[2], p.matrix[5], 100, 50); };
+    const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t.down([5, 5], { kind: "pattern", id: "p1" }, {});
+    t.move([10, 5], null, {}); t.move([15, 5], null, {}); const last = t.move([25, 15], null, {});
+    await last;
+    const up = await t.up([25, 15], null, {});
+    assert.equal(maxInflight, 1);
+    assert.deepEqual(asked[0], ["transform", { id: "p1", matrix: [1, 0, 5, 0, 1, 0] }]);
+    assert.deepEqual(asked.at(-1), ["transform", { id: "p1", matrix: [1, 0, 20, 0, 1, 10] }]);
+    assert.equal(up.endPreview, true);
+    assert.deepEqual(m.pathPoints(up.preview[0].fields.path)[0], [20, 10]);
+}
+// internal, dart, unknown tool
+{
+    const nodes = [...base, { id: "p1", kind: "garment.pattern", internal: [] }];
+    const t = makeTool("internal", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    for (const p of [[10, 10], [20, 20]]) { t.down(p, null, {}); t.up(p, null, {}); }
+    const r = t.key("Enter");
+    assert.deepEqual(r.ops[0].fields.internal, [{ kind: "line", path: { start: [10, 10], segments: [{ type: "line", to: [20, 20] }] } }]);
+    const d = makeTool("dart", ctx({ nodes: [...base, { id: "p1", kind: "garment.pattern", internal: [], notches: [] }], selection: { kind: "pattern", id: "p1" } }));
+    d.down([20, 0], { kind: "edge", id: "p1", s: 20, side: 0 }, {}); d.up([20, 0], null, {});
+    d.down([40, 0], { kind: "edge", id: "p1", s: 40, side: 0 }, {}); d.up([40, 0], null, {});
+    d.down([30, 30], null, {});
+    const dr = d.up([30, 30], null, {});
+    assert.equal(dr.ops[0].fields.internal[0].kind, "dart");
+    assert.deepEqual(dr.ops[0].fields.notches.map((n) => n.at), [20, 40]);
+    assert.throws(() => makeTool("nope", ctx()), /unknown tool nope/);
+}
+assert.equal(SHORTCUTS.S.tool, "rectangle");
+assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
+console.log("tools: ok");
