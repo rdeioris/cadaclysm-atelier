@@ -54,9 +54,17 @@ assert.equal(m.byId(nodes).get("p2_outline"), undefined);
 assert.deepEqual(m.byId(nodes).get("garment").patterns, ["p1"]);
 assert.deepEqual(m.byId(nodes).get("garment").seams, []);
 
-// ids never reuse a removed one below the max
+// nextId is the max id IN USE plus one: a removed max can be reused, a removed lower id is not
 assert.equal(m.nextId(nodes, "p"), "p2");
 assert.equal(m.nextId([{ id: "p7" }, { id: "p3" }], "p"), "p8");
+
+// removeSeam drops it from the garment's list and removes the node; setFabric keeps only known fields
+const withSeam = apply(nodes, m.addSeam(nodes, { a: "p1", b: "p1", a_from: 0, a_to: 10, b_from: 20, b_to: 30 }).ops);
+assert.deepEqual(m.byId(withSeam).get("garment").seams, ["s1"]);
+const noSeam = apply(withSeam, m.removeSeam(withSeam, "s1"));
+assert.deepEqual(m.byId(noSeam).get("garment").seams, []);
+assert.equal(m.byId(noSeam).get("s1"), undefined);
+assert.deepEqual(m.setFabric(nodes, "f_x", { density: 2, bogus: 9 })[0].fields, { density: 2 });
 
 // a fabric added twice is one fabric
 assert.deepEqual(m.addFabric(nodes, "x", "X", fabric.params).ops, []);
