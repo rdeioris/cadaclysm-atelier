@@ -143,6 +143,85 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.deepEqual(dr.ops[0].fields.notches.map((n) => n.at), [20, 40]);
     assert.throws(() => makeTool("nope", ctx()), /unknown tool nope/);
 }
+// fix round 1: screen-space tolerances
+{
+    const poly = (px, closeAt) => {
+        const t = makeTool("polygon", ctx(px ? { pxToWorld: px } : {}));
+        const click = (p) => { t.down(p, null, {}); return t.up(p, null, {}); };
+        click([0, 0]); click([100, 0]);
+        t.down([100, 50], null, {}); t.move([101, 50], null, {}); t.up([101, 50], null, {}); // 1 unit jitter: a corner
+        click([100, 100]);
+        return click(closeAt);
+    };
+    const r = poly(1, [5, 0]);
+    const path = r.ops.find((o) => o.node?.kind === "profile.path").node.path;
+    assert.equal(path.segments.every((s) => s.type === "line"), true);
+    assert.equal(r.done, true);
+    assert.equal(poly(0.5, [5, 0]).ops, undefined); // 5 units is 10 px at 0.5: too far
+    const few = makeTool("polygon", ctx());
+    few.down([0, 0], null, {}); few.up([0, 0], null, {});
+    few.down([2, 0], null, {}); assert.deepEqual(few.up([2, 0], null, {}), {}); // fewer than 3 points: ignored
+    const rc = makeTool("rectangle", ctx());
+    rc.down([0, 0], null, {});
+    assert.equal(rc.up([2, 2], null, {}).ops, undefined);
+}
+// fix round 1: transform and edit robustness
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const sel = { kind: "pattern", id: "p1" };
+    const bad = makeTool("transform", ctx({ nodes, selection: sel, request: async () => { throw new Error("boom"); } }));
+    bad.down([0, 0], { kind: "pattern", id: "p1" }, {});
+    assert.deepEqual(await bad.move([10, 0], null, {}), {});
+    const up = await bad.up([10, 0], null, {});
+    assert.equal(up.endPreview, true);
+    assert.equal(up.preview, undefined);
+    // Escape cancels; a reply arriving after the cancel is never a preview
+    let release;
+    const slow = makeTool("transform", ctx({ nodes, selection: sel, request: () => new Promise((r) => { release = () => r(m.rectPath(10, 0, 100, 50)); }) }));
+    slow.down([0, 0], { kind: "pattern", id: "p1" }, {});
+    const pending = slow.move([10, 0], null, {});
+    assert.deepEqual(slow.key("Escape"), { cancel: true });
+    release();
+    assert.deepEqual(await pending, {});
+    const ed = makeTool("edit", ctx({ nodes, selection: sel }));
+    ed.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    assert.deepEqual(ed.key("Escape"), { cancel: true });
+    assert.deepEqual(ed.up([100, 0], null, {}), {});
+}
+// fix round 1: mirror reflects grain, keeps allowance order (the kernel keeps segment order), falls back to "Piece"
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
+        { id: "p1", kind: "garment.pattern", outline: "p1_outline", fabric: "f_x", layer: 0, allowance: [1, 2, 3, 4], grain: [1, 0] }];
+    // Kernel-shaped reply for a mirror across x = 0: side i of the original is side i of the result.
+    const reply = { start: [0, 0], segments: [{ type: "line", to: [-100, 0] }, { type: "line", to: [-100, 50] }, { type: "line", to: [0, 50] }, { type: "line", to: [0, 0] }] };
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => reply }));
+    t.down([0, 0], null, {}); t.up([0, 0], null, {});
+    assert.deepEqual(t.up([0, 0.5], null, {}), {}); // zero-length axis ignored
+    const r = await t.up([0, 50], null, {});
+    const node = r.ops.find((o) => o.node?.kind === "garment.pattern").node;
+    assert.equal(node.label, "Piece (mirror)");
+    assert.deepEqual(node.allowance, [1, 2, 3, 4]);
+    assert.deepEqual(node.grain.map((v) => Math.round(v * 1e9) / 1e9 + 0), [-1, 0]);
+    // the real kernel does keep the segment order
+    const { loadKernel } = await import("./package.mjs");
+    const { Atelier } = await import("../kernel.js");
+    const a = new Atelier(await loadKernel());
+    a.apply(m.newDocumentOps({ slug: "x", label: "X", params: Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1])) }), "new");
+    a.apply(m.addPattern(a.nodes(), { label: "F", path: m.rectPath(0, 0, 100, 50), fabric: "f_x" }).ops, "r");
+    assert.deepEqual(await a.mirrored("p1", [0, 0, 0, 1]), reply);
+}
+// fix round 1: allowance takes one dot; internal double-click drops the duplicate point
+{
+    const nodes = [...base, { id: "p1", kind: "garment.pattern", allowance: [10] }];
+    const t = makeTool("allowance", ctx({ nodes, drawings: new Map([["p1", { sides: [0, 1, 2] }]]) }));
+    t.down([0, 0], { kind: "edge", id: "p1", s: 0, side: 1 }, {});
+    for (const k of ["1", ".", ".", "5"]) t.key(k);
+    assert.deepEqual(t.key("Enter").ops[0].fields.allowance, [10, 1.5]);
+    const n2 = [...base, { id: "p1", kind: "garment.pattern" }];
+    const i = makeTool("internal", ctx({ nodes: n2, selection: { kind: "pattern", id: "p1" } }));
+    for (const p of [[0, 0], [10, 0], [10, 0.5]]) { i.down(p, null, {}); i.up(p, null, {}); }
+    assert.equal(i.key("Enter").ops[0].fields.internal[0].path.segments.length, 1);
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");
