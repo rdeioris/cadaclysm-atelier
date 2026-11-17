@@ -123,9 +123,9 @@ async function check(cdp, base) {
     const failIfErrors = () => { if (errors.length) throw new Error(`errors logged:\n  ${errors.join("\n  ")}`); };
     const statusError = () => evaluate(`(() => { const s = document.getElementById("status-text"); return s.classList.contains("error") ? s.textContent : null; })()`);
     const mouse = (type, x, y, extra = {}) => send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1, ...extra });
-    const key = async (k, code, vk) => {
-        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: k, code, windowsVirtualKeyCode: vk });
-        await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk });
+    const key = async (k, code, vk, modifiers = 0) => {
+        await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: k, code, windowsVirtualKeyCode: vk, modifiers });
+        await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk, modifiers });
     };
     const frames = () => evaluate("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
     try {
@@ -195,10 +195,87 @@ async function check(cdp, base) {
 
         // arrange: the piece goes to a slot around the avatar
         await evaluate(`document.querySelector('#tools3d [data-command=arrange]').click()`);
-        await until("the piece arranged", () => evaluate(`/slot\\s*Front/.test(document.getElementById("props").textContent)`), 30000);
+        const field = (key) => `document.querySelector('#props [data-key="${key}"]')`;
+        const setField = (key, value) => evaluate(`(() => { const e = ${field(key)}; e.value = ${JSON.stringify(String(value))}; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+        await until("the piece arranged", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
         await sleep(800);
         const se = await statusError();
         if (se) throw new Error(`the status line says: ${se}`);
+        failIfErrors();
+
+        // the property editor: a label, a duplicate refused, the slot, a fabric's weight
+        await setField("label", "Bodice");
+        await until("the new label", () => evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').textContent === "Bodice"`), 30000);
+        await setField("slot", "back");
+        await until("the back slot", () => evaluate(`${field("slot")}?.value === "back"`), 30000);
+        await setField("slot", "front");
+        await until("the front slot", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+        await setField("layer", "1.5");
+        if (!(await statusError())) throw new Error("a fractional layer was not refused");
+        await evaluate(`document.querySelector('#browser-fabrics li[data-kind=fabric]').click()`);
+        await setField("density", "150");
+        await until("the weight", () => evaluate(`${field("density")}?.value === "150"`), 30000);
+        await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
+        failIfErrors();
+
+        // the fabric library: add a preset, it is listed
+        await evaluate(`(() => { document.getElementById("lib-select").value = "denim"; document.getElementById("lib-add").click(); })()`);
+        await until("the denim fabric", () => evaluate(`document.querySelectorAll("#browser-fabrics li[data-kind=fabric]").length === 2`), 30000);
+
+        // save: the download lands in a folder; New empties the page; Open brings the label back
+        const downloads = mkdtempSync(join(tmpdir(), "atelier-dl-"));
+        await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads, eventsEnabled: false });
+        const waitFile = (name) => until(`${name} downloaded`, () => { const f = join(downloads, name); return existsSync(f) && readFileSync(f, "utf8"); }, 30000);
+        const pickInto = async (button, file, accept) => {
+            await evaluate(`document.getElementById("${button}").click()`);
+            const got = await evaluate(`document.getElementById("file-in").accept`);
+            if (!got.includes(accept)) throw new Error(`${button}: the file input accepts ${got}`);
+            const { result } = await send("Runtime.evaluate", { expression: `document.getElementById("file-in")` });
+            await send("DOM.setFileInputFiles", { files: [file], objectId: result.objectId });
+        };
+        const patternCount = () => evaluate(`document.querySelectorAll("#browser-patterns li[data-kind=pattern]").length`);
+        try {
+            await key("s", "KeyS", 83, 2);
+            const json = await waitFile("garment.json");
+            if (!json.includes("Bodice")) throw new Error("the saved garment.json has no Bodice");
+            await evaluate(`document.getElementById("menu-export-dxf").click()`);
+            const dxf = await waitFile("garment.dxf");
+            await evaluate(`document.getElementById("menu-new").click()`);
+            await until("an empty document", async () => (await patternCount()) === 0, 30000);
+            await pickInto("menu-open", join(downloads, "garment.json"), ".json");
+            await until("the opened garment", () => evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]')?.textContent === "Bodice"`), 30000);
+            if (!(await evaluate(`document.querySelectorAll("#browser-fabrics li[data-kind=fabric]").length === 2`))) throw new Error("the opened garment lost a fabric");
+            await evaluate(`document.getElementById("menu-new").click()`);
+            await until("an empty document again", async () => (await patternCount()) === 0, 30000);
+            await pickInto("menu-import-dxf", join(downloads, "garment.dxf"), ".dxf");
+            await until("the imported piece", async () => (await patternCount()) === 1, 30000);
+            if (!dxf.length) throw new Error("the DXF is empty");
+        } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
+        await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
+        const se2 = await statusError();
+        if (se2) throw new Error(`the status line says: ${se2}`);
+        failIfErrors();
+
+        // an STL avatar (an ASCII tetrahedron): it replaces the dress form
+        const stlDir = mkdtempSync(join(tmpdir(), "atelier-stl-"));
+        try {
+            const stlFile = join(stlDir, "tetra.stl");
+            const V = [[0, 0, 0], [400, 0, 0], [0, 1700, 0], [0, 0, 300]];
+            const T = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+            writeFileSync(stlFile, `solid t
+${T.map((t) => `facet normal 0 0 0
+outer loop
+${t.map((i) => `vertex ${V[i].join(" ")}
+`).join("")}endloop
+endfacet
+`).join("")}endsolid t
+`);
+            await pickInto("menu-avatar", stlFile, ".stl");
+            await until("the STL avatar", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "tetra"`), 30000);
+            await sleep(500);
+        } finally { try { rmSync(stlDir, { recursive: true, force: true }); } catch { /* left behind */ } }
+        const se3 = await statusError();
+        if (se3) throw new Error(`the status line says: ${se3}`);
         failIfErrors();
 
         const shotPath = process.env.ATELIER_SHOT;
@@ -211,7 +288,7 @@ async function check(cdp, base) {
         await sleep(300);
         failIfErrors();
         const backend = await evaluate(`document.getElementById("lic").textContent`);
-        console.log(`ok - atelier page: ${backend}; rectangle drawn, listed, selected, arranged${shotPath ? `; screenshot ${shotPath}` : ""}`);
+        console.log(`ok - atelier page: ${backend}; rectangle drawn, listed, selected, arranged, edited, saved, reopened, DXF round trip, STL avatar${shotPath ? `; screenshot ${shotPath}` : ""}`);
     } catch (e) {
         if (process.env.ATELIER_SHOT) {
             const shot = await send("Page.captureScreenshot", { format: "png" }).catch(() => null);

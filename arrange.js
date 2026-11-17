@@ -91,3 +91,15 @@ export function fabricColours(nodes) {
     return m;
 }
 export const ACCENT = "#ffb347";
+
+// The `set` fields that put a pattern in `slot` (frame and meta.atelier.slot), or back on the
+// floor for a null/"none" slot (frame "xy", the slot dropped). Shared by Arrange and the property editor.
+export function slotFields(node, slot, avatarBounds, patternBounds) {
+    const atelier = { ...(node.meta?.atelier ?? {}) };
+    if (!slot || slot === "none") {
+        delete atelier.slot;
+        return { frame: "xy", meta: { ...(node.meta ?? {}), atelier } };
+    }
+    atelier.slot = slot;
+    return { frame: slotFrame(slot, avatarBounds, patternBounds), meta: { ...(node.meta ?? {}), atelier } };
+}

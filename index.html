@@ -18,7 +18,7 @@
         <button id="menu-save" title="Save the garment (.json), Ctrl+S">Save</button>
         <button id="menu-import-dxf" title="Add the pieces of an AAMA/ASTM DXF">Import DXF</button>
         <button id="menu-export-dxf" title="Write the pieces as AAMA DXF">Export DXF</button>
-        <button id="menu-avatar" title="Load a dress form (STEP)">Avatar</button>
+        <button id="menu-avatar" title="Load a dress form (STL or STEP)">Avatar</button>
     </nav>
     <input type="file" id="file-in" hidden>
 </header>
@@ -56,6 +56,7 @@
     <aside id="dock">
         <div id="browser">
             <h2>Fabrics</h2><ul id="browser-fabrics"></ul>
+            <div class="lib"><select id="lib-select" title="A fabric from the library"></select><button id="lib-add" title="Add it to the document">Add</button></div>
             <h2>Patterns</h2><ul id="browser-patterns"></ul>
             <h2>Seams</h2><ul id="browser-seams"></ul>
             <h2>Avatar</h2><ul id="browser-avatar"></ul>

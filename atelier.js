@@ -9,7 +9,8 @@ import { Camera, hitTest, draw } from "./view2d.js";
 import { makeTool } from "./tools.js";
 import { reanchor, seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
-import { SLOTS, slotFrame, fabricColours } from "./arrange.js";
+import { SLOTS, slotFields, fabricColours } from "./arrange.js";
+import { fieldsFor, opsFor, validate } from "./props.js";
 
 const $ = (id) => document.getElementById(id);
 const HIT_PX = 6;            // screen pixels: how near a point/edge a click picks it
@@ -119,40 +120,83 @@ $("browser").addEventListener("click", (e) => {
     if (li) setSelection({ kind: li.dataset.kind, id: li.dataset.id });
 });
 
-// ---- the property panel: a read-only summary until the editor (Task 10) -------------------
-const fmt = (v) => (typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : Array.isArray(v) ? v.map(fmt).join(", ") : String(v));
+// ---- the property panel: fields from props.js, each edit one ops batch ----------------------
+// Parsed from the text a field holds; NaN / blank is caught by validate().
+const parseField = (f, raw) => {
+    if (f.type === "number") return raw.trim() === "" ? NaN : Number(raw);
+    if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
+    return raw;
+};
+const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? String(Number(v.toPrecision(7))) : String(v));
+const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
+function commitField(f, raw) {
+    if (!selection) return;
+    const value = parseField(f, raw);
+    const err = validate(selection, nodes, f.key, value);
+    if (err) { status(err, true); renderProps(); return; }
+    try {
+        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, drawings });
+        if (ops.length) change("ops", { ops, message: `set ${f.key}` });
+        status(`${f.label}: set`);
+    } catch (e) { status(e.message ?? String(e), true); renderProps(); }
+}
+function fieldRow(f) {
+    const dt = document.createElement("dt");
+    dt.textContent = f.unit ? `${f.label} (${f.unit})` : f.label;
+    const dd = document.createElement("dd");
+    let input;
+    if (f.type === "readonly") dd.textContent = String(f.value);
+    else if (f.type === "action") {
+        input = document.createElement("button");
+        input.textContent = f.label;
+        input.addEventListener("click", () => (f.key === "load" ? menu.avatar() : commitField(f, "")));
+        dt.textContent = "";
+    } else if (f.type === "select") {
+        input = document.createElement("select");
+        const opts = f.options.slice();
+        if (!opts.some((o) => o.value === f.value)) opts.unshift({ value: f.value, label: f.value === "" ? "choose…" : `(${f.value})` });
+        for (const o of opts) { const e = document.createElement("option"); e.value = o.value; e.textContent = o.label; input.append(e); }
+        input.value = f.value;
+        input.addEventListener("change", () => commitField(f, input.value));
+    } else {
+        input = document.createElement("input");
+        input.type = "text";
+        input.value = f.type === "numbers" ? f.value.map(showNumber).join(", ") : f.type === "number" ? showNumber(f.value) : String(f.value);
+        input.addEventListener("change", () => commitField(f, input.value));
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+    }
+    if (input) { input.dataset.key = f.key; dd.append(input); }
+    return [dt, dd];
+}
 function renderProps() {
     const el = $("props");
-    const rows = [];
-    let title = "";
-    if (!selection) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
-    if (selection.kind === "avatar") {
-        title = "Avatar";
-        if (avatar) { rows.push(["name", avatar.name]); rows.push(["size", [0, 1, 2].map((i) => (avatar.bounds[i + 3] - avatar.bounds[i]).toFixed(0)).join(" × ") + " mm"]); }
-    } else {
-        const n = nodes.find((x) => x.id === selection.id);
-        if (!n) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
-        if (selection.kind === "pattern") {
-            title = `Pattern ${n.label ?? n.id}`;
-            const d = drawings.get(n.id);
-            rows.push(["fabric", model.byId(nodes).get(n.fabric)?.label ?? n.fabric ?? "—"], ["layer", n.layer ?? 0], ["allowance", `${fmt(n.allowance ?? [0])} mm`]);
-            if (d) rows.push(["sides", Math.max(d.sides.length - 1, 0)], ["size", `${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`]);
-            rows.push(["slot", n.meta?.atelier?.slot ? SLOTS[n.meta.atelier.slot]?.label ?? n.meta.atelier.slot : "floor"]);
-        } else if (selection.kind === "seam") {
-            const byId = model.byId(nodes);
-            title = `Seam ${n.id}`;
-            rows.push(["a", `${byId.get(n.a)?.label ?? n.a}  ${fmt(n.a_from)} → ${fmt(n.a_to)} mm`], ["b", `${byId.get(n.b)?.label ?? n.b}  ${fmt(n.b_from)} → ${fmt(n.b_to)} mm`], ["reversed", n.reversed ? "yes" : "no"]);
-        } else if (selection.kind === "fabric") {
-            title = `Fabric ${n.label ?? n.id}`;
-            if (n.density != null) rows.push(["weight", `${(n.density * 1e6).toFixed(0)} g/m²`]);
-            if (n.thickness != null) rows.push(["thickness", `${fmt(n.thickness)} mm`]);
-            if (n.friction != null) rows.push(["friction", fmt(n.friction)]);
-        }
-    }
-    const h = document.createElement("h3"); h.textContent = title;
+    const n = selection && selection.kind !== "avatar" ? nodes.find((x) => x.id === selection.id) : null;
+    const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
+    if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
+    const h = document.createElement("h3");
+    h.textContent = `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
     const dl = document.createElement("dl");
-    for (const [k, v] of rows) { const dt = document.createElement("dt"); dt.textContent = k; const dd = document.createElement("dd"); dd.textContent = String(v); dl.append(dt, dd); }
-    el.replaceChildren(h, dl);
+    for (const f of fields) dl.append(...fieldRow(f));
+    const kids = [h, dl];
+    if (selection.kind === "pattern") {
+        const d = drawings.get(selection.id);
+        if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
+    }
+    el.replaceChildren(...kids);
+}
+
+// ---- the fabric library: a preset added to the document ----------------------------------
+{
+    const sel = $("lib-select");
+    for (const p of PRESETS) { const o = document.createElement("option"); o.value = p.slug; o.textContent = p.label; sel.append(o); }
+    $("lib-add").addEventListener("click", () => {
+        const p = PRESETS.find((x) => x.slug === sel.value);
+        const r = model.addFabric(nodes, p.slug, p.label, presetParams(p.slug));
+        if (!r.ops.length || fabricNodes().some((f) => f.label === p.label)) { status(`"${p.label}" is already in the document`, true); return; }
+        pickedFabric = r.id;
+        change("ops", { ops: r.ops, message: "add fabric" });
+        setSelection({ kind: "fabric", id: r.id });
+    });
 }
 
 // ---- tools --------------------------------------------------------------------------------
@@ -243,8 +287,7 @@ function arrange() {
         const n = byId.get(id), d = drawings.get(id);
         if (n.meta?.atelier?.slot || !d || !free.length) continue;
         const slot = free.shift();
-        const meta = { ...(n.meta ?? {}), atelier: { ...(n.meta?.atelier ?? {}), slot } };
-        ops.push(...model.setPattern(nodes, id, { frame: slotFrame(slot, avatar.bounds, d.bounds), meta }));
+        ops.push(...model.setPattern(nodes, id, slotFields(n, slot, avatar.bounds, d.bounds)));
     }
     if (ops.length) change("ops", { ops, message: "arrange" });
     else status(patterns.length ? "every piece is arranged" : "no pieces to arrange");
@@ -396,8 +439,9 @@ new ResizeObserver(() => {
 
 // ---- keys ---------------------------------------------------------------------------------
 document.addEventListener("keydown", (e) => {
-    if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
     const sc = toolOfKey(e);
+    if (sc && (sc.command === "save" || sc.command === "open")) { e.preventDefault(); command(sc.command); return; }
+    if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
     if (sc?.command && (e.ctrlKey || e.metaKey || e.key === "F2" || e.key === "F3")) { e.preventDefault(); command(sc.command); return; }
     if (e.target === c3) return;     // the 3D window's keys are the View's
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -418,22 +462,40 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("keyup", (e) => { if (e.key === " ") space = false; });
 window.addEventListener("blur", () => { space = false; });
 
-// ---- the file menu (Task 10 finishes Save / Export downloads and the avatar formats) -----
+// ---- the file menu ------------------------------------------------------------------------
+// One hidden file input: the pending action says what the picked file is for.
 let fileWants = null;
 const fileIn = $("file-in");
 function pickFile(accept, then) { fileWants = then; fileIn.accept = accept; fileIn.value = ""; fileIn.click(); }
 fileIn.addEventListener("change", async () => {
     const f = fileIn.files?.[0], then = fileWants;
     fileWants = null;
-    if (f && then) then(f);
+    if (!f || !then) return;
+    try { await then(f); } catch (e) { status(`${f.name}: ${e?.message ?? e}`, true); }
 });
+// A Blob, an object URL and a temporary link: the browser's download.
+function download(name, text, type) {
+    const url = URL.createObjectURL(new Blob([text], { type }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
 const menu = {
     new() { cancelPreview(); fitNext = true; setSelection(null); change("new", { ops: newDocumentOps() }); },
     open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("open", { text }); }); },
-    save() { post({ kind: "save" }); },
-    importDxf() { pickFile(".dxf", async (f) => { fitNext = true; change("importDxf", { text: await f.text() }); }); },
+    save() { cancelPreview(); post({ kind: "save" }); },
+    importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text }); }); },
     exportDxf() { post({ kind: "exportDxf" }); },
-    avatar() { pickFile(".stp,.step", async (f) => { const bytes = await f.arrayBuffer(); post({ kind: "avatar", bytes, name: f.name.replace(/\.[^.]+$/, "") }, [bytes]); }); },
+    avatar() {
+        pickFile(".stl,.stp,.step", async (f) => {
+            const bytes = await f.arrayBuffer();
+            const format = /\.stl$/i.test(f.name) ? "stl" : "step";
+            post({ kind: "avatar", bytes, format, name: f.name.replace(/\.[^.]+$/, "") }, [bytes]);
+        });
+    },
 };
 $("menu-new").addEventListener("click", () => menu.new());
 $("menu-open").addEventListener("click", () => menu.open());
@@ -470,8 +532,8 @@ worker.onmessage = ({ data: m }) => {
             break;
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
-        case "saved": status(`saved: ${(m.text.length / 1024).toFixed(1)} KB`); break;
-        case "dxf": status(`DXF written: ${(m.text.length / 1024).toFixed(1)} KB`); break;
+        case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
+        case "dxf": download("garment.dxf", m.text, "application/dxf"); status(`saved garment.dxf: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "error":
             if (m.reqId != null && waiting.has(m.reqId)) { waiting.get(m.reqId).reject(new Error(m.text)); waiting.delete(m.reqId); }
             else status(m.text, true);
