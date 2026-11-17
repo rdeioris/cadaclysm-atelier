@@ -222,6 +222,24 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     for (const p of [[0, 0], [10, 0], [10, 0.5]]) { i.down(p, null, {}); i.up(p, null, {}); }
     assert.equal(i.key("Enter").ops[0].fields.internal[0].path.segments.length, 1);
 }
+// fix round 2: a duplicate move after the reply, then a new move and up
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const request = async (k, p) => m.rectPath(p.matrix[2], p.matrix[5], 100, 50);
+    const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t.down([0, 0], { kind: "pattern", id: "p1" }, {});
+    await t.move([10, 0], null, {});
+    assert.deepEqual(m.pathPoints((await t.move([10, 0], null, {})).preview[0].fields.path)[0], [10, 0]);
+    const mv = await t.move([20, 0], null, {});
+    assert.deepEqual(m.pathPoints(mv.preview[0].fields.path)[0], [20, 0]);
+    assert.equal((await t.up([20, 0], null, {})).endPreview, true);
+    // a rejected mirror request adds nothing and resets the gesture
+    const mn = [...nodes.slice(0, -1), { id: "p1", kind: "garment.pattern", label: "A", outline: "p1_outline", fabric: "f_x" }];
+    const mi = makeTool("mirror", ctx({ nodes: mn, selection: { kind: "pattern", id: "p1" }, request: async () => { throw new Error("boom"); } }));
+    mi.down([0, 0], null, {}); mi.up([0, 0], null, {});
+    mi.down([0, 50], null, {});
+    assert.deepEqual(await mi.up([0, 50], null, {}), {});
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

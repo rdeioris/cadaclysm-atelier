@@ -133,10 +133,11 @@ const TOOLS = {
                         const r = await ctx.request("transform", { id: g.id, matrix: [1, 0, d[0], 0, 1, d[1]] });
                         if (g.live) g.result = r;
                     }
-                } catch { /* keep the last good path */ } finally { if (g.busy === run) g.busy = null; }
+                } catch { /* keep the last good path */ }
                 return g.live ? preview(g) : {};
             })();
             g.busy = run;
+            run.then(() => { if (g.busy === run) g.busy = null; });
             return run;
         };
         return {
@@ -270,7 +271,7 @@ const TOOLS = {
                 return Promise.resolve(ctx.request("mirror", { id, axis })).then((path) => ({
                     ...newPattern(ctx, freeLabel(src.label ?? "Piece"), path, { layer: src.layer ?? 0, allowance: src.allowance, grain }),
                     overlay: { lines: [] },
-                }));
+                }), () => ({})); // a failed kernel call: nothing added, the gesture is already reset
             },
             key(k) { if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; } return {}; },
         };
