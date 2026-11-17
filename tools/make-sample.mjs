@@ -7,6 +7,9 @@
 // Sizes: a women's M from the dress form's chart -- chest 920 mm (the garment 1000 mm round:
 // 80 mm ease), body length 650 mm (high shoulder point to hem), sleeve length 200 mm (cap top
 // to hem). Each sleeve cap half is solved to the length of the armhole it joins.
+//
+// The sleeve cap has zero ease: each cap half equals its armhole's length exactly (the seam
+// check allows 2 %), where a set-in sleeve usually carries a little ease to shape the shoulder.
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

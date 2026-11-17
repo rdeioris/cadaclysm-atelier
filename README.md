@@ -21,6 +21,7 @@ kernel and checks that every seam's two sides match within 2 %.
 - DXF import brings in outlines, allowances, grain lines and notches. Internal lines are
   dropped (the kernel has no getter for them yet), and so are the 3D slots: imported pieces lie
   on the floor until arranged.
+- The sample's sleeve caps have zero ease: each cap half is exactly as long as its armhole.
 - Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both

@@ -13,6 +13,21 @@ for (const k of Object.keys(SLOTS)) {
     const dot = s.x[0] * s.y[0] + s.x[1] * s.y[1] + s.x[2] * s.y[2];
     assert.ok(Math.abs(dot) < 1e-12, `${k}: axes orthogonal`);
 }
+// the side and arm slots stand just outside the avatar's x bounds -- for the test box and for
+// f-M, whose bounds take in its arms -- never metres away; the arms beyond the sides
+for (const box of [avatar, [-666.85, 0, -156, 666.85, 1531, 144]]) {
+    const w = box[3] - box[0];
+    for (const k of ["left_side", "left_arm"]) {
+        const x = slotFrame(k, box, piece).origin[0];
+        assert.ok(x > box[3] && x <= box[3] + 0.25 * w, `${k} just right of the bounds: ${x}`);
+    }
+    for (const k of ["right_side", "right_arm"]) {
+        const x = slotFrame(k, box, piece).origin[0];
+        assert.ok(x < box[0] && x >= box[0] - 0.25 * w, `${k} just left of the bounds: ${x}`);
+    }
+    assert.ok(slotFrame("left_arm", box, piece).origin[0] > slotFrame("left_side", box, piece).origin[0], "left arm beyond the left side");
+    assert.ok(slotFrame("right_arm", box, piece).origin[0] < slotFrame("right_side", box, piece).origin[0], "right arm beyond the right side");
+}
 // centred: the piece's centre lands on the slot point
 const c = slotFrame("front", avatar, [100, 200, 300, 400]);
 const centre = [200, 300];

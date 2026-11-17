@@ -87,11 +87,40 @@ async function launch(chrome, profile) {
     const flags = [`--user-data-dir=${profile}`, "--remote-debugging-port=0", `--window-size=${W},${H}`, "--no-first-run",
         "--no-default-browser-check", "--disable-extensions", "--enable-unsafe-webgpu", "--hide-scrollbars", "about:blank"];
     if (!flag("--headed")) flags.unshift("--headless=new");
-    const child = spawn(chrome, flags, { stdio: "ignore" });
+    const child = spawn(chrome, flags, { stdio: ["ignore", "ignore", "pipe"] });
+    // Chrome's stderr, kept to print if the launch fails
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (d) => { stderr = (stderr + d).slice(-8000); });
+    let exited = null;
+    child.once("exit", (code) => { exited = code ?? "signal"; });
+    child.once("error", (e) => { exited = e.message; });
     const portFile = join(profile, "DevToolsActivePort");
-    const text = await until("Chrome's DevTools port", () => existsSync(portFile) && readFileSync(portFile, "utf8").includes("\n") && readFileSync(portFile, "utf8"), 30000);
-    const [port, path] = text.trim().split("\n");
-    return { child, url: `ws://127.0.0.1:${port}${path}` };
+    try {
+        const text = await until("Chrome's DevTools port", () => {
+            if (exited !== null) throw new Error(`Chrome exited (${exited}) before its DevTools port`);
+            return existsSync(portFile) && readFileSync(portFile, "utf8").includes("\n") && readFileSync(portFile, "utf8");
+        }, 30000);
+        const [port, path] = text.trim().split("\n");
+        return { child, url: `ws://127.0.0.1:${port}${path}` };
+    } catch (e) {
+        child.kill();
+        throw new Error(`${e.message}${stderr.trim() ? `\nChrome's stderr:\n${stderr.trim()}` : ""}`);
+    }
+}
+
+// The static server: `up` resolves once it prints its address; rejects if it exits first or is silent for 30 s.
+function startServer(port) {
+    const server = spawn(process.execPath, [join(root, "scripts", "serve.mjs"), String(port)], { stdio: ["ignore", "pipe", "inherit"] });
+    let listening = false, exited = null;
+    server.stdout.once("data", () => { listening = true; });
+    server.once("exit", (code) => { exited = code ?? "signal"; });
+    server.once("error", (e) => { exited = e.message; });
+    const up = until("the server", () => {
+        if (exited !== null) throw new Error(`the server exited (${exited}) before listening`);
+        return listening;
+    }, 30000);
+    return { server, up };
 }
 
 async function check(cdp, base) {
@@ -371,26 +400,33 @@ async function check(cdp, base) {
 
 async function main() {
     if (!existsSync(join(root, "pkg", "cadaclysm_bg.wasm"))) throw new Error("no pkg/: run `npm run setup` first");
-    const port = await freePort();
-    const server = spawn(process.execPath, [join(root, "scripts", "serve.mjs"), String(port)], { stdio: ["ignore", "pipe", "inherit"] });
-    await new Promise((ok) => server.stdout.once("data", ok));
-    const profile = mkdtempSync(join(tmpdir(), "atelier-chrome-"));
-    const { child, url } = await launch(findChrome(), profile);
-    const cdp = new Cdp(url);
+    let server = null, child = null, cdp = null, profile = null;
     let failed = false;
     try {
+        const port = await freePort();
+        const s = startServer(port);
+        server = s.server;
+        await s.up;
+        profile = mkdtempSync(join(tmpdir(), "atelier-chrome-"));
+        const chrome = await launch(findChrome(), profile);
+        child = chrome.child;
+        cdp = new Cdp(chrome.url);
         await cdp.open();
         await check(cdp, `http://127.0.0.1:${port}`);
     } catch (e) {
         failed = true;
         console.error(`not ok - atelier page: ${e.message}`);
     } finally {
-        cdp.close();
-        const exited = new Promise((ok) => child.once("exit", ok));
-        child.kill();
-        server.kill();
-        await Promise.race([exited, sleep(5000)]);
-        try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); } catch { /* left behind */ }
+        cdp?.close();
+        // stop Chrome and the server, whichever were started
+        const waits = [];
+        for (const c of [child, server]) {
+            if (!c || c.exitCode !== null || c.signalCode !== null) continue;
+            waits.push(new Promise((ok) => c.once("exit", ok)));
+            c.kill();
+        }
+        await Promise.race([Promise.all(waits), sleep(5000)]);
+        if (profile) try { rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 }); } catch { /* left behind */ }
     }
     if (failed) process.exit(1);
 }
