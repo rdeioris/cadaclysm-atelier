@@ -55,8 +55,10 @@ let dragging = null;                     // { vertex, start, x, y, basis } while
 
 async function createViewer(canvas) {
     await ready;
-    // the dress forms are in CLO's frame: millimetres, y up, facing +z
-    const v = await View.create(canvas, { upAxis: "y", background: "#1e2024", grid: { step: 100 } });
+    // the dress forms are in CLO's frame: millimetres, y up, facing +z. A fixed extent makes
+    // the grid the world's floor (4 m square about the origin, at y = 0): without one the View
+    // sizes and places it from the scene's bounds, and the live cloth moves those every frame.
+    const v = await View.create(canvas, { upAxis: "y", background: "#1e2024", grid: { step: 100, extent: 2000 } });
     receiveControls(v);
     v.start();
     return v;
