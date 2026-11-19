@@ -18,7 +18,7 @@ import * as pkg from "../pkg/index.js";
 import { Atelier } from "../kernel.js";
 import * as m from "../model.js";
 import { PRESETS, presetParams } from "../fabrics.js";
-import { slotFields } from "../arrange.js";
+import { slotFields, sceneBox, limbFields } from "../arrange.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const CHEST = 920, EASE = 80, LENGTH = 650, SLEEVE = 200;
@@ -113,16 +113,23 @@ for (const p of pieces) {
 // The dress form's bounds, read as the worker reads them (the scene's vertices plus its origin).
 // (loadKernel has loaded the package: its open() reads STEP here as in the worker.)
 const scene = pkg.open(new Uint8Array(readFileSync(join(root, "assets", "f-M.stp"))), "step", undefined, "native");
-const avatarBounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-{
-    const v = scene.vertices(), o = scene.origin();
-    for (let i = 0; i + 2 < v.length; i += 3)
-        for (let ax = 0; ax < 3; ax++) { const x = v[i + ax] + o[ax]; avatarBounds[ax] = Math.min(avatarBounds[ax], x); avatarBounds[ax + 3] = Math.max(avatarBounds[ax + 3], x); }
-    scene.free?.();
-}
+const avatarBounds = sceneBox(scene.vertices(), scene.origin());
+scene.free?.();
+// f-M's arms (tools/dressform.py, arm()): the shoulder ball's centre at (+-182, 1352, -8), the
+// arm running down and out at 42 degrees from vertical, a little forward. Each sleeve wraps
+// round its arm, 65 mm out (the shoulder ball is 50), its hem 240 mm down it: its cap reaches
+// the shoulder, so the cloth sews the shirt shut before gravity drapes it (live drape, M4b).
+const ARM = 42 * Math.PI / 180, ARM_RADIUS = 65, HEM_DOWN = 240;
+const armOf = (s) => ({ shoulder: [s * 182, 1352, -8], dir: [s * Math.sin(ARM), -Math.cos(ARM), 0.08] });
 {
     const nodes = a.nodes(), byId = m.byId(nodes), ops = [];
-    for (const p of pieces) ops.push(...m.setPattern(nodes, ids[p.slot], slotFields(byId.get(ids[p.slot]), p.slot, avatarBounds, a.drawing(ids[p.slot]).bounds)));
+    for (const p of pieces) {
+        const id = ids[p.slot], bounds = a.drawing(id).bounds;
+        const fields = slotFields(byId.get(id), p.slot, avatarBounds, bounds);
+        const side = { left_arm: 1, right_arm: -1 }[p.slot];
+        if (side) { const { shoulder, dir } = armOf(side); Object.assign(fields, limbFields(shoulder, dir, ARM_RADIUS, HEM_DOWN, bounds)); }
+        ops.push(...m.setPattern(nodes, id, fields));
+    }
     a.apply(ops, "arrange");
 }
 

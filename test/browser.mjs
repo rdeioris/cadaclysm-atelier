@@ -5,11 +5,14 @@
 // library fabric, draws a second rectangle and sews the two with "Sew sides", picks the seam in
 // 2D, deletes it and a piece (each undone), moves a piece with the Move tool, types an
 // allowance and saves with Ctrl+S (the download is read back), New and Open, refuses an STL
-// avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Each
-// step prints ok. Any console error or uncaught exception, in the page or its worker, fails.
+// avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Then
+// the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
+// of a piece while it runs (re-meshed), Pause, Reset. Each step prints ok. Any console error or
+// uncaught exception, in the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
-//     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the sample
+//     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the drape
+//     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     node test/browser.mjs --chrome <path>              # (or the CHROME variable)
 //     node test/browser.mjs --headed                     # watch it
 //
@@ -210,10 +213,10 @@ async function check(cdp, base) {
             if (robots !== "noindex") throw new Error(`robots meta is ${robots}`);
             const fps = await evaluate(`document.getElementById("fps").textContent`);
             if (fps !== "—") throw new Error(`#fps shows ${fps}`);
-            const sim = await evaluate(`(() => { const b = document.querySelector('#tools3d [data-command=simulate]'); return b && b.disabled && b.title; })()`);
-            if (sim !== "arrives with the solver") throw new Error(`the Simulate button: ${sim}`);
+            const sim = await evaluate(`(() => { const b = document.querySelector('#tools3d [data-command=simulate]'); return b && !b.disabled && document.getElementById("sim-reset").disabled; })()`);
+            if (!sim) throw new Error("Simulate should be on and Reset off");
             failIfErrors();
-            ok("ready: one fabric, the f-M avatar, Simulate waiting for the solver");
+            ok("ready: one fabric, the f-M avatar, Simulate on");
 
             // 2. a rectangle: the tool's button, then a drag on the 2D window
             await evaluate(`document.querySelector('#tools2d [data-tool=rectangle]').click()`);
@@ -414,22 +417,121 @@ async function check(cdp, base) {
             failIfErrors();
             ok("DXF export: 4 BLOCKs; imported back: 4 pieces");
 
-            // the sample again for the picture
+            // 7. the live drape on the sample
             await sample();
-            await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
             await noStatusError();
-        } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
+            const simState = () => evaluate(`document.body.dataset.sim ?? "off"`);
+            const health = () => evaluate(`document.getElementById("health").textContent`);
+            const frameNo = async () => Number(/frame (\d+)/.exec(await health())?.[1] ?? -1);
+            const statusText = () => evaluate(`document.getElementById("status-text").textContent`);
+            await evaluate(`document.getElementById("sim-toggle").click()`);
+            await until("the cloth running", async () => (await simState()) === "running", 60000);
+            await until("three frames", async () => (await frameNo()) >= 3, 120000);
+            const fpsText = await evaluate(`document.getElementById("fps").textContent`);
+            if (!/^\d+(\.\d)? fps · \d+ ms\/step$/.test(fpsText)) throw new Error(`#fps shows ${fpsText}`);
+            if (!/sewing|draping/.test(await health())) throw new Error(`the health line: ${await health()}`);
+            if (await evaluate(`document.getElementById("health").classList.contains("warn")`)) throw new Error(`health warns: ${await health()}`);
+            failIfErrors();
+            ok(`simulating: ${await health()}; ${fpsText}`);
 
-        // 7. a screenshot
-        const shotPath = process.env.ATELIER_SHOT;
-        if (shotPath) {
-            await frames();
+            // pin: the Pin tool, a click on the cloth at the 3D window's centre
+            const [cx, cy, cw, ch] = await evaluate(`(() => { const r = document.getElementById("view3d").getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+            const at3 = (fx, fy) => [cx + cw * fx, cy + ch * fy];
+            const tryOnCloth = async (what, act, done) => {
+                for (const [fx, fy] of [[0.5, 0.45], [0.5, 0.55], [0.48, 0.4], [0.52, 0.6], [0.5, 0.35]]) {
+                    await evaluate(`document.getElementById("status-text").textContent = ""`);
+                    await act(at3(fx, fy));
+                    const t = await until(`${what}: an answer`, async () => (await statusText()) || null, 30000);
+                    if (done(t)) return t;
+                }
+                throw new Error(`${what}: never on the cloth (${await statusText()})`);
+            };
+            await evaluate(`document.querySelector('[data-tool3d=pin]').click()`);
+            await tryOnCloth("pin", click, (t) => t === "pinned");
+            await until("the pin counted", async () => (await evaluate(`document.body.dataset.sim`)) === "running", 10000);
+            ok("pinned a point of the cloth");
+
+            // drag: the Drag tool, a press on the cloth moved 80 px right; the frames go on
+            await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
+            if (await evaluate(`document.querySelector('[data-tool3d=pin]').classList.contains("on")`)) throw new Error("Pin and Drag both on");
+            const f0 = await frameNo();
+            await tryOnCloth("drag", (p) => drag(p, [p[0] + 80, p[1]], 6), (t) => t === "dragging the cloth");
+            await until("frames after the drag", async () => (await frameNo()) >= f0 + 2, 60000);
+            await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
+            failIfErrors();
+            ok("dragged the cloth");
+
+            // a 2D move of the front while it runs: no change in 3D (a 2D layout move is not a
+            // shape change); a grain edit on it: re-meshed, still running, not stale
+            await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
+            await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
+            const [x2, y2, w2, h2] = await evaluate(`(() => { const r = document.getElementById("view2d").getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+            const gen = () => evaluate(`Number(document.body.dataset.meshGen)`);
+            const g0 = await gen();
+            const size = () => evaluate(`/size [^<]*/.exec(document.getElementById("props").textContent)?.[0]`);
+            const s0 = await size();
+            await drag([x2 + w2 * 0.3, y2 + h2 * 0.5], [x2 + w2 * 0.3 + 30, y2 + h2 * 0.5], 6);
+            const f1 = await frameNo();
+            await until("frames after the move", async () => (await frameNo()) >= f1 + 2, 60000);
+            if ((await gen()) !== g0) throw new Error("a 2D move re-meshed the cloth");
+            if ((await size()) !== s0) throw new Error(`the move changed the piece: ${s0} -> ${await size()}`);
+            await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+            await setField("grain", "0.2, 1");
+            await until("the cloth re-meshed", async () => (await gen()) > g0, 60000);
+            const f2 = await frameNo();
+            await until("frames after the edit", async () => (await frameNo()) >= f2 + 2, 60000);
+            if (/Reset/.test(await health())) throw new Error(`the cloth went stale: ${await health()}`);
+            await noStatusError();
+            failIfErrors();
+            ok("2D move: the cloth kept; grain edit: re-meshed, running");
+
+            // a seam removed: the cloth is stale until Simulate rebuilds it
+            await evaluate(`document.querySelector('#browser-seams li[data-kind=seam]').click()`);
+            await key("Delete", "Delete", 46);
+            await until("stale", async () => /Simulate rebuilds/.test(await health()), 30000);
+            await evaluate(`document.getElementById("sim-toggle").click()`);   // pause
+            await until("paused", async () => (await simState()) === "paused", 30000);
+            const g1 = await gen();
+            await evaluate(`document.getElementById("sim-toggle").click()`);   // rebuild
+            await until("rebuilt", async () => (await gen()) > g1 && !/Reset/.test(await health()), 60000);
+            await until("running again", async () => (await simState()) === "running", 30000);
+            failIfErrors();
+            ok(`seam removed: stale, rebuilt (${await health()})`);
+
+            // Reset: the cloth is gone, the flat pieces back
+            await evaluate(`document.getElementById("sim-reset").click()`);
+            await until("reset", async () => (await simState()) === "off", 30000);
+            if (await health()) throw new Error(`the health line after Reset: ${await health()}`);
+            await noStatusError();
+            failIfErrors();
+            ok("reset: the flat pieces back");
+
+            // the sample afresh: run on (ATELIER_DRAPE_FRAMES) for the picture, then pause and reset
+            await sample();
+            await evaluate(`document.getElementById("sim-toggle").click()`);
+            await until("the cloth running", async () => (await simState()) === "running", 60000);
+            const target = Number(process.env.ATELIER_DRAPE_FRAMES ?? 4);
+            await until(`frame ${target}`, async () => (await frameNo()) >= target || (await simState()) !== "running", Math.max(60000, target * 2000));
+            if ((await simState()) !== "running") throw new Error(`the sample stopped: ${await statusText()}`);
+            if (process.env.ATELIER_SHOT) {
+                await frames();
+                const shot = await send("Page.captureScreenshot", { format: "png" });
+                writeFileSync(process.env.ATELIER_SHOT, Buffer.from(shot.data, "base64"));
+                ok(`screenshot ${process.env.ATELIER_SHOT}`);
+            }
+            ok(`the sample drapes: ${await health()}`);
+            await evaluate(`document.getElementById("sim-toggle").click()`);
+            await until("paused", async () => (await simState()) === "paused", 30000);
+            if ((await evaluate(`document.getElementById("fps").textContent`)) !== "paused") throw new Error("#fps does not say paused");
+            const fp = await frameNo();
             await sleep(1500);
-            const shot = await send("Page.captureScreenshot", { format: "png" });
-            writeFileSync(shotPath, Buffer.from(shot.data, "base64"));
-            ok(`screenshot ${shotPath}`);
-        }
-        // 8. no console error anywhere, page or worker
+            if ((await frameNo()) !== fp) throw new Error("frames went on after Pause");
+            ok(`paused at frame ${fp}`);
+            await evaluate(`document.getElementById("sim-reset").click()`);
+            await until("reset", async () => (await simState()) === "off", 30000);
+            failIfErrors();
+        } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
+        // 9. no console error anywhere, page or worker
         await sleep(300);
         failIfErrors();
         const backend = await evaluate(`document.getElementById("lic").textContent`);

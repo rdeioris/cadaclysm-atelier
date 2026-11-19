@@ -1,11 +1,18 @@
 // The Atelier worker: it owns the cadaclysm wasm module, one Atelier (the garment document)
 // and the View on the page's 3D canvas. The main thread sends edits; every change answers with
 // `doc` and redraws the 3D window. No geometry is checked here: the kernel does that.
+//
+// The live drape: the solver runs in the cloth worker (cloth-worker.js), reached over the
+// MessagePort the page hands this worker (`clothPort`). This worker builds it from the saved
+// document, sends it every later change (it re-meshes or goes stale), and draws its frames: one
+// mesh per pattern, moved in place by setMeshPositions as each frame arrives. The View keeps
+// drawing and orbiting at the display rate however slowly the cloth steps.
 import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
 import { Atelier } from "./kernel.js";
-import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT } from "./arrange.js";
+import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox } from "./arrange.js";
+import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 
 const ready = (async () => {
     const module = await load();
@@ -29,6 +36,22 @@ let selection = null;
 const items = new ItemMap();
 const slabs = new Map();                 // pattern id -> { item, colour }
 const seamLines = new Map();             // seam id -> { item, colour }
+let canvasRef = null;                    // the OffscreenCanvas: its height is the drag's pixel scale
+
+// ---- the live drape ---------------------------------------------------------------------------
+const PIN_COLOUR = "#ff4d6d";
+let clothPort = null;
+let avatarCollider = null;               // the avatar as the cloth's mesh, sent at every build
+let lastSaved = null;                    // the committed document's text, kept outside previews
+const sim = {
+    live: false, running: false, building: false, stale: null,
+    meshes: [],                          // { item, id (pattern), verts, buf, colour }
+    positions: null, pins: null, pinsItem: 0,
+    status: null, phase: "", health: null,
+    rate: new RateMeter(),
+    meshGen: 0,                          // bumped by every new mesh (a build, a re-mesh)
+};
+let dragging = null;                     // { vertex, start, x, y, basis } while a cloth drag is on
 
 async function createViewer(canvas) {
     await ready;
@@ -50,6 +73,7 @@ function refresh3d() {
     for (const id of drawn) viewer.remove(id);
     drawn = []; items.clear();
     if (avatar) items.set(avatar.id, { kind: "avatar", id: "avatar" });
+    for (const m of sim.meshes) items.set(m.item, { kind: "pattern", id: m.id });
     const nodes = atelier.nodes();
     const colours = fabricColours(nodes);
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -75,6 +99,7 @@ function refresh3d() {
     }
     const { shown, error } = showSeams(viewer, atelier.seams(), frames, selection);
     for (const s of shown) { drawn.push(s.item); items.set(s.item, { kind: "seam", id: s.id }); seamLines.set(s.id, s); }
+    if (sim.meshes.length) flatVisible(false);
     first ??= error;
     if (first) post({ kind: "error", text: String(first.message ?? first) });
 }
@@ -83,21 +108,151 @@ function refresh3d() {
 function paintSelection() {
     for (const [id, s] of slabs) viewer.setColour(s.item, selected("pattern", id) ? ACCENT : s.colour);
     for (const [id, s] of seamLines) viewer.setColour(s.item, selected("seam", id) ? ACCENT : s.colour);
+    for (const m of sim.meshes) viewer.setColour(m.item, selected("pattern", m.id) ? ACCENT : m.colour);
+}
+
+// The flat slabs and seam lines, shown while there is no cloth.
+function flatVisible(on) {
+    for (const s of slabs.values()) viewer.setItemVisible(s.item, on);
+    for (const s of seamLines.values()) viewer.setItemVisible(s.item, on);
+}
+
+// The text and preview ops the cloth worker builds or updates from: the committed document,
+// with the open preview's last good frame on top during a 2D drag.
+function garmentNow() {
+    if (!atelier.previewing || lastSaved === null) lastSaved = atelier.save();
+    return { text: lastSaved, ops: atelier.previewing ? atelier.open.ops ?? null : null };
+}
+
+function simPost() {
+    const r = sim.rate;
+    post({
+        kind: "sim", live: sim.live, running: sim.running, building: sim.building, stale: sim.stale,
+        health: sim.health, phase: sim.phase, fps: r.fps, ms: r.ms, pins: sim.pins ? sim.pins.length / 3 : 0, meshGen: sim.meshGen,
+    });
+}
+
+function removeCloth() {
+    for (const m of sim.meshes) { viewer.remove(m.item); items.items.delete(m.item); }
+    sim.meshes = [];
+    if (sim.pinsItem) { viewer.remove(sim.pinsItem); sim.pinsItem = 0; }
+    sim.positions = null; sim.pins = null; sim.health = null; sim.status = null;
+    dragging = null;
+    flatVisible(true);
+}
+
+function showPins() {
+    const pins = sim.pins ?? new Float32Array(0);
+    if (!sim.pinsItem) {
+        if (!pins.length) return;
+        sim.pinsItem = viewer.showPoints(pins, PIN_COLOUR, 9);
+        viewer.setOnTop?.(sim.pinsItem, true);
+    } else viewer.setPoints(sim.pinsItem, pins);
+}
+
+// A new mesh from the cloth worker (a build or a re-mesh): one showMesh per pattern.
+function onTopology(t) {
+    for (const m of sim.meshes) { viewer.remove(m.item); items.items.delete(m.item); }
+    sim.meshes = [];
+    const nodes = atelier.nodes();
+    const colours = fabricColours(nodes);
+    const fabricOf = new Map(nodes.filter((n) => n.kind === "garment.pattern").map((n) => [n.id, n.fabric]));
+    for (const [p, g] of splitByPattern(t.triangles, t.vertexPatterns)) {
+        const id = t.patterns[p];
+        const colour = colours.get(fabricOf.get(id)) ?? "#cccccc";
+        const buf = gather(t.positions, g.verts);
+        const item = viewer.showMesh({ positions: buf, indices: g.indices, colour: selected("pattern", id) ? ACCENT : colour });
+        sim.meshes.push({ item, id, verts: g.verts, buf, colour });
+        items.set(item, { kind: "pattern", id });
+    }
+    sim.positions = t.positions; sim.pins = t.pins; sim.status = t.status; sim.phase = t.phase;
+    sim.health = healthOf(t.status, t.phase);
+    sim.stale = t.stale ?? null;
+    sim.live = true; sim.building = false; sim.meshGen++;
+    dragging = null;
+    flatVisible(false);
+    showPins();
+    simPost();
+}
+
+function onFrame(f) {
+    sim.positions = f.positions; sim.pins = f.pins; sim.status = f.status; sim.phase = f.phase;
+    if (f.health) { sim.health = f.health; sim.rate.add(performance.now(), f.ms); }
+    for (const m of sim.meshes) viewer.setMeshPositions(m.item, gather(f.positions, m.verts, m.buf), null);
+    showPins();
+    simPost();
+}
+
+function onCloth({ data: m }) {
+    try {
+        switch (m.kind) {
+            case "hello": if (avatarCollider) clothPort.postMessage({ kind: "avatar", avatar: avatarCollider }); break;
+            case "topology": onTopology(m); break;
+            case "frame": onFrame(m); break;
+            case "pinned": post({ kind: "status", text: m.on ? "pinned" : "unpinned" }); break;
+            case "state":
+                sim.running = m.running; sim.stale = m.stale ?? sim.stale;
+                if (!m.running) sim.rate.clear();
+                if (!m.live) { sim.live = false; sim.building = false; sim.stale = null; removeCloth(); }
+                if (m.error) { sim.building = false; post({ kind: "error", text: `simulation: ${m.error}` }); }
+                if (m.reason) post({ kind: "status", text: m.reason });
+                simPost();
+                break;
+        }
+    } catch (e) { post({ kind: "error", text: `simulation: ${e.message ?? e}` }); }
+}
+
+function simCommand(action) {
+    if (!clothPort) throw new Error("the cloth worker is not connected");
+    if (action === "reset") { clothPort.postMessage({ kind: "reset" }); return; }
+    if (action !== "toggle") return;
+    // running: pause (stale or not); stopped: rebuild a missing or stale cloth, else run on
+    if (sim.live && sim.running) clothPort.postMessage({ kind: "pause" });
+    else if (!sim.live || sim.stale) {
+        if (sim.building) return;
+        sim.building = true; sim.rate.clear();
+        clothPort.postMessage({ kind: "build", ...garmentNow(), run: true });
+        simPost();
+    } else clothPort.postMessage({ kind: "run" });
+}
+
+// Pin and drag on the cloth: `phase` down / move / up, x y in device pixels. A press picks the
+// cloth and takes the nearest sim vertex of the piece hit.
+let pressId = 0;
+async function tool3d(data) {
+    if (data.phase === "down") {
+        const press = ++pressId;
+        dragging = null;
+        if (!sim.live) { post({ kind: "status", text: "Simulate first: pins and drags act on the cloth" }); return; }
+        const p = await viewer.pick(0, data.x, data.y);
+        const hit = p && sim.meshes.find((m) => m.item === p.item);
+        if (!hit || !p.point || !sim.positions) { post({ kind: "status", text: "not on the cloth" }); return; }
+        const vertex = nearestVertex(sim.positions, p.point, hit.verts);
+        if (data.tool === "pin") { clothPort.postMessage({ kind: "pin", vertex }); return; }
+        if (press !== pressId) return;             // a drag let go before the pick came back
+        const start = Array.from(sim.positions.subarray(3 * vertex, 3 * vertex + 3));
+        const basis = dragBasis(viewer.camera(0), start, canvasRef?.height ?? 800);
+        if (!basis) { post({ kind: "status", text: "dragging needs the orbit camera" }); return; }
+        dragging = { vertex, start, x: data.x, y: data.y, basis };
+        clothPort.postMessage({ kind: "drag", vertex, target: start });
+        post({ kind: "status", text: sim.running ? "dragging the cloth" : "paused: the drag acts when the cloth runs" });
+    } else if (data.phase === "move" && dragging) {
+        const d = dragging;
+        clothPort.postMessage({ kind: "drag", vertex: d.vertex, target: dragTarget(d.start, d.basis, data.x - d.x, data.y - d.y) });
+    } else if (data.phase === "up") {
+        pressId++;
+        if (dragging) clothPort.postMessage({ kind: "drag", vertex: dragging.vertex, target: null });
+        dragging = null;
+    }
 }
 
 // `seq` echoes the request's own `seq`, so the page knows which change a `doc` answers.
+// A live cloth hears every change: it re-meshes what an outline edit touched, or goes stale.
 function changed(seq) {
     post({ kind: "doc", seq: seq ?? null, ...doc() });
     refresh3d();
-}
-
-// The scene's axis-aligned box (min xyz, max xyz) in the file's coordinates: its vertices are
-// relative to origin(), which is added back.
-function boxOf(vertices, origin) {
-    const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-    for (let i = 0; i + 2 < vertices.length; i += 3)
-        for (let a = 0; a < 3; a++) { const v = vertices[i + a] + origin[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
-    return b;
+    if (!atelier.previewing) lastSaved = null;
+    if (sim.live && clothPort) clothPort.postMessage({ kind: "update", ...garmentNow() });
 }
 
 async function loadAvatar(bytes, name) {
@@ -106,11 +261,16 @@ async function loadAvatar(bytes, name) {
     const scene = open(new Uint8Array(bytes), "step", undefined, "native");
     let b, id;
     try {
-        b = boxOf(scene.vertices(), scene.origin());
+        b = sceneBox(scene.vertices(), scene.origin());
         id = v.showScene(scene);
     } catch (e) { scene.free(); throw e; }
     if (avatar) { v.remove(avatar.id); avatar.scene.free(); }
     avatar = { scene, id, bounds: b, name };
+    try {
+        avatarCollider = avatarMesh(scene.vertices(), scene.origin(), scene.indices());
+        clothPort?.postMessage({ kind: "avatar", avatar: avatarCollider });
+        if (sim.live) { sim.stale = "the avatar changed"; simPost(); }
+    } catch (e) { post({ kind: "error", text: `avatar collider: ${e.message ?? e}` }); }
     v.frame();
     post({ kind: "avatar", name, bounds: b });
     if (atelier) refresh3d();
@@ -128,7 +288,9 @@ const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open",
 self.onmessage = async ({ data }) => {
     try {
         if (data.cadaclysm) return;      // forwarded input: receiveControls hears it
+        if (data.kind === "clothPort") { clothPort = data.port; clothPort.onmessage = onCloth; return; }
         if (data.kind === "canvas") {
+            canvasRef = data.canvas;
             try {
                 viewer = await createViewer(data.canvas);
                 atelier = new Atelier(await ready);
@@ -171,6 +333,8 @@ self.onmessage = async ({ data }) => {
                 break;
             }
             case "resize": viewer.resize?.(data.width, data.height, data.dpr); break;
+            case "sim": simCommand(data.action); break;
+            case "tool3d": await tool3d(data); break;
         }
     } catch (e) {
         post({ kind: "error", reqId: data.reqId, text: String(e && e.message ? e.message : e) });

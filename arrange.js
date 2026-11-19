@@ -4,16 +4,49 @@ import { seamColour } from "./sewing.js";
 
 // Slot origins are fractions of the avatar's bounds (min xyz, max xyz); x and y are the
 // pattern's 2D axes in world space (y up, the avatar facing +z, the panel facing outward).
-// The bounds' width takes in the form's arms (f-M is 1334 mm across), so the side and arm
-// slots sit just past it: a fraction well beyond 1 would put them metres away.
+// The bounds' width takes in the form's arms (f-M is 968 mm across), so the side and arm
+// slots sit just past it: a fraction well beyond 1 would put them metres away. The front and
+// back stand about 50 mm clear of f-M's bust (its depth is 300 mm, z -156 to 144): the
+// cloth sews them together before it drapes, so a slot far out is a seam that never closes.
 export const SLOTS = {
-    front:      { label: "Front",      origin: [0.5, 0.72, 1.6],   x: [1, 0, 0],  y: [0, 1, 0] },
-    back:       { label: "Back",       origin: [0.5, 0.72, -0.6],  x: [-1, 0, 0], y: [0, 1, 0] },
+    front:      { label: "Front",      origin: [0.5, 0.72, 1.15],  x: [1, 0, 0],  y: [0, 1, 0] },
+    back:       { label: "Back",       origin: [0.5, 0.72, -0.12], x: [-1, 0, 0], y: [0, 1, 0] },
     left_side:  { label: "Left side",  origin: [1.05, 0.62, 0.5],  x: [0, 0, -1], y: [0, 1, 0] },
     right_side: { label: "Right side", origin: [-0.05, 0.62, 0.5], x: [0, 0, 1],  y: [0, 1, 0] },
     left_arm:   { label: "Left arm",   origin: [1.2, 0.8, 0.5],    x: [0, 0, -1], y: [0, 1, 0] },
     right_arm:  { label: "Right arm",  origin: [-0.2, 0.8, 0.5],   x: [0, 0, 1],  y: [0, 1, 0] },
 };
+
+// A read scene's axis-aligned box (min xyz, max xyz) in the file's coordinates: its
+// vertices are nine floats each (position, normal, colour), relative to origin().
+export function sceneBox(vertices, origin, stride = 9) {
+    const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let i = 0; i + 2 < vertices.length; i += stride)
+        for (let a = 0; a < 3; a++) { const v = vertices[i + a] + origin[a]; if (v < b[a]) b[a] = v; if (v > b[a + 3]) b[a + 3] = v; }
+    return b;
+}
+
+const vadd = (p, q) => p.map((v, i) => v + q[i]), vmul = (p, s) => p.map((v) => v * s);
+const vdot = (p, q) => p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+const vunit = (p) => vmul(p, 1 / Math.hypot(...p));
+
+// A sleeve wrapped round a limb: the pattern's y runs up the limb toward `shoulder` (its hem
+// `dist` mm down the axis `dir`, which points away from the body), its width wraps round the
+// axis at `radius` with its centre on the limb's top, its outer face outward. The kernel's
+// arrangement (frame, then wrap) puts pattern x along the cylinder from the frame's origin,
+// so the origin sits at the angle that lands the piece's centre on top.
+// -> the `frame` and `wrap` fields of the garment.pattern.
+export function limbFields(shoulder, dir, radius, dist, patternBounds) {
+    const d = vunit(dir), back = vmul(d, -1);
+    const up = vunit(vadd([0, 1, 0], vmul(d, -vdot([0, 1, 0], d))));   // the limb's top
+    const t = cross(back, up);
+    const th = (patternBounds[0] + patternBounds[2]) / 2 / radius;
+    const rr = vadd(vmul(up, Math.cos(th)), vmul(t, -Math.sin(th)));
+    return {
+        frame: { origin: vadd(vadd(shoulder, vmul(d, dist)), vmul(rr, radius)), x: cross(back, rr), y: back },
+        wrap: { origin: [...shoulder], dir: d, radius },
+    };
+}
 
 // The `garment.pattern` frame field for `slot`: the piece's 2D bounds centre lands on the slot point.
 export function slotFrame(slot, avatarBounds, patternBounds) {
@@ -119,8 +152,8 @@ export function slotFields(node, slot, avatarBounds, patternBounds) {
     const atelier = { ...(node.meta?.atelier ?? {}) };
     if (!slot || slot === "none") {
         delete atelier.slot;
-        return { frame: "xy", meta: { ...(node.meta ?? {}), atelier } };
+        return { frame: "xy", wrap: null, meta: { ...(node.meta ?? {}), atelier } };
     }
     atelier.slot = slot;
-    return { frame: slotFrame(slot, avatarBounds, patternBounds), meta: { ...(node.meta ?? {}), atelier } };
+    return { frame: slotFrame(slot, avatarBounds, patternBounds), wrap: null, meta: { ...(node.meta ?? {}), atelier } };
 }

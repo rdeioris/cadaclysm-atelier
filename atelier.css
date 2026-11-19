@@ -21,6 +21,10 @@ button.on { background: var(--accent); color: #1b1d21; border-color: var(--accen
 .strip button { padding: 2px 7px; font-size: 12px; }
 .strip .tag { color: var(--dim); font-size: 12px; margin-right: 6px; }
 .strip .sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 3px; }
+#health { color: var(--dim); font-size: 11px; margin-left: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+#health.warn { color: #ff8a7a; }
+#health .stale { color: var(--accent); }
+#pane3d.tool3d canvas { cursor: crosshair; }
 .well { position: relative; flex: 1; min-height: 0; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline: none; }
 #view2d { cursor: crosshair; }

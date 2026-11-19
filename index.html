@@ -27,8 +27,14 @@
     <section class="pane" id="pane3d">
         <div class="strip" id="tools3d">
             <span class="tag">3D</span>
-            <button data-command="simulate" disabled title="arrives with the solver">Simulate</button>
+            <button data-command="simulate" id="sim-toggle" title="Run the cloth: sew, then drape on the avatar (Pause stops it)">Simulate</button>
+            <button data-command="reset" id="sim-reset" disabled title="Drop the cloth: back to the flat pieces">Reset</button>
+            <span class="sep"></span>
+            <button data-tool3d="pin" title="Pin: click the cloth to pin or unpin a point">Pin</button>
+            <button data-tool3d="drag" title="Drag: pull the cloth with the mouse while it runs">Drag</button>
+            <span class="sep"></span>
             <button data-command="arrange" title="Place the pieces around the avatar">Arrange</button>
+            <span id="health" title="the solver's status: frame, phase, welded seam pairs, mesh size, fastest particle"></span>
         </div>
         <div class="well"><canvas id="view3d" tabindex="0"></canvas></div>
     </section>
@@ -67,7 +73,7 @@
 </main>
 <footer>
     <div id="status"><span id="status-text">loading the kernel…</span><span id="issues"></span></div>
-    <span id="fps" title="frames per second (with the solver)">—</span>
+    <span id="fps" title="simulated frames per second, and the time one step takes">—</span>
     <span id="lic"></span>
 </footer>
 <script type="module" src="atelier.js"></script>

@@ -74,3 +74,20 @@ assert.deepEqual(ss.slice(12, 18), [0, 0, 0, 0, 10, 5], "reversed: first of a me
     assert.deepEqual(map.resolve(103), { kind: "seam", id: "s3" });
 }
 console.log("arrange: ok");
+
+// a sleeve wrapped round a limb: y runs up the limb, the origin `radius` off the axis, `dist` down it
+{
+    const { limbFields, sceneBox } = await import("../arrange.js");
+    const dir = [Math.sin(0.7), -Math.cos(0.7), 0];
+    const r = limbFields([100, 1300, 0], dir, 60, 200, [0, 0, 300, 200]);
+    assert.deepEqual(r.wrap, { origin: [100, 1300, 0], dir: r.wrap.dir, radius: 60 });
+    assert.ok(r.frame.y.every((v, i) => Math.abs(v + dir[i]) < 1e-12), "y up the limb");
+    const o = r.frame.origin.map((v, i) => v - [100, 1300, 0][i]);
+    const along = o[0] * dir[0] + o[1] * dir[1] + o[2] * dir[2];
+    assert.ok(Math.abs(along - 200) < 1e-9, `the hem ${along} down the limb`);
+    const radial = Math.hypot(...o.map((v, i) => v - along * dir[i]));
+    assert.ok(Math.abs(radial - 60) < 1e-9, "the origin on the cylinder");
+    assert.ok(Math.abs(r.frame.x.reduce((s, v, i) => s + v * dir[i], 0)) < 1e-12, "x round the limb");
+    // nine floats a vertex: only the positions count
+    assert.deepEqual(sceneBox([1, 2, 3, 9, 9, 9, 9, 9, 9, -1, 0, 5, 0, 0, 0, 0, 0, 0], [10, 0, 0]), [9, 0, 3, 11, 2, 5]);
+}

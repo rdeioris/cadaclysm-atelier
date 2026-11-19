@@ -31,6 +31,15 @@ let seq = 0;                  // the `seq` of the last doc-changing message sent
 let fitNext = false;
 
 const worker = new Worker(new URL("./atelier-worker.js", import.meta.url), { type: "module" });
+// The solver's own worker: it steps the cloth and streams frames to the View's worker over a
+// channel of their own; the page only starts and stops it (through the View's worker).
+const clothWorker = new Worker(new URL("./cloth-worker.js", import.meta.url), { type: "module" });
+{
+    const ch = new MessageChannel();
+    clothWorker.postMessage({ kind: "port", port: ch.port1 }, [ch.port1]);
+    worker.postMessage({ kind: "clothPort", port: ch.port2 }, [ch.port2]);
+}
+clothWorker.onerror = (e) => { e.preventDefault?.(); status(`cloth worker: ${e.message || "failed"}`, true); };
 const post = (msg, transfer) => worker.postMessage(msg, transfer ?? []);
 // A message that changes the document: it carries a `seq` the worker's `doc` echoes.
 const change = (kind, payload = {}) => { const s = ++seq; post({ kind, ...payload, seq: s }); return s; };
@@ -281,6 +290,8 @@ for (const b of document.querySelectorAll("[data-command]")) b.addEventListener(
 function command(name) {
     if (name === "fit") fit2d();
     else if (name === "arrange") arrange();
+    else if (name === "simulate") post({ kind: "sim", action: "toggle" });
+    else if (name === "reset") post({ kind: "sim", action: "reset" });
     else if (name === "undo") { cancelPreview(); change("undo"); }
     else if (name === "redo") { cancelPreview(); change("redo"); }
     else if (name === "save") menu.save();
@@ -407,6 +418,64 @@ const c3 = $("view3d");
     post({ kind: "canvas", canvas: off }, [off]);
     forwardControls(c3, worker);
 }
+// The 3D tools (Pin, Drag): with one on, a left press on the cloth is the tool's. A capture
+// listener on the well takes it before forwardControls' own on the canvas, so the camera does
+// not orbit; right and middle drag and the wheel still move it.
+let tool3d = null;
+function setTool3d(name) {
+    tool3d = tool3d === name ? null : name;
+    for (const b of document.querySelectorAll("[data-tool3d]")) b.classList.toggle("on", b.dataset.tool3d === tool3d);
+    $("pane3d").classList.toggle("tool3d", !!tool3d);
+}
+for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("click", () => setTool3d(b.dataset.tool3d));
+{
+    const well = c3.parentElement;
+    let held = null;
+    const at = (e) => { const r = c3.getBoundingClientRect(), dpr = devicePixelRatio || 1; return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr }; };
+    well.addEventListener("pointerdown", (e) => {
+        if (!tool3d || e.button !== 0) return;
+        e.stopPropagation(); e.preventDefault();
+        held = e.pointerId;
+        well.setPointerCapture(e.pointerId);
+        post({ kind: "tool3d", tool: tool3d, phase: "down", ...at(e) });
+    }, true);
+    well.addEventListener("pointermove", (e) => {
+        if (held !== e.pointerId) return;
+        e.stopPropagation();
+        post({ kind: "tool3d", tool: tool3d, phase: "move", ...at(e) });
+    }, true);
+    const up = (e) => {
+        if (held !== e.pointerId) return;
+        e.stopPropagation();
+        held = null;
+        post({ kind: "tool3d", tool: tool3d, phase: "up", ...at(e) });
+    };
+    well.addEventListener("pointerup", up, true);
+    well.addEventListener("pointercancel", up, true);
+}
+
+// The simulation's state from the View's worker: the buttons, the health line, the rate.
+function onSim(m) {
+    const toggle = $("sim-toggle");
+    toggle.textContent = m.building ? "Building…" : m.running ? "Pause" : "Simulate";
+    toggle.classList.toggle("on", !!m.running);
+    toggle.title = m.running ? "Pause the cloth" : m.live && m.stale ? "Rebuild the cloth from the garment and run it" : "Run the cloth: sew, then drape on the avatar";
+    $("sim-reset").disabled = !m.live;
+    const h = $("health");
+    h.classList.toggle("warn", !!m.health?.warn);
+    h.replaceChildren(m.live ? (m.health?.text ?? "") : m.building ? "meshing the garment…" : "");
+    if (m.live && m.stale) {
+        const s = document.createElement("span");
+        s.className = "stale";
+        s.textContent = ` · ${m.stale}: Simulate rebuilds, Reset drops it`;
+        h.append(s);
+    }
+    h.title = h.textContent;
+    $("fps").textContent = m.running && m.fps > 0 ? `${m.fps.toFixed(1)} fps · ${Math.round(m.ms)} ms/step` : m.live ? "paused" : "—";
+    document.body.dataset.sim = m.running ? "running" : m.live ? "paused" : "off";
+    document.body.dataset.meshGen = String(m.meshGen);
+}
+
 // A click without a drag picks.
 let down3d = null;
 c3.addEventListener("pointerdown", (e) => { if (e.button === 0) down3d = [e.offsetX, e.offsetY]; });
@@ -558,6 +627,7 @@ worker.onmessage = ({ data: m }) => {
             if (selection?.kind === "avatar") renderProps();
             break;
         case "status": status(m.text); break;
+        case "sim": onSim(m); break;
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
