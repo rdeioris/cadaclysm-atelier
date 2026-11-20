@@ -401,6 +401,20 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.equal(readout([0, 0], [30, 40]), "50.0 mm");
     assert.equal(readout(null, [1, 1]), null);
 }
+{
+    // the typed box's text: a finite length above 0, a blank or finite angle; anything else places no point
+    const { typedValues, typedPoint } = await import("../tools.js");
+    assert.deepEqual(typedValues("100", ""), { length: 100, angle: null });
+    assert.deepEqual(typedValues("2.5", " 90 "), { length: 2.5, angle: 90 });
+    assert.deepEqual(typedValues("50", "-45"), { length: 50, angle: -45 });
+    for (const bad of ["", " ", "0", "-5", "1,5", "abc", "1e999", "Infinity", "-Infinity", "NaN", "."])
+        assert.equal(typedValues(bad, ""), null, `length ${JSON.stringify(bad)} refused`);
+    for (const bad of ["abc", "1,5", "1e999", "Infinity", "."])
+        assert.equal(typedValues("10", bad), null, `angle ${JSON.stringify(bad)} refused`);
+    // the next typed length after a commit, the pointer still: from the new point toward the pointer
+    // (the rubber band's direction), so a pointer behind the new point turns the shape back
+    assert.deepEqual(typedPoint([100, 0], [40, 0], 30), [70, 0], "toward the still pointer");
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

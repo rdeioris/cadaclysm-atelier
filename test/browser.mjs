@@ -884,25 +884,81 @@ async function check(cdp, base) {
                 await until("an empty garment", async () => (await patternCount()) === 0, 30000);
                 const [tx, ty, tw, th] = await windowBox("rect2d");
                 const P = [tx + tw * 0.5, ty + th * 0.9];
+                const fresh = async (p) => { lastSeen = await evaluate(`document.body.dataset.world ?? ""`); return worldOf(p); };   // other hovers moved it since
                 // re-measured with Edit armed (the steps above pressed Fit): the 100 x 50 piece must fit up and right of P
                 await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
-                const w1 = await worldOf([P[0] + 1, P[1]]), w2 = await worldOf([P[0] + 51, P[1]]);
+                const w1 = await fresh([P[0] + 1, P[1]]), w2 = await worldOf([P[0] + 51, P[1]]);
                 const mm = 50 / (w2[0] - w1[0]);
                 if (!(P[0] + 100 * mm < tx + tw && P[1] - 50 * mm > ty)) throw new Error("the 100 x 50 polygon does not fit the 2D window");
                 // a digit with no last point is no typed length
                 await key("5", "Digit5", 53);
                 if (!(await evaluate(`document.getElementById("typed").hidden`))) throw new Error("a digit opened the typed box with no last point");
+                const boxOpen = () => evaluate(`!document.getElementById("typed").hidden`);
+                const readoutMm = async () => parseFloat(await evaluate(`document.body.dataset.readout ?? ""`));
+                // a digit mid-drag is no typed length: a rectangle dragged in the top left, away from the polygon
+                await evaluate(`document.querySelector('#tools2d [data-tool=rectangle]').click()`);
+                const ra = [tx + tw * 0.05, ty + th * 0.1];
+                await mouse("mouseMoved", ra[0], ra[1], { buttons: 0 });
+                await mouse("mousePressed", ra[0], ra[1]);
+                await mouse("mouseMoved", ra[0] + 30, ra[1] + 20);
+                await until("the drag's read-out", async () => (await evaluate(`document.body.dataset.readout ?? ""`)) !== "", 10000);
+                await key("5", "Digit5", 53);
+                if (await boxOpen()) throw new Error("a digit mid-drag opened the typed box");
+                await mouse("mouseReleased", ra[0] + 30, ra[1] + 20);
+                await until("the dragged rectangle", async () => (await patternCount()) === 1, 30000);
                 await evaluate(`document.querySelector('#tools2d [data-tool=polygon]').click()`);
                 const nT = await patternCount();
+                const wP = await fresh(P);
                 await click(P);
-                await worldOf([P[0] + 80, P[1]]);         // the direction: +x, answered before the digit
-                await until("the read-out", async () => /^\d+\.\d mm$/.test(await evaluate(`document.body.dataset.readout ?? ""`)), 10000);
-                await typeLen("100");
-                // the box's keys are the box's: E (Ellipse), F3 and Delete do nothing; Escape closes it and the shape goes on
+                await until("the first point placed", async () => (await evaluate(`document.body.dataset.readout ?? ""`)) !== "", 10000);
+                // Shift pressed in the box locks the angle once the box is closed
                 await key("7", "Digit7", 55);
-                await until("the typed box", () => evaluate(`!document.getElementById("typed").hidden`), 10000);
-                await key("e", "KeyE", 69); await key("F3", "F3", 114); await key("Delete", "Delete", 46);
+                await until("the typed box (for Shift)", boxOpen, 10000);
+                await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 8 });
+                await key("Escape", "Escape", 27, 8);
+                await until("the typed box closed", async () => !(await boxOpen()), 10000);
+                await mouse("mouseMoved", P[0] + 60, P[1] - 35, { buttons: 0, modifiers: 8 });   // about 30 degrees up
+                await until("the angle lock from Shift in the box", async () => (await evaluate(`document.body.dataset.snapAngle`)) === "45", 30000);
+                await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 0 });
+                await mouse("mouseMoved", P[0] + 61, P[1] - 33, { buttons: 0 });
+                await until("the angle lock released", async () => (await evaluate(`document.body.dataset.snapAngle`)) === "", 30000);
+                const w80 = await fresh([P[0] + 40 * mm, P[1]]);    // the direction: +x, answered before the digit; 40 mm in
+                await until("the read-out", async () => /^\d+\.\d mm$/.test(await evaluate(`document.body.dataset.readout ?? ""`)), 10000);
+                await typeLen("100", 0);             // at 0 degrees: the pointer's hover may snap off the row
+                // the next length, the pointer still (40 mm in, behind the new point): from the new point toward
+                // the pointer, so 30 mm back; the read-out is then 30 mm shorter. Backspace drops the point
+                const back = Math.hypot(wP[0] + 100 - w80[0], wP[1] - w80[1]);
+                if (!(back > 40)) throw new Error(`the pointer is ${back} mm from the 100 mm point: not behind it`);
+                await until(`the 100 mm point (read-out ${back.toFixed(1)} mm)`, async () => Math.abs((await readoutMm()) - back) < 0.15, 10000);
+                await typeLen("30");
+                try { await until(`the 30 mm point toward the pointer (read-out ${(back - 30).toFixed(1)} mm)`, async () => Math.abs((await readoutMm()) - (back - 30)) < 0.15, 10000); }
+                catch (e) { throw new Error(`${e.message}: read-out ${await readoutMm()}, P at ${wP}, the pointer at ${w80}`); }
+                await key("Backspace", "Backspace", 8);
+                await until("the 30 mm point dropped", async () => Math.abs((await readoutMm()) - back) < 0.15, 10000);
+                // a length that is no finite number above 0 places nothing: the box stays, the status says why
+                await key("1", "Digit1", 49);
+                await until("the typed box (for 1e999)", boxOpen, 10000);
+                await send("Input.insertText", { text: "e999" });
+                await key("Enter", "Enter", 13);
+                await until("the refusal", async () => /length above 0/.test((await statusError()) ?? ""), 10000);
+                if (!(await boxOpen())) throw new Error("a refused length closed the typed box");
+                if (!(Math.abs((await readoutMm()) - back) < 0.15)) throw new Error("a refused length placed a point");
                 await key("Escape", "Escape", 27);
+                await until("the typed box closed", async () => !(await boxOpen()), 10000);
+                // the box's keys are the box's: E (Ellipse), F3 and Delete do nothing, Ctrl+S saves as from any field;
+                // by the well's bottom right corner the box stays inside the well; Escape closes it and the shape goes on
+                await mouse("mouseMoved", tx + tw - 2, ty + th - 2, { buttons: 0 });
+                await key("7", "Digit7", 55);
+                await until("the typed box (by the corner)", boxOpen, 10000);
+                {
+                    const inside = await evaluate(`(() => { const b = document.getElementById("typed").getBoundingClientRect(), w = document.getElementById("well").getBoundingClientRect();
+                        return b.left >= w.left && b.top >= w.top && b.right <= w.right + 0.5 && b.bottom <= w.bottom + 0.5; })()`);
+                    if (!inside) throw new Error(`the typed box runs out of the well: ${await evaluate(`JSON.stringify([document.getElementById("typed").getBoundingClientRect(), document.getElementById("well").getBoundingClientRect(), document.getElementById("typed").style.cssText])`)}`);
+                }
+                await key("e", "KeyE", 69); await key("F3", "F3", 114); await key("Delete", "Delete", 46);
+                const savedInBox = await saveJson();
+                if (savedInBox.nodes.filter((n) => n.kind === "garment.pattern").length !== 1) throw new Error("Ctrl+S in the box did not save the garment");
+                // the save takes the focus from any field (its edit is kept): the box closes, the shape goes on
                 await until("the typed box closed", () => evaluate(`document.getElementById("typed").hidden`), 10000);
                 const armed = await evaluate(`document.querySelector('#tools2d [data-tool].on')?.dataset.tool`);
                 if (armed !== "polygon") throw new Error(`the box's keys reached the app: ${armed} armed`);
@@ -920,7 +976,7 @@ async function check(cdp, base) {
                 await key("Escape", "Escape", 27);
                 await noStatusError();
                 failIfErrors();
-                ok("typed lengths: 100, 50 at 90°, 100 at 180°, closed: 100 x 50; the box keeps its keys");
+                ok("typed lengths: 100, 50 at 90°, 100 at 180°, closed: 100 x 50; refusals, Shift, mid-drag, clamp, Ctrl+S in the box");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

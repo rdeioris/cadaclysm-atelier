@@ -8,7 +8,7 @@ import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams } from "./fabrics.js";
-import { makeTool, SNAPPING, typedPoint, readout } from "./tools.js";
+import { makeTool, SNAPPING, typedPoint, typedValues, readout } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { SLOTS, slotFields, fabricColours, isSelected, survivingSelection } from "./arrange.js";
@@ -412,30 +412,40 @@ function draw2d() {
 // Typed lengths: while a tool has a last point, a digit opens the box at the pointer; Tab goes to
 // the angle; Enter places the next point that far along the pointer's direction (or at the typed
 // angle) through the same down + up as a click; Escape closes the box and the shape goes on.
-// The box's keys stay in the box: none of them is an app shortcut.
-let pointerCss = [0, 0];          // the pointer over the canvas, CSS px from its top left
-cv.addEventListener("pointermove", (e) => { const r = cv.getBoundingClientRect(); pointerCss = [e.clientX - r.left, e.clientY - r.top]; });
+// The box's keys stay in the box: none of them is an app shortcut, except Ctrl+S / Ctrl+O, which
+// save and open as from any field. The box closes when the focus leaves it (a save blurs the
+// field it is in), its length unplaced. Shift held in the box still locks the angle (shiftHeld).
+// After a placed point the pointer has not moved: the next typed length goes from the new point
+// toward it, the direction the rubber band shows.
+let pointerCss = [0, 0];          // the pointer over the canvas, CSS px from the well's top left
+cv.addEventListener("pointermove", (e) => { const r = $("well").getBoundingClientRect(); pointerCss = [e.clientX - r.left, e.clientY - r.top]; });
 const typed = { box: $("typed"), len: $("typed-length"), ang: $("typed-angle") };
 function openTyped(first) {
     typed.len.value = first; typed.ang.value = "";
-    typed.box.style.left = `${pointerCss[0] + 14}px`; typed.box.style.top = `${pointerCss[1] + 14}px`;
     typed.box.hidden = false;
+    // below right of the pointer, kept inside the well
+    const well = $("well"), maxX = well.clientWidth - typed.box.offsetWidth, maxY = well.clientHeight - typed.box.offsetHeight;
+    typed.box.style.left = `${Math.max(0, Math.min(pointerCss[0] + 14, maxX))}px`;
+    typed.box.style.top = `${Math.max(0, Math.min(pointerCss[1] + 14, maxY))}px`;
     typed.len.focus();
     typed.len.setSelectionRange(first.length, first.length);
 }
 function closeTyped() { typed.box.hidden = true; cv.focus(); }
+typed.box.addEventListener("focusout", (e) => { if (!typed.box.contains(e.relatedTarget)) typed.box.hidden = true; });
 function commitTyped() {
     const last = tool?.lastPoint?.();
-    const len = Number(typed.len.value), ang = typed.ang.value.trim() === "" ? null : Number(typed.ang.value);
     if (!last) { closeTyped(); return; }
-    if (!(len > 0) || (ang !== null && !Number.isFinite(ang))) { status("type a length above 0 (and an angle in degrees)", true); return; }
-    const p = typedPoint(last, lastWorld, len, ang);
+    const v = typedValues(typed.len.value, typed.ang.value);
+    if (!v) { status("type a length above 0 (and an angle in degrees)", true); return; }
+    const len = v.length, p = typedPoint(last, lastWorld, len, v.angle);
     closeTyped();
     if (tool.typed) apply(tool.typed(p, len));
     else { apply(tool.down(p, null, {})); apply(tool.up(p, null, {})); }
 }
 for (const input of [typed.len, typed.ang]) input.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey) return;             // the document's: Ctrl+S saves (its input guard stops the rest)
     e.stopPropagation();
+    if (e.key === "Shift" && !e.repeat) { shiftHeld = true; syncSnapBase(); }
     if (e.key === "Enter") { e.preventDefault(); commitTyped(); }
     else if (e.key === "Escape") { e.preventDefault(); closeTyped(); }       // the shape goes on
     else if (e.key === "Tab") { e.preventDefault(); (input === typed.len ? typed.ang : typed.len).focus(); }
@@ -671,7 +681,7 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     // a digit with a last point to measure from: the typed length, not a shortcut
-    if (/^[0-9.]$/.test(e.key) && typed.box.hidden && tool?.lastPoint?.()) { e.preventDefault(); openTyped(e.key); return; }
+    if (/^[0-9.]$/.test(e.key) && typed.box.hidden && !drag2d && tool?.lastPoint?.()) { e.preventDefault(); openTyped(e.key); return; }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
     // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
     if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }

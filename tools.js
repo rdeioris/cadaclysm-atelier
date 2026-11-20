@@ -166,6 +166,15 @@ export function typedPoint(last, cursor, length, angleDeg = null) {
     }
     return [last[0] + dx * length, last[1] + dy * length];
 }
+// The typed box's text as numbers: {length, angle} (angle null when blank), or null when the
+// length is not a finite number above 0 or the angle not a finite number ("1,5", "abc", "1e999").
+export function typedValues(lengthText, angleText = "") {
+    const num = (t) => (/^\s*$/.test(t) ? NaN : Number(t));
+    const length = num(String(lengthText ?? ""));
+    const a = String(angleText ?? "").trim(), angle = a === "" ? null : num(a);
+    if (!(Number.isFinite(length) && length > 0) || (angle !== null && !Number.isFinite(angle))) return null;
+    return { length, angle };
+}
 // The length read-out while drawing (a label until the View's dimensions, spec section 1).
 export const readout = (last, cursor) => (last && cursor ? `${Math.hypot(cursor[0] - last[0], cursor[1] - last[1]).toFixed(1)} mm` : null);
 
