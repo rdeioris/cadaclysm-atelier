@@ -482,13 +482,13 @@ const gesture2d = () => drag2d || ups2d > 0;
 const keyHold = new KeyHold((e) => toolFailed(e));
 const afterUps = (fn) => keyHold.key(seq2d, fn);
 const claims = new Map();                 // pointerId -> "2d" | "3d"
-const pending2d = new Map();              // seq -> mods of a 2D event in flight
+const pending2d = new Map();              // seq -> {mods, xy} of a 2D event in flight (xy: its canvas point)
 let seq2d = 0, moveBusy = false, moveNext = null, down3d = null;
 const at2dPx = (ev) => [ev.x - rects[1][0], ev.y - rects[1][1]];
 const mods2d = (ev, extra = {}) => ({ shift: shiftHeld, ctrl: false, alt: false, px: at2dPx(ev), ...extra });
 function send2d(phase, ev, mods) {
     const seq = ++seq2d;
-    pending2d.set(seq, mods);
+    pending2d.set(seq, { mods, xy: [ev.x, ev.y] });
     post({ kind: "pointer2d", seq, phase, x: ev.x, y: ev.y, snap: snapsNow() });
 }
 // one move or hover in flight at a time: the newest waits, older ones are dropped
@@ -601,7 +601,7 @@ function onAt2d(m) {
     try { at2dAnswer(m); } finally { settle2d(); }
 }
 function at2dAnswer(m) {
-    const mods = pending2d.get(m.seq) ?? {};
+    const { mods = {}, xy = null } = pending2d.get(m.seq) ?? {};
     pending2d.delete(m.seq);
     // the keys typed after this release run once the tool has heard it (below), before the next answer
     if (m.phase === "up") { ups2d = Math.max(0, ups2d - 1); keyHold.answered(m.seq); queueMicrotask(() => keyHold.flush()); }
@@ -615,6 +615,7 @@ function at2dAnswer(m) {
     if (!m.world) { if (m.phase === "up" && tool && lastWorld) apply(tool.up(lastWorld, m.hit, mods)); return; }
     lastWorld = m.world;
     document.body.dataset.world = m.world.map((v) => v.toFixed(3)).join(",");
+    document.body.dataset.worldAt = xy ? xy.join(",") : "";   // the canvas point (device px) that world answers: the tests wait on it
     if (!tool) return;
     if (m.phase === "down") apply(tool.down(m.world, m.hit, mods));
     else if (m.phase === "up") apply(tool.up(m.world, m.hit, mods));

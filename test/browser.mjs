@@ -800,12 +800,20 @@ async function check(cdp, base) {
             // a 200 x 100 piece by dialog at hc, then a 20 x 20 hole by dialog inside it
             const [qx, qy, qw, qh] = await windowBox("rect2d");     // hx.. and c are taken above
             const hc = [qx + qw * 0.15, qy + qh * 0.85];
-            // pattern mm per CSS px from two hovers 50 px apart (the 2D window's own mapping); each waits for a fresh answer
+            // pattern mm per CSS px from two hovers 50 px apart (the 2D window's own mapping). Each waits for the
+            // answer to THAT hover: dataset.worldAt names the canvas point (device px) dataset.world answers. A
+            // world that merely differs from the last one read may be an earlier click's, still in flight.
             let lastSeen = await evaluate(`document.body.dataset.world ?? ""`);
+            const answeredAt = async (p) => {
+                const [at, world, left, top, dpr] = await evaluate(`(() => { const r = document.getElementById("view").getBoundingClientRect();
+                    return [document.body.dataset.worldAt ?? "", document.body.dataset.world ?? "", r.left, r.top, devicePixelRatio]; })()`);
+                const xy = at.split(",").map(Number);
+                return at !== "" && Math.abs(xy[0] / dpr + left - p[0]) <= 0.51 && Math.abs(xy[1] / dpr + top - p[1]) <= 0.51 ? world : null;
+            };
             const worldOf = async (p) => {
                 await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
-                await until("the hover answer", async () => { const w = await evaluate(`document.body.dataset.world ?? ""`); return w !== "" && w !== lastSeen; }, 10000);
-                lastSeen = await evaluate(`document.body.dataset.world`);
+                try { lastSeen = await until(`the hover answer at ${p}`, () => answeredAt(p), 10000); }
+                catch (e) { throw new Error(`${e.message} (last answered at ${await evaluate(`document.body.dataset.worldAt`)}: ${await evaluate(`document.body.dataset.world`)})`); }
                 return lastSeen.split(",").map(Number);
             };
             const wc1 = await worldOf([hc[0] + 1, hc[1]]), wc2 = await worldOf([hc[0] + 51, hc[1]]);
@@ -863,10 +871,11 @@ async function check(cdp, base) {
                 await evaluate(`document.querySelector('#tools2d [data-tool=to-hole]').click()`);
                 // one hover on the right edge, 124 mm in: the pick answers the internal shape over the piece's face
                 const edge = [inner[0] + 24 * mm, inner[1] - 12 * mm];
-                await evaluate(`document.body.dataset.hit = "__"`);
-                await mouse("mouseMoved", edge[0], edge[1], { buttons: 0 });
-                await until("the hover answer", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 30000);
-                { const hit = await evaluate(`document.body.dataset.hit + " at " + document.body.dataset.world`); if (!hit.startsWith("internal ")) throw new Error(`the internal edge's hover answered ${hit}`); }
+                await worldOf(edge);                    // waits for the answer at the edge point itself
+                {
+                    const hit = await evaluate(`document.body.dataset.hit + " at " + document.body.dataset.world`);
+                    if (!hit.startsWith("internal ")) throw new Error(`the internal edge's hover answered ${hit} (edge ${edge}, corner ${hc}, ${mm} px/mm from ${w1} and ${w2})`);
+                }
                 await click(edge);
                 await until("three holes", () => evaluate(`/3 holes/.test(document.getElementById("props").textContent)`), 30000);
                 await noStatusError();
