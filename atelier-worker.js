@@ -133,6 +133,8 @@ function fit2d() {
 // A 2D pointer event: the pick under it decoded through the item map, and the pattern point
 // (snapped when the page asks and snapping is on). Answered as `at2d` with the event's seq.
 const snapping = { on: false, grid: false };
+// Snapping while a drawing tool is armed (spec §2), best first; the grid when the toggle is on.
+const SNAP_KINDS = ["end", "vertex", "point", "midpoint", "intersection", "quadrant", "edge", "alignment"];
 let chain2d = Promise.resolve();
 function pointer2d(data) {
     chain2d = chain2d.then(() => at2d(data)).catch((e) => {
@@ -437,6 +439,12 @@ self.onmessage = async ({ data }) => {
             case "tool3d": await tool3d(data); break;
             case "rects": setRects(data.rects); break;
             case "pointer2d": pointer2d(data); break;
+            case "snapping":
+                snapping.on = !!data.on; snapping.grid = !!data.grid;
+                viewer.setSnap(snapping.on ? { kinds: snapping.grid ? [...SNAP_KINDS, "grid"] : SNAP_KINDS, marker: true } : null);
+                if (!snapping.on) viewer.clearSnap();
+                break;
+            case "snapBase": viewer.setSnapBase(data.point ? [data.point[0], data.point[1], 0] : null, 45); break;
             // the pointer left the 2D window: no piece is hovered (after the events before it)
             case "leave2d": chain2d = chain2d.then(() => { if (hover2d !== null) { hover2d = null; refresh2d(); } }).catch(() => {}); break;
             case "overlay2d": overlay2d?.set({ lines: data.lines ?? [], points: data.points ?? [], curves: null, text: data.text ?? null }); break;

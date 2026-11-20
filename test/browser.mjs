@@ -598,6 +598,54 @@ async function check(cdp, base) {
             await evaluate(`document.getElementById("sim-reset").click()`);
             await until("reset", async () => (await simState()) === "off", 30000);
             failIfErrors();
+            // ---- the 2D tools, on a new garment ----
+            await evaluate(`document.getElementById("menu-new").click()`);
+            await until("an empty garment", async () => (await patternCount()) === 0, 30000);
+            // helpers every later 2D step shares: the size dialog, a shape by dialog, a typed length
+            const fillSize = async (w, h) => {
+                await until("the size dialog", () => evaluate(`document.getElementById("size-dialog").open`), 30000);
+                await evaluate(`(() => { document.getElementById("size-w").value = "${w}"; document.getElementById("size-h").value = "${h}"; document.getElementById("size-ok").click(); })()`);
+            };
+            const byDialog = async (tool, at, w, h) => {
+                await evaluate(`document.querySelector('#tools2d [data-tool=${tool}]').click()`);
+                await click(at);
+                await fillSize(w, h);
+            };
+            const typeLen = async (len, angle) => {          // digits open the typed box; Tab goes to the angle; Enter places
+                await key(len[0], `Digit${len[0]}`, 48 + Number(len[0]));
+                await until("the typed box", () => evaluate(`!document.getElementById("typed").hidden`), 10000);
+                if (len.length > 1) await send("Input.insertText", { text: len.slice(1) });
+                if (angle !== undefined) { await key("Tab", "Tab", 9); await send("Input.insertText", { text: String(angle) }); }
+                await key("Enter", "Enter", 13);
+                await until("the typed box closed", () => evaluate(`document.getElementById("typed").hidden`), 10000);
+            };
+            const [rx0, ry0, rw0, rh0] = await windowBox("rect2d");
+            const ra = [rx0 + rw0 * 0.2, ry0 + rh0 * 0.3], rb = [rx0 + rw0 * 0.45, ry0 + rh0 * 0.7];
+            await evaluate(`document.querySelector('#tools2d [data-tool=rectangle]').click()`);
+            await drag(ra, rb);
+            await until("the rectangle", async () => (await patternCount()) === 1, 30000);
+            // the unsnapped point under `ra` is the rectangle's first corner (Edit is armed again)
+            let seen = await evaluate(`document.body.dataset.world ?? ""`);
+            await mouse("mouseMoved", ra[0], ra[1], { buttons: 0 });
+            await until("the corner's point", async () => { const w = await evaluate(`document.body.dataset.world ?? ""`); return w !== "" && w !== seen; }, 30000);
+            const corner = await evaluate(`document.body.dataset.world`);
+            // 2b. snapping: Polygon armed, the pointer 3 px off the corner lands on it
+            await evaluate(`document.querySelector('#tools2d [data-tool=polygon]').click()`);
+            await mouse("mouseMoved", ra[0] + 3, ra[1] - 2, { buttons: 0 });
+            await until("a snap to the corner", async () => ["end", "vertex"].includes(await evaluate(`document.body.dataset.snap`)), 30000);
+            const snappedTo = await evaluate(`document.body.dataset.world`);
+            const apart = (p, q) => { const [a, b] = [p, q].map((s) => s.split(",").map(Number)); return Math.hypot(a[0] - b[0], a[1] - b[1]); };
+            if (!(apart(snappedTo, corner) < 0.01)) throw new Error(`snapped to ${snappedTo}, not the corner ${corner}`);   // the View answers f32: compare numbers, not strings
+            // Shift locks the angle to 45 degree steps from the last point (inside the rectangle, clear of its edges)
+            const lockAt = [ra[0] + 40, ra[1] + 100];   // not `base`: that is check()'s url
+            await click(lockAt);
+            await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 8 });
+            await mouse("mouseMoved", lockAt[0] + 60, lockAt[1] - 35, { buttons: 0, modifiers: 8 });   // about 30 degrees up
+            await until("the angle lock", async () => (await evaluate(`document.body.dataset.snapAngle`)) === "45", 30000);
+            await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 0 });
+            await key("Escape", "Escape", 27);
+            failIfErrors();
+            ok("snap: the corner answers end/vertex at the corner; Shift locks 45 degrees");
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

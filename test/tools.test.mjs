@@ -263,6 +263,20 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.equal(m.freeLabel(nodes, "Piece 2"), "Piece 2 2");
     assert.equal(m.freeLabel(nodes, "Front"), "Front");
 }
+// snapping tools and their last point (the angle lock's base, the typed length's origin)
+{
+    const { SNAPPING } = await import("../tools.js");
+    for (const n of ["rectangle", "polygon", "internal", "dart", "mirror", "grain"]) assert.ok(SNAPPING.has(n), n);
+    assert.ok(!SNAPPING.has("edit") && !SNAPPING.has("transform"));
+    const t = makeTool("polygon", ctx());
+    assert.equal(t.lastPoint(), null);
+    t.down([0, 0], null, {}); t.up([0, 0], null, {});
+    t.down([10, 5], null, {}); t.up([10, 5], null, {});
+    assert.deepEqual(t.lastPoint(), [10, 5]);
+    const r = makeTool("rectangle", ctx());
+    r.down([3, 4], null, {});
+    assert.deepEqual(r.lastPoint(), [3, 4]);
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

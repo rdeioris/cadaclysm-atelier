@@ -8,7 +8,7 @@ import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams } from "./fabrics.js";
-import { makeTool } from "./tools.js";
+import { makeTool, SNAPPING } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { SLOTS, slotFields, fabricColours } from "./arrange.js";
@@ -250,7 +250,27 @@ function setTool(name) {
     overlay = null;
     freshTool();
     draw2d();
+    clearSnapBase(); postSnapping();
 }
+
+// Snapping is on while a drawing tool is armed (plan ruling 16), the grid too when Grid is on.
+// Shift held with a placed point locks the angle to 45 degree steps from it (the snap base).
+let gridSnap = false, snapBaseOn = null;          // snapBaseOn: the base point sent, as "x,y"
+const snapsNow = () => SNAPPING.has(toolName);
+function postSnapping() { post({ kind: "snapping", on: snapsNow(), grid: gridSnap }); }
+function clearSnapBase() { if (snapBaseOn) { snapBaseOn = null; post({ kind: "snapBase", point: null }); } }
+// The base follows the tool's last point while Shift is held: each placed point re-bases the lock.
+function syncSnapBase() {
+    const base = shiftHeld && snapsNow() ? tool?.lastPoint?.() : null;
+    if (!base) { clearSnapBase(); return; }
+    const key = base.join(",");
+    if (key !== snapBaseOn) { snapBaseOn = key; post({ kind: "snapBase", point: base }); }
+}
+$("tools2d").querySelector("[data-toggle=grid]").addEventListener("click", (e) => {
+    gridSnap = !gridSnap;
+    e.currentTarget.classList.toggle("on", gridSnap);
+    postSnapping();
+});
 
 // Tool results are handled strictly in the order the tool gave them: each waits for the last.
 // A failure is reported and the queue goes on: the next result (an endPreview, say) is never lost.
@@ -283,6 +303,7 @@ function handle(r) {
     if (r.select !== undefined) setSelection(r.select);
     if (r.done) setTool("edit");
     else if (toolStale && !previewing && !gesture2d()) freshTool();
+    syncSnapBase();                       // done, or the overlay emptied: no last point, no lock
     draw2d();
 }
 
@@ -380,7 +401,7 @@ const mods2d = (ev, extra = {}) => ({ shift: shiftHeld, ctrl: false, alt: false,
 function send2d(phase, ev, mods) {
     const seq = ++seq2d;
     pending2d.set(seq, mods);
-    post({ kind: "pointer2d", seq, phase, x: ev.x, y: ev.y, snap: false });
+    post({ kind: "pointer2d", seq, phase, x: ev.x, y: ev.y, snap: snapsNow() });
 }
 // one move or hover in flight at a time: the newest waits, older ones are dropped
 function move2d(ev) { moveNext = ev; in2d = true; if (!moveBusy) flushMove(); }
@@ -568,6 +589,7 @@ document.addEventListener("keydown", (e) => {
     if (sc && (sc.command === "save" || sc.command === "open")) { e.preventDefault(); command(sc.command); return; }
     if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
     if (sc?.command && (e.ctrlKey || e.metaKey || e.key === "F2" || e.key === "F3")) { e.preventDefault(); command(sc.command); return; }
+    if (e.key === "Shift" && !e.repeat) { shiftHeld = true; syncSnapBase(); }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === " ") { space = true; e.preventDefault(); return; }
     if (e.key === "Escape") {
@@ -585,8 +607,11 @@ document.addEventListener("keydown", (e) => {
     }
     if (sc?.tool) setTool(sc.tool);
 });
-document.addEventListener("keyup", (e) => { if (e.key === " ") space = false; });
-window.addEventListener("blur", () => { space = false; });
+document.addEventListener("keyup", (e) => {
+    if (e.key === " ") space = false;
+    if (e.key === "Shift") { shiftHeld = false; clearSnapBase(); }
+});
+window.addEventListener("blur", () => { space = false; shiftHeld = false; clearSnapBase(); });
 
 // ---- the file menu ------------------------------------------------------------------------
 // One hidden file input: the pending action says what the picked file is for.

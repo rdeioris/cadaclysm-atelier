@@ -37,6 +37,10 @@ function movePoint(path, i, d) {
     if (starts?.type === "bezier") starts.c1 = add(starts.c1, d);
 }
 
+// The tools that place points: snapping is on while one is armed (plan ruling 16).
+export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
+
 const TOOLS = {
     rectangle(ctx) {
         const { DRAG } = tols(ctx);
@@ -53,6 +57,7 @@ const TOOLS = {
                 return newPattern(ctx, pieceLabel(ctx.nodes), pts);
             },
             key(k) { if (k === "Escape") { a = null; return { overlay: { lines: [] }, done: true }; } return {}; },
+            lastPoint() { return a ? [...a] : null; },
         };
     },
 
@@ -90,6 +95,7 @@ const TOOLS = {
                 if (k === "Backspace") { pts.pop(); out.length = inn.length = pts.length; return { overlay: overlay() }; }
                 return {};
             },
+            lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
         };
     },
 
@@ -211,6 +217,7 @@ const TOOLS = {
                 if (k === "Backspace") { pts.pop(); return { overlay: line(pts) }; }
                 return {};
             },
+            lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
         };
     },
 
@@ -254,6 +261,7 @@ const TOOLS = {
                 };
             },
             key(k) { if (k === "Escape") { ends.length = 0; apex = null; return { overlay: { lines: [] }, done: true }; } return {}; },
+            lastPoint() { return ends.length ? [...ends.at(-1).w] : null; },
         };
     },
 
@@ -282,6 +290,7 @@ const TOOLS = {
                 }), () => ({})); // a failed kernel call: nothing added, the gesture is already reset
             },
             key(k) { if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; } return {}; },
+            lastPoint() { return pts.length ? [...pts[0]] : null; },
         };
     },
 
@@ -319,6 +328,7 @@ const TOOLS = {
                 return { ops: setPattern(ctx.nodes, id, { grain: [dx / len, dy / len] }), overlay: { lines: [] } };
             },
             key() { return {}; },
+            lastPoint() { return a ? [...a] : null; },
         };
     },
 };
