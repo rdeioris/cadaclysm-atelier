@@ -54,6 +54,8 @@ const edge = (id, s) => ({ kind: "edge", id, s, side: sides.findIndex((v, i) => 
     assert.deepEqual(anchorOf(sides, 110, 140), [1, 0.2, 0.8]);
     assert.deepEqual(anchorOf(sides, 280, 20), [3, 0.6, 0.2, 0], "a wrapped range names its end side");
     assert.deepEqual(anchorOf(sides, 140, 110), [1, 0.8, 0.2, 1], "a range wrapping round from one side back onto it");
+    assert.deepEqual(anchorOf(sides, 100, 150), [1, 0, 1], "a whole side: it ends on that side, not the next");
+    assert.deepEqual(anchorOf(sides, 250 - 1e-9, 300), [3, 0, 1], "a start a hair off the side start is that side's");
 }
 assert.notEqual(seamColour(0), seamColour(1));
 assert.equal(seamColour(0), seamColour(12));

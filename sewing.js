@@ -26,8 +26,13 @@ const frac = (sides, side, s) => {
 // A range's anchor on `sides` (side + fractions, as the sewing tools write it): one side when the
 // range starts and ends on it running forward, else the start side and the end side.
 export function anchorOf(sides, from, to) {
-    const sideOf = (s) => { let k = 0; for (let i = 0; i < sides.length - 1; i++) if (sides[i] <= s) k = i; return k; };
-    const a = sideOf(from), b = sideOf(to);
+    // the side a range starts on, and the one it ends on (a range ending at a side's end ends on
+    // that side, not the next); a side start found by bisection lies a hair past the exact one:
+    // 1e-6 mm of slack
+    const last = sides.length - 2;
+    const startSide = (s) => { let k = 0; for (let i = 0; i <= last; i++) if (sides[i] <= s + 1e-6) k = i; return k; };
+    const endSide = (s) => { let k = 0; for (let i = 0; i <= last; i++) if (sides[i] < s - 1e-6) k = i; return k; };
+    const a = startSide(from), b = endSide(to);
     return a === b && from <= to ? [a, frac(sides, a, from), frac(sides, b, to)] : [a, frac(sides, a, from), frac(sides, b, to), b];
 }
 const arcOf = (sides, side, t) => sides[side] + t * (sides[side + 1] - sides[side]);

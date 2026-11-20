@@ -417,6 +417,12 @@ export class Atelier {
                 const hp = own(this.profileOf({ start: h.start, segments: h.segments }));
                 if (f("profile_piece_count")(hp, Uint32Array.of(cut), 0) !== 1) throw new Error(`the cutter crosses hole ${i + 1}: cut beside it`);
             });
+            // an internal line or shape the cutter crosses (or touches) would stick out of its piece
+            (node.internal ?? []).forEach((l, i) => {
+                if (i === consume) return;
+                const lp = own(this.profileOf(l.path));
+                if (f("profile_piece_count")(lp, Uint32Array.of(cut), 0) !== 1) throw new Error(`the cutter crosses internal line ${i + 1}: move or delete it first`);
+            });
             const halves = [0, 1].map((i) => own(f("profile_piece")(out, Uint32Array.of(cut), i, 0)));
             const inner = [];
             for (let i = 0, cn = f("profile_piece_count")(cut, Uint32Array.of(out), 0); i < cn; i++) {
@@ -433,7 +439,13 @@ export class Atelier {
                 const perimeter = f("profile_length")(p, ACC)[0];
                 return { path: { start, segments }, samples: this.samplesOf(p), sides: this.sideStarts(p, perimeter, segments.length), perimeter };
             });
-            const arc = (k, pt) => arcAt(pieces[k].samples, pieces[k].sides, pt).s;
+            // the arc length of a point on loop k from its 1 mm samples; within LAND of a side start
+            // (a corner, which a sample may straddle) exactly that side start
+            const arc = (k, pt) => {
+                const s = arcAt(pieces[k].samples, pieces[k].sides, pt).s;
+                const near = pieces[k].sides.find((c) => Math.abs(c - s) < LAND);
+                return near ?? s;
+            };
             // a range that only seems to wrap, ending at the loop's start (or starting at its end):
             // that end at P (or 0), so it reads as the plain range it is
             const span = (k, from, to) => {
@@ -448,7 +460,8 @@ export class Atelier {
             for (const h of path.holes ?? []) holes[holding(loops[0], h.start) ? 0 : 1].push(h);
             for (const nt of node.notches ?? []) {
                 const pt = pointOn(out, nt.at), k = on(loops[0], pt) ? 0 : on(loops[1], pt) ? 1 : -1;
-                if (k >= 0) notches[k].push({ ...nt, at: arc(k, pt) });
+                if (k < 0) throw new Error(`notch ${node.notches.indexOf(nt) + 1} lands on neither piece`);
+                notches[k].push({ ...nt, at: arc(k, pt) });
             }
             (node.internal ?? []).forEach((l, i) => { if (i !== consume) internal[holding(loops[0], l.path.start) ? 0 : 1].push(l); });
             const seamMoves = [], dropped = [];

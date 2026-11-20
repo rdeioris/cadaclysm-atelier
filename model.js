@@ -160,19 +160,22 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
         fields.meta = { ...(seam.meta ?? {}), atelier: anchor };
         ops.push({ op: "set", id: sid, fields });
     }
+    // the new pieces take the cut piece's place in the list
     const g = byId(cur).get("garment");
-    ops.push({ op: "set", id: "garment", fields: { patterns: g.patterns.filter((p) => p !== id), seams: g.seams.filter((s) => !dropped.includes(s)) } });
+    const patterns = g.patterns.filter((p) => !ids.includes(p)).flatMap((p) => (p === id ? ids : [p]));
+    ops.push({ op: "set", id: "garment", fields: { patterns, seams: g.seams.filter((s) => !dropped.includes(s)) } });
     for (const s of dropped) ops.push({ op: "remove", id: s });
     ops.push({ op: "remove", id }, { op: "remove", id: `${id}_outline` });
     if (sew) {
+        // its id is new against every seam before the batch, the dropped ones too (a status names those)
         const after = withAdded(nodes, ops);
-        ops.push(...addSeam(after, { a: ids[0], b: ids[1], a_from: sew.a.from, a_to: sew.a.to, b_from: sew.b.from, b_to: sew.b.to, reversed: sew.reversed, anchor: { a: sew.a.anchor, b: sew.b.anchor } }).ops);
+        ops.push(...addSeam(after, { id: nextId(cur, "s"), a: ids[0], b: ids[1], a_from: sew.a.from, a_to: sew.a.to, b_from: sew.b.from, b_to: sew.b.to, reversed: sew.reversed, anchor: { a: sew.a.anchor, b: sew.b.anchor } }).ops);
     }
     return { ops, ids, collapsed };
 }
 
-export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor }) {
-    const id = nextId(nodes, "s");
+// `id` (optional): the new seam's id, when `nodes` lacks seams whose ids must not come back.
+export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor, id = nextId(nodes, "s") }) {
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };
     if (anchor) node.meta = { atelier: anchor };
     return { id, ops: [{ op: "add", node }, ...garmentOps(nodes, listOf(nodes, "patterns"), [...listOf(nodes, "seams"), id])] };
