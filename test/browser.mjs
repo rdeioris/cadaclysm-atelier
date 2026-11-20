@@ -700,8 +700,10 @@ async function check(cdp, base) {
             const gw0 = await hoverAt(gp0), gwx = await hoverAt([gp0[0] + 40, gp0[1]]), gwy = await hoverAt([gp0[0], gp0[1] + 40]);
             if (gw0.snap || gwx.snap || gwy.snap) throw new Error(`a snap away from geometry with Grid off: ${gw0.snap}/${gwx.snap}/${gwy.snap}`);
             const kx = (gwx.world[0] - gw0.world[0]) / 40, ky = (gwy.world[1] - gw0.world[1]) / 40;      // world mm a CSS px, each axis
-            const STEP = 100;                                                                          // the worker's grid step
-            const cross = [Math.round(gw0.world[0] / STEP) * STEP, Math.round(gw0.world[1] / STEP) * STEP];
+            // a 10 mm crossing that is not a 100 mm one: the snap's step (the work plane's 10 mm, the README's
+            // "10 mm grid"), not the drawn grid's 100 mm squares, which every 100 mm crossing would also pass
+            const tenNotHundred = (v) => { const c = Math.round(v / 10) * 10; return Math.abs(c % 100) < 1e-9 ? c + 10 : c; };
+            const cross = [tenNotHundred(gw0.world[0]), tenNotHundred(gw0.world[1])];
             const onGrid = [gp0[0] + (cross[0] - gw0.world[0]) / kx, gp0[1] + (cross[1] - gw0.world[1]) / ky];
             const gridOff = await hoverAt(onGrid);
             if (gridOff.snap === "grid") throw new Error("a grid snap with Grid off");
@@ -798,8 +800,8 @@ async function check(cdp, base) {
             await until("the size dialog", () => evaluate(`document.getElementById("size-dialog").open`), 30000);
             await evaluate(`document.getElementById("size-cancel").click()`);
             await until("the dialog closed", () => evaluate(`!document.getElementById("size-dialog").open`), 30000);
-            await sleep(500);
-            if ((await patternCount()) !== rectsBefore + 1) throw new Error("Cancel placed a piece");
+            const afterCancel = await saveJson();            // the round trip: everything before it handled
+            if (afterCancel.nodes.filter((n) => n.kind === "garment.pattern").length !== rectsBefore + 1 || (await patternCount()) !== rectsBefore + 1) throw new Error("Cancel placed a piece");
             await key("Escape", "Escape", 27);
             await noStatusError();
             failIfErrors();
@@ -1133,8 +1135,8 @@ async function check(cdp, base) {
                 await key("Enter", "Enter", 13);
                 await click(screenOf([c0[0] + 75, c0[1] + 65]));
                 await until("Enter between the clicks", async () => /a cutter needs two points/.test((await statusError()) ?? ""), 30000);
-                await sleep(300);
-                if ((await patternCount()) !== nC + 1) throw new Error("Enter waited for the click after it: the piece was cut");
+                const afterRace = await saveJson();             // the round trip: the second click and anything it did handled
+                if (afterRace.nodes.filter((n) => n.kind === "garment.pattern").length !== nC + 1 || (await patternCount()) !== nC + 1) throw new Error("Enter waited for the click after it: the piece was cut");
                 await key("Escape", "Escape", 27);
                 // the left half, then Cut & Sew across its middle
                 await selectPiece(leftHalf);
