@@ -14,7 +14,8 @@ import { Atelier, forPage } from "./kernel.js";
 import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox } from "./arrange.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
-import { pxToWorld, mmPerPx, hitOf, unionBounds } from "./view2d.js";
+import { unionBounds } from "./view2d.js";
+import { Pointer2d } from "./pointer2d.js";
 
 const ready = (async () => {
     const module = await load();
@@ -130,42 +131,20 @@ function fit2d() {
     viewer.frameSphere(1, [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2, 0], 0.55 * Math.hypot(b[2] - b[0], b[3] - b[1]) + 10);
 }
 
-// A 2D pointer event: the pick under it decoded through the item map, and the pattern point
-// (snapped when the page asks and snapping is on). Answered as `at2d` with the event's seq.
+// The 2D pointer events (pointer2d.js): the pick under each decoded through the item map, and
+// the pattern point (snapped when the page asks and snapping is on), answered as `at2d` in order.
+// A pick or snap the View never answers is given up after 2 s, so the chain always moves on.
 const snapping = { on: false, grid: false };
 // Snapping while a drawing tool is armed (spec §2), best first; the grid when the toggle is on.
 const SNAP_KINDS = ["end", "vertex", "point", "midpoint", "intersection", "quadrant", "edge", "alignment"];
-let chain2d = Promise.resolve();
-function pointer2d(data) {
-    chain2d = chain2d.then(() => at2d(data)).catch((e) => {
-        post({ kind: "at2d", seq: data.seq, phase: data.phase, world: null, hit: null, snap: null, mmPerPx: 0 }); // frees the page's moveBusy
-        post({ kind: "error", text: String(e?.message ?? e) });
-    });
-}
-async function at2d({ seq, phase, x, y, snap }) {
-    const none = () => post({ kind: "at2d", seq, phase, world: null, hit: null, snap: null, mmPerPx: 0 });
-    // no 2D window (F3 hides it: an empty rect) maps nothing, and its mmPerPx would be Infinity
-    const shown = (r) => r && items2d && r.rect[2] > 0 && r.rect[3] > 0;
-    const r0 = viewer.frameReport()[1];
-    if (!shown(r0)) { none(); return; }
-    const px = [x - r0.rect[0], y - r0.rect[1]];
-    const p = await viewer.pick(1, px[0], px[1]);
-    // the camera the pick ran with (a zoom, a pan or a rects change may have landed meanwhile)
-    const r = viewer.frameReport()[1];
-    if (!shown(r)) { none(); return; }
-    const drawings = new Map(atelier.drawings().map((d) => [d.id, d]));
-    const hit = p ? hitOf(items2d.what(p.item), p, drawings, (at) => atelier.pieceAt(at)) : null;
-    let world = pxToWorld(r, px), snapped = null;
-    if (snapping.on && snap) {
-        const s = await viewer.snap(1, px[0], px[1]);
-        if (s) { world = [s.point[0], s.point[1]]; snapped = { kind: s.kind, label: s.label, lockedAngle: s.lockedAngle }; }
-    }
-    if (phase === "hover") {
-        const id = hit?.id ?? null;
-        if (id !== hover2d) { hover2d = id; refresh2d(); }
-    }
-    post({ kind: "at2d", seq, phase, world, hit, snap: snapped, mmPerPx: mmPerPx(r) });
-}
+const pointers2d = new Pointer2d({
+    viewer: () => viewer, items: () => items2d,
+    drawings: () => new Map(atelier.drawings().map((d) => [d.id, d])),
+    pieceAt: (at) => atelier.pieceAt(at),
+    snapping: () => snapping.on,
+    hovered: (id) => { if (id !== hover2d) { hover2d = id; refresh2d(); } },
+    post,
+});
 
 // Box select over viewport 1 (device pixels local to it): the selected piece's points, or pieces.
 // `what` is "points" or "pieces"; left to right a window, right to left a crossing box.
@@ -478,7 +457,7 @@ self.onmessage = async ({ data }) => {
             case "sim": simCommand(data.action); break;
             case "tool3d": await tool3d(data); break;
             case "rects": setRects(data.rects); break;
-            case "pointer2d": pointer2d(data); break;
+            case "pointer2d": pointers2d.event(data); break;
             case "snapping":
                 snapping.on = !!data.on; snapping.grid = !!data.grid;
                 viewer.setSnap(snapping.on ? { kinds: snapping.grid ? [...SNAP_KINDS, "grid"] : SNAP_KINDS, marker: true } : null);
@@ -486,7 +465,7 @@ self.onmessage = async ({ data }) => {
                 break;
             case "snapBase": viewer.setSnapBase(data.point ? [data.point[0], data.point[1], 0] : null, 45); break;
             // the pointer left the 2D window: no piece is hovered (after the events before it)
-            case "leave2d": chain2d = chain2d.then(() => { if (hover2d !== null) { hover2d = null; refresh2d(); } }).catch(() => {}); break;
+            case "leave2d": pointers2d.after(() => { if (hover2d !== null) { hover2d = null; refresh2d(); } }); break;
             // the ellipse being dragged is the kernel's, as Béziers
             case "overlay2d": {
                 let curves = null;
