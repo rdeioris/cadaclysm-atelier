@@ -42,6 +42,9 @@ const node = (a, id) => m.byId(a.nodes()).get(id);
     a.preview(m.setOutline(a.nodes(), "p1", m.rectPath(500, 0, 100, 50)));
     const mir = a.mirrored("p1", [0, 0, 0, 1]);
     assert.ok(m.pathPoints(mir).every(([x]) => x <= 1e-9 && x >= -100 - 1e-9));
+    // an axis off the origin is two points as well: across x = 100, the committed rect lands on 100..200
+    const off = a.mirrored("p1", [100, 0, 100, 50]);
+    assert.ok(m.pathPoints(off).every(([x, y]) => x >= 100 - 1e-9 && x <= 200 + 1e-9 && y >= -1e-9 && y <= 50 + 1e-9), "mirrored across x = 100");
     a.endPreview(false);
     a.free();
 }

@@ -58,6 +58,13 @@ const moved = a.transformed("p1", [1, 0, 10, 0, 1, 20]);
 assert.deepEqual(m.pathPoints(moved)[0].map(Math.round), [10, 20]);
 const mir = a.mirrored("p1", [0, 0, 0, 1]);
 assert.ok(m.pathPoints(mir).every(([x]) => x <= 1e-9));
+// the Mirror tool's axis is two points (tools.js): a line off the origin, x = 100 from (100, 0) to (100, 50)
+{
+    const key = (pts) => [...new Set(pts.map(([x, y]) => `${Math.round(x * 1e6) / 1e6 + 0},${Math.round(y * 1e6) / 1e6 + 0}`))].sort();
+    const before = m.pathPoints(m.byId(a.nodes()).get("p1_outline").path);
+    const off = a.mirrored("p1", [100, 0, 100, 50]);
+    assert.deepEqual(key(m.pathPoints(off)), key(before.map(([x, y]) => [200 - x, y])), "x -> 200 - x across the line through (100, 0) and (100, 50)");
+}
 
 // DXF out and back in: two more patterns
 const dxf = a.toDxf();

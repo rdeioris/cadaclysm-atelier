@@ -426,7 +426,9 @@ export class Atelier {
     }
     // m6 is the kernel's row-major 2x3: x' = m0 x + m1 y + m2, y' = m3 x + m4 y + m5.
     transformed(id, m6) { return this.mapped(id, (p) => this.f("profile_transform2d")(p, Float64Array.from(m6))); }
-    mirrored(id, [px, py, dx, dy]) { return this.mapped(id, (p) => this.f("profile_mirror")(p, px, py, dx, dy)); }
+    // The axis is two points on the line, [x0, y0, x1, y1], as the Mirror tool sends it (tools.js);
+    // profile_mirror takes a point and a direction.
+    mirrored(id, [x0, y0, x1, y1]) { return this.mapped(id, (p) => this.f("profile_mirror")(p, x0, y0, x1 - x0, y1 - y0)); }
 
     // The two pieces an open `cutter` (path JSON) cuts pattern `id` into, all from kernel calls
     // (spec §4): the outline's two pieces where the cutter crosses it (profile_pieces), each
