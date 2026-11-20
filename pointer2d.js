@@ -45,8 +45,17 @@ export class Pointer2d {
         const r0 = v.frameReport()[1];
         if (!shown(r0)) { none(); return; }
         const px = [x - r0.rect[0], y - r0.rect[1]];
-        let p = await within(v.pick(1, px[0], px[1]), ms, timers);
-        if (p === TIMED_OUT) { p = null; post({ kind: "status", text: "the 2D window did not answer a pick: taken as no hit" }); }
+        const pick = async () => {
+            const got = await within(v.pick(1, px[0], px[1]), ms, timers);
+            if (got !== TIMED_OUT) return got;
+            post({ kind: "status", text: "the 2D window did not answer a pick: taken as no hit" });
+            return null;
+        };
+        const gen = items().gen;
+        let p = await pick();
+        // the items changed while the pick was out (a commit re-showed them): an item it names
+        // that is gone is asked again, once, of the items as they are now
+        if (p && !items().what(p.item) && items().gen !== gen) p = await pick();
         // the camera the pick ran with (a zoom, a pan or a rects change may have landed meanwhile)
         const r = v.frameReport()[1];
         if (!shown(r)) { none(); return; }

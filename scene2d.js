@@ -153,7 +153,9 @@ const lookOf = (s) => JSON.stringify([s.dash ?? null, s.size ?? null, s.pointSty
 const snapSig = (s) => (s.snapPoints?.length ? `${s.snapLabel}:${Array.from(s.snapPoints).join(",")}` : "");
 
 export class Items2d {
-    constructor(viewer, layer = LAYER_2D) { this.v = viewer; this.layer = layer; this.byKey = new Map(); this.map = new Map(); }
+    // `gen` counts the items shown and removed: a pick answered across a change names an item
+    // that may be gone (pointer2d.js picks again then)
+    constructor(viewer, layer = LAYER_2D) { this.v = viewer; this.layer = layer; this.byKey = new Map(); this.map = new Map(); this.gen = 0; }
     what(item) { return this.map.get(item) ?? null; }
     item(key) { return this.byKey.get(key)?.item ?? 0; }
     clear() { for (const key of [...this.byKey.keys()]) this.drop(key); }
@@ -163,6 +165,7 @@ export class Items2d {
         this.v.remove(e.item);
         this.map.delete(e.item);
         this.byKey.delete(key);
+        this.gen++;
     }
     apply(specs) {
         const keep = new Set();
@@ -214,6 +217,7 @@ export class Items2d {
         if (s.snapPoints?.length) v.setSnapPoints(item, s.snapPoints, s.snapLabel ?? null);
         this.byKey.set(s.key, { item, show: s.show, sig: s.sig, colour: s.colour, look: lookOf(s), states: s.states ? String(s.states) : null, snap: snapSig(s), at: String(s.data) });
         this.map.set(item, s.what);
+        this.gen++;
     }
 }
 

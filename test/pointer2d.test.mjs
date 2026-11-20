@@ -18,12 +18,13 @@ function harness() {
         fire() { const all = [...this.pending.values()]; this.pending.clear(); all.forEach((t) => t.fn()); return all.map((t) => t.ms); } };
     const viewer = { pick: never, snap: never, frameReport: () => [null, report] };
     const posts = [], hovers = [];
+    const items = { gen: 0, what: () => ({ kind: "fill", id: "p1" }) };
     let snapOn = false;
     const p = new Pointer2d({
-        viewer: () => viewer, items: () => ({ what: () => ({ kind: "fill", id: "p1" }) }), drawings: () => new Map(),
+        viewer: () => viewer, items: () => items, drawings: () => new Map(),
         pieceAt: () => null, snapping: () => snapOn, hovered: (id) => hovers.push(id), post: (m) => posts.push(m), timers,
     });
-    return { p, viewer, timers, posts, hovers, snap: (on) => { snapOn = on; } };
+    return { p, viewer, items, timers, posts, hovers, snap: (on) => { snapOn = on; } };
 }
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 const at2d = (posts) => posts.filter((m) => m.kind === "at2d");
@@ -73,6 +74,24 @@ const at2d = (posts) => posts.filter((m) => m.kind === "at2d");
     assert.deepEqual(a.world, pxToWorld(report, [400, 300]));
     assert.equal(a.snap, null);
     assert.ok(h.posts.some((m) => m.kind === "status" && /did not answer a snap/.test(m.text)));
+}
+{   // a pick answered across a change of the items names an item that is gone: picked again, once
+    const h = harness();
+    const live = new Map([[4, { kind: "sew", id: "p2" }]]);
+    h.items.what = (item) => live.get(item) ?? null;
+    let picks = 0;
+    h.viewer.pick = async () => { picks++; if (picks === 1) { h.items.gen++; return { item: 3, point: [0, 0, 0] }; } return { item: 4, point: [0, 0, 0] }; };
+    h.p.event({ seq: 1, phase: "down", x: 900, y: 300, snap: false });
+    await settle();
+    assert.equal(picks, 2, "picked again after the items changed");
+    assert.equal(at2d(h.posts)[0].hit?.id, "p2");
+    // the items unchanged: an unknown item is no hit, not asked again
+    picks = 0;
+    h.viewer.pick = async () => { picks++; return { item: 9, point: [0, 0, 0] }; };
+    h.p.event({ seq: 2, phase: "down", x: 900, y: 300, snap: false });
+    await settle();
+    assert.equal(picks, 1);
+    assert.equal(at2d(h.posts)[1].hit, null);
 }
 {   // within(): the value when it comes first; TIMED_OUT when the timer does
     const t = { setTimeout: (fn) => { t.fn = fn; return 1; }, clearTimeout: () => { t.cleared = true; } };

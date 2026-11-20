@@ -115,7 +115,9 @@ assert.ok(names.includes("showMesh") && names.includes("remove"), names.join());
 // the map answers a pick on the sew line, and forgets removed items
 const sewItem = items.item("p1/sew");
 assert.deepEqual(items.what(sewItem), { kind: "sew", id: "p1" });
+const gen0 = items.gen;
 items.apply(specs2d(state({ drawings: [drawing("p2", 200)], seams: [] })));
+assert.ok(items.gen > gen0, "a removal moves the generation on (a pick across it is asked again)");
 assert.equal(items.what(sewItem), null);
 assert.equal(items.item("p1/sew"), 0);
 
