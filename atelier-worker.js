@@ -19,6 +19,7 @@ import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
 import { unionBounds, boxPiece } from "./view2d.js";
 import { Pointer2d } from "./pointer2d.js";
 import { GpuDrapeHost, gpuClothOk } from "./gpu-drape.js";
+import { filmCommand } from "./film.js";
 
 const ready = (async () => {
     const module = await load();
@@ -65,6 +66,7 @@ const sim = {
     film: false,                         // ?film=1: Simulate builds paused, the driver steps it
     lastMs: null,                        // the last reported frame's step time
     stops: 0,                            // how many times the cloth has said it stopped
+    drawn: null,                         // film: the View's framesDrawn after it drew the last stop
 };
 let dragging = null;                     // { vertex, start, x, y, basis } while a cloth drag is on
 
@@ -235,7 +237,7 @@ function simPost() {
     post({
         kind: "sim", live: sim.live, running, building: sim.building, stale: sim.stale,
         health: sim.health, phase: sim.phase, fps: r.fps, ms: r.ms, pins: sim.pins ? sim.pins.length / 3 : 0, meshGen: sim.meshGen,
-        engine: clothEngine, frame: sim.status ? sim.status[0] : null, stepMs: sim.lastMs, stops: sim.stops,
+        engine: clothEngine, frame: sim.status ? sim.status[0] : null, stepMs: sim.lastMs, stops: sim.stops, drawn: sim.drawn,
     });
 }
 
@@ -243,7 +245,7 @@ function removeCloth() {
     for (const m of sim.meshes) { if (!m.gpu) viewer.remove(m.item); items.items.delete(m.item); }
     sim.meshes = [];
     if (sim.pinsItem) { viewer.remove(sim.pinsItem); sim.pinsItem = 0; }
-    sim.positions = null; sim.pins = null; sim.health = null; sim.status = null;
+    sim.positions = null; sim.pins = null; sim.health = null; sim.status = null; sim.lastMs = null;
     dragging = null;
     flatVisible(true);
 }
@@ -304,6 +306,8 @@ function onCloth({ data: m }) {
                 sim.running = m.running; sim.stale = m.stale ?? sim.stale;
                 if (!m.running) { sim.rate.clear(); sim.stops++; }
                 if (!m.live) { sim.live = false; sim.building = false; sim.stale = null; removeCloth(); }
+                // film: draw the stop's frame now, so a step resolves on a frame the View has drawn
+                if (sim.film && !m.running) { viewer.draw(); sim.drawn = viewer.stats().framesDrawn; }
                 if (m.error) { sim.building = false; post({ kind: "error", text: `simulation: ${m.error}` }); }
                 if (m.reason) post({ kind: "status", text: m.reason });
                 simPost();
@@ -315,14 +319,14 @@ function onCloth({ data: m }) {
 function simCommand(action, data = {}) {
     if (!clothPort) throw new Error("the cloth worker is not connected");
     if (action === "reset") { clothPort.postMessage({ kind: "reset" }); return; }
-    if (action === "step") { if (sim.live) clothPort.postMessage({ kind: "run", frames: Math.max(1, data.frames | 0) }); return; }
-    if (action === "run") { if (sim.live) clothPort.postMessage({ kind: "run" }); return; }
+    const film = filmCommand(action, sim, data);            // step / run / pause, the film's toggle
+    if (film !== undefined) { if (film) clothPort.postMessage(film); return; }
     if (action !== "toggle") return;
     // running: pause (stale or not); stopped: rebuild a missing or stale cloth, else run on
     if (sim.live && sim.running) clothPort.postMessage({ kind: "pause" });
     else if (!sim.live || sim.stale) {
         if (sim.building) return;
-        sim.building = true; sim.rate.clear();
+        sim.building = true; sim.rate.clear(); sim.lastMs = null;
         clothPort.postMessage({ kind: "build", ...garmentNow(), run: !sim.film });
         simPost();
     } else clothPort.postMessage({ kind: "run" });

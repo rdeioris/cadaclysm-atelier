@@ -56,7 +56,8 @@ class FakeView {
     named(name) { return this.calls.filter((c) => c[0] === name); }
     showCloth(h, opts) { const id = this.next++; this.shown.set(id, h); this.log("showCloth", h, opts); return id; }
     remove(id) { this.log("remove", id); this.shown.delete(id); }
-    stepCloth(id, n) { this.log("stepCloth", id, n); if (!this.shown.has(id)) throw new Error(`stepCloth: item ${id} is no cloth`); return n; }
+    // `hold` > 0: that many submits held back (a weld's round trip in flight), as the View does
+    stepCloth(id, n) { this.log("stepCloth", id, n); if (!this.shown.has(id)) throw new Error(`stepCloth: item ${id} is no cloth`); if (this.hold > 0) { this.hold--; return 0; } return n; }
     async clothHealth(id) { this.log("clothHealth", id); await new Promise((r) => setTimeout(r, 2)); return { ...this.health }; }
     async clothPositions(id) {
         this.log("clothPositions", id);
@@ -150,6 +151,14 @@ assert.equal(of("frame").length, frozen, "no frames while paused");
     await host.postMessage({ kind: "run", frames: 1 });
     await until("one more", () => !host.running && !host.looping);
     assert.equal(host.frames - f0, 4);
+    // a round trip holds submits back mid-step: the step still steps exactly its frames
+    const n1 = of("frame").length;
+    view.hold = 2;
+    await host.postMessage({ kind: "run", frames: 2 });
+    await until("the held step's stop", () => !host.running && !host.looping);
+    assert.equal(view.hold, 0, "the held submits were made");
+    assert.equal(host.frames - f0, 6, "two frames stepped, not two submits");
+    assert.equal(of("frame").length - n1, 2, "two frames reported");
     frozen = of("frame").length;
 }
 

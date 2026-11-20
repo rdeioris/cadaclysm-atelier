@@ -15,6 +15,7 @@ import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
 import { ENGINE_TEXT, ENGINE_TITLE } from "./gpu-drape.js";
+import { createFilm } from "./film.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -41,19 +42,15 @@ const worker = new Worker(new URL("./atelier-worker.js", import.meta.url), { typ
 // steps the cloth and streams frames to the View's worker over a channel of their own; the page
 // only starts and stops it (through the View's worker). On the GPU path the View's worker steps it.
 const cpuCloth = new URLSearchParams(location.search).get("cloth") === "cpu";
-// ?film=1: hooks for the tutorial video's driver (scripts/atelier-hoodie in the cadaclysm repo).
-// Simulate builds the cloth paused; the driver steps it one frame at a time and captures each.
+// ?film=1: hooks for the tutorial video's driver (film.js): Simulate builds the cloth paused and
+// the driver steps it one frame at a time, capturing each.
 const filmMode = new URLSearchParams(location.search).has("film");
-let filmSaved = null;          // the resolver garment() waits on
-if (filmMode) window.atelierFilm = {
-    log: [],                   // [cloth frame, page ms, step ms] for every frame reported
-    stops: 0,                  // rises each time the cloth says it has stopped: a step's last frame is then on screen
-    fpsText: null,             // the footer's text, kept when set (the driver sets the measured one)
-    viewStats: () => request("viewStats"),    // View::stats: framesDrawn, lastFrameMs, lastGpuMs, ...
-    step(n = 1) { post({ kind: "sim", action: "step", frames: n }); },
-    run() { post({ kind: "sim", action: "run" }); },
-    garment() { return new Promise((resolve) => { filmSaved = resolve; post({ kind: "save" }); }); },
-};
+const film = filmMode ? createFilm({
+    post: (m) => post(m),
+    request: (kind) => request(kind),
+    nextPaint: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+}) : null;
+if (film) window.atelierFilm = film.film;
 function startClothWorker() {
     const clothWorker = new Worker(new URL("./cloth-worker.js", import.meta.url), { type: "module" });
     const ch = new MessageChannel();
@@ -658,12 +655,7 @@ function onSim(m) {
     $("fps").textContent = m.running && m.fps > 0 ? `${m.fps.toFixed(1)} fps · ${Math.round(m.ms)} ms/step` : m.live ? "paused" : "—";
     document.body.dataset.sim = m.running ? "running" : m.live ? "paused" : "off";
     document.body.dataset.meshGen = String(m.meshGen);
-    if (filmMode) {
-        const film = window.atelierFilm;
-        film.stops = m.stops ?? film.stops;
-        if (film.fpsText) $("fps").textContent = film.fpsText;       // the step's own state message must not blank it
-        if (m.frame != null && m.stepMs != null && (!film.log.length || film.log.at(-1)[0] !== m.frame)) film.log.push([m.frame, performance.now(), m.stepMs]);
-    }
+    film?.onSim(m, (text) => { $("fps").textContent = text; });
 }
 
 
@@ -836,7 +828,7 @@ worker.onmessage = ({ data: m }) => {
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved":
-            if (filmSaved) { const r = filmSaved; filmSaved = null; r(m.text); break; }
+            if (film?.onSaved(m.text)) break;
             download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "dxf": download("garment.dxf", m.text, "application/dxf"); status(`saved garment.dxf: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "error":

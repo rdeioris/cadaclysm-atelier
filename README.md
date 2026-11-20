@@ -96,11 +96,12 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
 - `node tools/drape-probe.mjs [garment.json] [frames] [every]` steps a garment's cloth in Node
   and prints its health: a quick look at whether it sews and drapes, without the page.
 
-**Film hook** — `?film=1` is for the tutorial video's driver: Simulate builds the cloth paused,
-`atelierFilm.step(n)` steps n frames, `atelierFilm.run()` runs free, `atelierFilm.garment()` reads
-the document without a download, `atelierFilm.viewStats()` the View's counters,
-`atelierFilm.stops` counts the cloth's stops, `atelierFilm.log` holds each frame's time. Nothing in
-the UI uses it.
+**Film hook** (`film.js`) — `?film=1` is for the tutorial video's driver: Simulate builds the
+cloth paused (and then does nothing to it), `atelierFilm.step(n)` steps exactly n frames and
+resolves once the View has drawn the last (steps queue), `atelierFilm.run()` / `pause()` run free
+and stop, `atelierFilm.garment()` reads the document without a download,
+`atelierFilm.viewStats()` the View's counters, `atelierFilm.stops` counts the cloth's stops,
+`atelierFilm.log` holds each frame's time. Nothing in the UI uses it.
 
 ## Limitations (preview)
 

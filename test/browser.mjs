@@ -707,19 +707,24 @@ async function check(cdp, base) {
             await until("the worker's ready (film)", () => evaluate(`document.body?.dataset.ready === "1"`), 90000);
             await until("the avatar (film)", async () => (await count("avatar", "avatar")) === 1, 60000);
             await sample();
+            const stopsBefore = await evaluate(`window.atelierFilm.stops`);
             await evaluate(`document.getElementById("sim-toggle").click()`);
-            await until("the film cloth built", () => evaluate(`(document.getElementById("health").textContent || "").includes("frame 0") && window.atelierFilm.stops > 0`), 60000);   // the build's own stop counted
+            await until("the film cloth built", () => evaluate(`(document.getElementById("health").textContent || "").includes("frame 0") && window.atelierFilm.stops > ${stopsBefore}`), 60000);   // the build's own stop counted
             const stops0 = await evaluate(`window.atelierFilm.stops`);
-            await evaluate(`window.atelierFilm.step(3)`);
-            await until("the step's stop", async () => (await evaluate(`window.atelierFilm.stops`)) > stops0, 60000);
-            if ((await frameNo()) !== 3) throw new Error(`the film step ended at frame ${await frameNo()}, not 3`);
+            const reached = await evaluate(`window.atelierFilm.step(3)`);        // resolves once stepped and drawn
+            if (reached !== 3 || (await frameNo()) !== 3) throw new Error(`the film step ended at frame ${reached} / ${await frameNo()}, not 3`);
+            if (!((await evaluate(`window.atelierFilm.stops`)) > stops0)) throw new Error("the step resolved without a stop");
+            // Simulate on the built film cloth does nothing (no free run); steps queue one after another
+            await evaluate(`document.getElementById("sim-toggle").click()`);
+            const queued = await evaluate(`Promise.all([window.atelierFilm.step(1), window.atelierFilm.step(2)])`);
+            if (queued.join() !== "4,6" || (await frameNo()) !== 6) throw new Error(`queued steps reached ${queued} / frame ${await frameNo()}, not 4,6`);
             const view = await evaluate(`window.atelierFilm.viewStats()`);
             if (!(view.framesDrawn > 0)) throw new Error("viewStats() reports no frames drawn");
             const doc = await evaluate(`window.atelierFilm.garment()`);
             if (!doc.includes("garment.pattern")) throw new Error("garment() returned no document");
             if ((await evaluate(`window.atelierFilm.log.length`)) < 3) throw new Error("the film log is short");
             failIfErrors();
-            ok("film hook: paused build, step(3) stops at frame 3, garment(), log, viewStats");
+            ok("film hook: paused build, step(3) stops at frame 3, Simulate inert, queued steps, garment(), log, viewStats");
             await send("Page.navigate", { url: clothWanted === "cpu" ? `${base}/?cloth=cpu` : `${base}/` });
             await until("the worker's ready again", () => evaluate(`document.body?.dataset.ready === "1"`), 90000);
             await until("the avatar again", async () => (await count("avatar", "avatar")) === 1, 60000);

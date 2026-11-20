@@ -186,12 +186,12 @@ export class GpuDrapeHost {
                     } else if (this.budget <= 0) {
                         // a film step's frames are all submitted: report the last, then stop
                         if (inflight) { const f = inflight; inflight = null; await this.finish(f); }
-                        this.running = false;
-                        this.state();
+                        if (this.budget > 0) continue;         // a new run came in meanwhile
+                        if (this.running) { this.running = false; this.state(); }   // a pause meanwhile has said so already
                         break;
                     } else {
                         const f = this.submit();
-                        this.budget--;
+                        this.budget -= f.n;                    // frames stepped: a held-back submit steps none
                         const prev = inflight;
                         inflight = f;
                         if (prev) await this.finish(prev);
