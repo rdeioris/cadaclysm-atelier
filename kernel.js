@@ -215,6 +215,14 @@ export class Atelier {
         return this.drawn;
     }
     drawings() { return this.drawState().list; }
+    // The piece under pattern point [x, y]: the highest layer's (of one layer, the later piece:
+    // the 2D window draws it over) whose outline holds the point or has it on the outline, by
+    // profile_contains (a hole is not the piece); null when the point is on no piece.
+    pieceAt([x, y]) {
+        const order = this.drawings().map((d, i) => ({ id: d.id, layer: d.layer, i })).sort((a, b) => b.layer - a.layer || b.i - a.i);
+        for (const d of order) if (this.withOutline(d.id, (p) => this.f("profile_contains")(p, x, y, 0)) !== OUTSIDE) return d.id;
+        return null;
+    }
     // fn(profile) on a path JSON built as a temporary profile.path node.
     withPath(path, fn) {
         const tmp = this.f("document_new")("mm");

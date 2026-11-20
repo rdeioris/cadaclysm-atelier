@@ -154,7 +154,7 @@ async function at2d({ seq, phase, x, y, snap }) {
     const r = viewer.frameReport()[1];
     if (!shown(r)) { none(); return; }
     const drawings = new Map(atelier.drawings().map((d) => [d.id, d]));
-    const hit = p ? hitOf(items2d.what(p.item), p, drawings) : null;
+    const hit = p ? hitOf(items2d.what(p.item), p, drawings, (at) => atelier.pieceAt(at)) : null;
     let world = pxToWorld(r, px), snapped = null;
     if (snapping.on && snap) {
         const s = await viewer.snap(1, px[0], px[1]);
