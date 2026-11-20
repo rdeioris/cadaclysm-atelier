@@ -173,6 +173,22 @@ async function check(cdp, base) {
         for (let i = 1; i <= steps; i++) await mouse("mouseMoved", a[0] + ((b[0] - a[0]) * i) / steps, a[1] + ((b[1] - a[1]) * i) / steps);
         await mouse("mouseReleased", b[0], b[1]);
     };
+    // A hover at p (CSS px) and its answer {hit, snap, world, hover2d}, read once dataset.worldAt names p
+    // (device px): the answer to THIS hover, never one for an earlier point still in flight (d36fb2e). The
+    // hovered piece is posted before the answer, so it is settled with it. Already answered at p: a hover
+    // 1 px off first, so the answer read is a new one.
+    const hoverAnswer = (p) => evaluate(`(() => { const r = document.getElementById("view").getBoundingClientRect(), d = document.body.dataset;
+        const at = (d.worldAt ?? "").split(",").map(Number), p = ${JSON.stringify(p)};
+        if (!d.worldAt || Math.abs(at[0] / devicePixelRatio + r.left - p[0]) > 0.51 || Math.abs(at[1] / devicePixelRatio + r.top - p[1]) > 0.51) return null;
+        return { hit: d.hit ?? "", snap: d.snap ?? "", world: d.world.split(",").map(Number), hover2d: d.hover2d ?? "" }; })()`);
+    const hoverInfo = async (p) => {
+        const answer = async (q) => {
+            await mouse("mouseMoved", q[0], q[1], { buttons: 0 });
+            return until(`the hover answer at ${q}`, () => hoverAnswer(q), 10000);
+        };
+        if (await hoverAnswer(p)) await answer([p[0] + 1, p[1]]);
+        return answer(p);
+    };
     const key = async (k, code, vk, modifiers = 0) => {
         await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: k, code, windowsVirtualKeyCode: vk, modifiers });
         await send("Input.dispatchKeyEvent", { type: "keyUp", key: k, code, windowsVirtualKeyCode: vk, modifiers });
@@ -438,11 +454,7 @@ async function check(cdp, base) {
             const hover2d = () => evaluate(`document.body.dataset.hover2d ?? ""`);
             let hovered = "";
             for (const [fx, fy] of [[0.32, 0.43], [0.68, 0.43], [0.3, 0.5], [0.7, 0.5], [0.5, 0.75]]) {
-                await evaluate(`document.body.dataset.hit = "__"`);
-                await mouse("mouseMoved", sx + sw * fx, sy + sh * fy, { buttons: 0 });
-                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
-                await sleep(200);
-                hovered = await hover2d();
+                hovered = (await hoverInfo([sx + sw * fx, sy + sh * fy])).hover2d;
                 if (hovered) break;
             }
             if (!hovered) throw new Error("no piece hovered in the 2D window");
@@ -564,10 +576,8 @@ async function check(cdp, base) {
             let on = null;
             for (const [fx, fy] of [[0.3, 0.5], [0.32, 0.43], [0.68, 0.43], [0.7, 0.5], [0.5, 0.75], [0.4, 0.5], [0.6, 0.5], [0.5, 0.4]]) {
                 const at = [x2 + w2 * fx, y2 + h2 * fy];
-                await evaluate(`document.body.dataset.hit = "__"`);
-                await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
-                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
-                if ((await evaluate(`document.body.dataset.hit`)) === "pattern" && (await evaluate(`document.body.dataset.hover2d ?? ""`)) === firstId) { on = at; break; }
+                const h = await hoverInfo(at);
+                if (h.hit === "pattern" && h.hover2d === firstId) { on = at; break; }
             }
             if (!on) throw new Error(`no spot on ${firstId} found in the 2D window`);
             await drag(on, [on[0] + 30, on[1]], 6);
@@ -685,12 +695,7 @@ async function check(cdp, base) {
             // the Grid button adds the grid snap and takes it away: a hover over a grid crossing,
             // clear of the rectangle, answers "grid" only while Grid is on
             await evaluate(`document.querySelector('#tools2d [data-tool=polygon]').click()`);
-            const hoverAt = async (p) => {
-                await evaluate(`document.body.dataset.hit = "__"`);
-                await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
-                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
-                return { world: (await evaluate(`document.body.dataset.world ?? ""`)).split(",").map(Number), snap: await evaluate(`document.body.dataset.snap ?? ""`) };
-            };
+            const hoverAt = hoverInfo;
             const gp0 = [rx0 + rw0 * 0.75, ry0 + rh0 * 0.15];
             const gw0 = await hoverAt(gp0), gwx = await hoverAt([gp0[0] + 40, gp0[1]]), gwy = await hoverAt([gp0[0], gp0[1] + 40]);
             if (gw0.snap || gwx.snap || gwy.snap) throw new Error(`a snap away from geometry with Grid off: ${gw0.snap}/${gwx.snap}/${gwy.snap}`);
@@ -753,10 +758,7 @@ async function check(cdp, base) {
             let onPiece = null;
             for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.5], [0.4, 0.5], [0.2, 0.5], [0.6, 0.5], [0.35, 0.4], [0.35, 0.6]]) {
                 const at = [bx + bw * fx, bY + bh * fy];
-                await evaluate(`document.body.dataset.hit = "__"`);
-                await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
-                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
-                if ((await evaluate(`document.body.dataset.hit`)) === "pattern") { onPiece = at; break; }
+                if ((await hoverInfo(at)).hit === "pattern") { onPiece = at; break; }
             }
             if (!onPiece) throw new Error("no spot on the surviving piece found");
             await drag(onPiece, [onPiece[0] + 40, onPiece[1]], 6);
@@ -1097,7 +1099,8 @@ async function check(cdp, base) {
                     if (!s) throw new Error(`no atelier worker session among ${[...workerSessions.keys()]}`);
                     cdp.send("Runtime.evaluate", { expression: `{ const t = Date.now(); while (Date.now() - t < ${ms}); }` }, s).catch(() => {});
                     await sleep(300);                   // the stall under way before the click
-                };                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                };
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
                 await until("the polygon selected", () => evaluate(`/size\\s*100\\s*×\\s*50/.test(document.getElementById("props").textContent)`), 30000);
                 const nC = await patternCount();
                 await evaluate(`document.querySelector('#tools2d [data-tool=cut]').click()`);
