@@ -156,7 +156,7 @@ function boxSelect({ from, to, what }) {
         return { indices: item ? hits.filter((r) => r.item === item && r.kind === "point").map((r) => r.index) : [] };
     }
     const ids = new Set();
-    for (const r of hits) { const id = boxPiece(items2d.what(r.item)); if (id) ids.add(id); }
+    for (const r of hits) { const id = boxPiece(items2d.what(r.item), w < 0); if (id) ids.add(id); }
     return { ids: [...ids] };
 }
 

@@ -94,5 +94,7 @@ for (const ccw of [true, false]) {
 }
 // a box select takes a piece from any of its own drawing, not from its label, a seam or a handle
 for (const kind of ["fill", "sew", "cut", "hole", "internal", "notch", "grain"]) assert.equal(boxPiece({ kind, id: "p1", index: 0 }), "p1", kind);
+for (const kind of ["cut", "hole", "internal", "notch", "grain"]) assert.equal(boxPiece({ kind, id: "p1", index: 0 }, false), null, `a window: not from its ${kind}`);
+for (const kind of ["fill", "sew"]) assert.equal(boxPiece({ kind, id: "p1" }, false), "p1", `a window: from its ${kind}`);
 for (const what of [{ kind: "label", id: "p1" }, { kind: "seam", id: "s1", pattern: "p1" }, { kind: "points", id: "p1" }, null]) assert.equal(boxPiece(what), null, JSON.stringify(what));
 console.log("view2d: ok");

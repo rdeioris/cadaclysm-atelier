@@ -126,11 +126,13 @@ function segDist([x, y], a, b) {
     return Math.hypot(x - (a[0] + t * dx), y - (a[1] + t * dy));
 }
 
-/** The piece a box select takes from an item it touches: any of the piece's own drawing (its
- *  fill, sew and cut lines, holes, internal lines, notches, grain); null for a label (its text runs
- *  past the piece), a seam or an edit handle. */
-const BOX_KINDS = new Set(["fill", "sew", "cut", "hole", "internal", "notch", "grain"]);
-export const boxPiece = (what) => (what && BOX_KINDS.has(what.kind) ? what.id : null);
+/** The piece a box select takes from an item it answers. A crossing box: any of the piece's own
+ *  drawing it touches (its fill, sew and cut lines, holes, internal lines, notches, grain). A
+ *  window: only the outline (fill, sew), which lies wholly inside only when the piece does -- its
+ *  grain or a hole may lie inside a window over part of it. Null for a label (its text runs past
+ *  the piece), a seam or an edit handle. */
+const BOX_KINDS = new Set(["fill", "sew", "cut", "hole", "internal", "notch", "grain"]), WINDOW_KINDS = new Set(["fill", "sew"]);
+export const boxPiece = (what, crossing = true) => (what && (crossing ? BOX_KINDS : WINDOW_KINDS).has(what.kind) ? what.id : null);
 
 /** The box around every drawing's bounds; null for none. */
 export function unionBounds(drawings) {
