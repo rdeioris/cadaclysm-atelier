@@ -7,7 +7,8 @@
 // allowance and saves with Ctrl+S (the download is read back), New and Open, refuses an STL
 // avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Then
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
-// of a piece while it runs (re-meshed), Pause, Reset. Then the 2D tools on a new garment, ending
+// of a piece while it runs (re-meshed), Pause, Reset, on the cloth engine the page picked (the GPU on
+// WebGPU, else the CPU worker; #sim-engine checked). Then the 2D tools on a new garment, ending
 // with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
 // internal square by dialog converted to a hole. Each step
 // prints ok. Any console error or uncaught exception, in the page or its workers, fails.
@@ -16,6 +17,10 @@
 //     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the drape
 //     ATELIER_SHOT_HOLES=holes.png ...                   # also one of the holed piece in 2D
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
+//     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
+//                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
+//     ATELIER_FPS=1 ...                                  # also the drape's rate over frames 60..180
+//                                                        # (with ATELIER_SHOT: the picture at frame 180)
 //     node test/browser.mjs --chrome <path>              # (or the CHROME variable)
 //     node test/browser.mjs --headed                     # watch it
 //
@@ -213,8 +218,15 @@ async function check(cdp, base) {
         };
         try {
             // 1. ready: the new document has one fabric, no patterns, and the avatar
-            await send("Page.navigate", { url: `${base}/` });
+            const clothWanted = (process.env.ATELIER_CLOTH ?? "").toLowerCase();
+            await send("Page.navigate", { url: clothWanted === "cpu" ? `${base}/?cloth=cpu` : `${base}/` });
             await until("the worker's ready", () => evaluate(`document.body?.dataset.ready === "1"`), 90000);
+            // the cloth engine: CPU when asked, else the GPU whenever the page has a WebGPU adapter
+            const engine = await evaluate(`document.getElementById("sim-engine").textContent`);
+            const adapter = await evaluate(`(async () => { try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch { return false; } })()`);
+            const engineWanted = clothWanted === "cpu" ? "CPU" : clothWanted === "gpu" || adapter ? "GPU · GIA off" : "CPU";
+            if (engine !== engineWanted) throw new Error(`#sim-engine shows "${engine}", not "${engineWanted}" (ATELIER_CLOTH=${clothWanted || "-"}, WebGPU adapter ${adapter})`);
+            if (!clothWanted && !adapter) console.log("note - no WebGPU adapter in this browser: the cloth runs on the CPU");
             await until("the default fabric", async () => (await count("fabrics", "fabric")) === 1, 30000);
             await until("the avatar", async () => (await count("avatar", "avatar")) === 1, 60000);
             const robots = await evaluate(`document.querySelector('meta[name=robots]')?.content`);
@@ -224,7 +236,7 @@ async function check(cdp, base) {
             const sim = await evaluate(`(() => { const b = document.querySelector('#tools3d [data-command=simulate]'); return b && !b.disabled && document.getElementById("sim-reset").disabled; })()`);
             if (!sim) throw new Error("Simulate should be on and Reset off");
             failIfErrors();
-            ok("ready: one fabric, the f-M avatar, Simulate on");
+            ok(`ready: one fabric, the f-M avatar, Simulate on; cloth engine ${engine}`);
 
             // 1b. the 2D window is the View's: items on it, and a hover over the empty window hits nothing
             await until("the 2D window ready", async () => (await evaluate(`document.getElementById("view").dataset.rect2d ?? ""`)).split(",").length === 4, 30000);
@@ -604,7 +616,7 @@ async function check(cdp, base) {
             const target = Number(process.env.ATELIER_DRAPE_FRAMES ?? 4);
             await until(`frame ${target}`, async () => (await frameNo()) >= target || (await simState()) !== "running", Math.max(60000, target * 2000));
             if ((await simState()) !== "running") throw new Error(`the sample stopped: ${await statusText()}`);
-            if (process.env.ATELIER_SHOT) {
+            if (process.env.ATELIER_SHOT && !process.env.ATELIER_FPS) {
                 await frames();
                 const shot = await send("Page.captureScreenshot", { format: "png" });
                 writeFileSync(process.env.ATELIER_SHOT, Buffer.from(shot.data, "base64"));
@@ -621,6 +633,42 @@ async function check(cdp, base) {
             await evaluate(`document.getElementById("sim-reset").click()`);
             await until("reset", async () => (await simState()) === "off", 30000);
             failIfErrors();
+
+            // ATELIER_FPS: the app's real rate on the sample afresh, from the health line's frame
+            // number against wall time: frames 0..60 (sewing) and 60..180 (draping)
+            if (process.env.ATELIER_FPS) {
+                await sample();
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("the cloth running", async () => (await simState()) === "running", 60000);
+                const marks = new Map();                       // frame mark -> [frame seen, wall ms]
+                const t0 = performance.now();
+                let f = 0;
+                while (!marks.has(180)) {
+                    f = await frameNo();
+                    const now = performance.now();
+                    for (const m of [0, 60, 180]) if (f >= m && !marks.has(m)) marks.set(m, [f, now]);
+                    if ((await simState()) !== "running") throw new Error(`the drape stopped at frame ${f}: ${await statusText()}`);
+                    if (now - t0 > 600000) throw new Error(`frame 180 not reached in 10 min (frame ${f})`);
+                    await sleep(20);
+                }
+                const rate = (a, b) => { const [fa, ta] = marks.get(a), [fb, tb] = marks.get(b); return (fb - fa) / ((tb - ta) / 1000); };
+                const fps = rate(60, 180), sew = rate(0, 60);
+                const vertices = /(\d+) vertices/.exec(await health())?.[1];
+                if (process.env.ATELIER_SHOT) {
+                    const shot = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT, Buffer.from(shot.data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT}`);
+                }
+                const meter = await evaluate(`document.getElementById("fps").textContent`);
+                console.log(`fps: ${fps.toFixed(1)} (${(1000 / fps).toFixed(1)} ms/frame), sew ${sew.toFixed(1)}, engine ${engine}, vertices ${vertices}`);
+                console.log(`fps meter: ${meter}; ${await health()}`);
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("paused", async () => (await simState()) === "paused", 30000);
+                await evaluate(`document.getElementById("sim-reset").click()`);
+                await until("reset", async () => (await simState()) === "off", 30000);
+                failIfErrors();
+                ok("fps measured, paused, reset");
+            }
             // ---- the 2D tools, on a new garment ----
             await evaluate(`document.getElementById("menu-new").click()`);
             await until("an empty garment", async () => (await patternCount()) === 0, 30000);
@@ -1077,7 +1125,8 @@ async function check(cdp, base) {
         await sleep(300);
         failIfErrors();
         const backend = await evaluate(`document.getElementById("lic").textContent`);
-        console.log(`ok - atelier page: ${backend}; no console errors`);
+        const engineEnd = await evaluate(`document.getElementById("sim-engine").textContent`);
+        console.log(`ok - atelier page: ${backend}; cloth ${engineEnd}; no console errors`);
     } catch (e) {
         if (process.env.ATELIER_SHOT) {
             const shot = await send("Page.captureScreenshot", { format: "png" }).catch(() => null);
