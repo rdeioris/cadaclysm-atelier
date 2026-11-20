@@ -63,10 +63,15 @@ The tools, with their keys where they have one:
 
 ## Live drape
 
-**Simulate** in the 3D strip meshes the garment and runs the kernel's cloth solver on it in a
-worker of its own (`cloth-worker.js`): the shirt sews with gravity off until every seam is
-closed (or 60 frames), then drapes onto the avatar. **Pause** stops it, **Reset** drops the
-cloth and brings the flat pieces back.
+**Simulate** in the 3D strip meshes the garment and runs the kernel's cloth solver on it: the
+shirt sews with gravity off until every seam is closed (or 60 frames), then drapes onto the
+avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces back.
+
+- **Engine**: on a WebGPU browser the cloth steps on the View's GPU (`gpu-drape.js`, in the View's
+  worker), at about 28 frames a second for the sample T-shirt in Chrome on an RTX 3070 (2 on the
+  CPU worker; `ATELIER_FPS=1 node test/browser.mjs` measures it). Elsewhere (WebGL2), or
+  with `?cloth=cpu` in the URL, it steps on the CPU in a worker of its own (`cloth-worker.js`).
+  The 3D strip says which: `GPU · GIA off` or `CPU`.
 
 - **Pin**: click the cloth to pin the nearest point where it is; click it again to unpin.
 - **Drag**: press on the cloth and pull; the point follows the pointer on the plane facing the
@@ -83,8 +88,14 @@ cloth and brings the flat pieces back.
 
 ## Limitations (preview)
 
-- The drape runs at 2-5 frames a second: the solver's performance pass (milestone 5) is under
-  way. The View draws at the display rate meanwhile; the cloth moves as frames arrive.
+- On the CPU the drape runs at 2-5 frames a second; the View draws at the display rate
+  meanwhile and the cloth moves as frames arrive.
+- On the GPU the cloth is one View item in one colour (the first piece's fabric): its pieces
+  are not coloured apart and the selection accent does not show on it.
+- On the GPU the global intersection analysis (GIA) is off until it is ported; the CPU path
+  keeps it on.
+- On the GPU a seam's weld lands up to about 2 frames later than on the CPU (it waits for the
+  View's next round trip).
 - A settled shirt still has a few particles jittering at 2-10 m/s (the health line's max speed).
 - Before Simulate the 3D window draws each piece flat at its frame: a sleeve wrapped round an
   arm shows as a flat slab along the arm until the cloth is built.

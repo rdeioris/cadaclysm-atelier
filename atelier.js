@@ -14,6 +14,7 @@ import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { SLOTS, slotFields, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
+import { ENGINE_TEXT, ENGINE_TITLE } from "./gpu-drape.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -34,15 +35,17 @@ let seq = 0;                  // the `seq` of the last doc-changing message sent
 let fitNext = false;
 
 const worker = new Worker(new URL("./atelier-worker.js", import.meta.url), { type: "module" });
-// The solver's own worker: it steps the cloth and streams frames to the View's worker over a
-// channel of their own; the page only starts and stops it (through the View's worker).
-const clothWorker = new Worker(new URL("./cloth-worker.js", import.meta.url), { type: "module" });
-{
+// The solver's own worker, on the CPU path (no WebGPU, or ?cloth=cpu; `ready` says which): it
+// steps the cloth and streams frames to the View's worker over a channel of their own; the page
+// only starts and stops it (through the View's worker). On the GPU path the View's worker steps it.
+const cpuCloth = new URLSearchParams(location.search).get("cloth") === "cpu";
+function startClothWorker() {
+    const clothWorker = new Worker(new URL("./cloth-worker.js", import.meta.url), { type: "module" });
     const ch = new MessageChannel();
     clothWorker.postMessage({ kind: "port", port: ch.port1 }, [ch.port1]);
     worker.postMessage({ kind: "clothPort", port: ch.port2 }, [ch.port2]);
+    clothWorker.onerror = (e) => { e.preventDefault?.(); status(`cloth worker: ${e.message || "failed"}`, true); };
 }
-clothWorker.onerror = (e) => { e.preventDefault?.(); status(`cloth worker: ${e.message || "failed"}`, true); };
 const post = (msg, transfer) => worker.postMessage(msg, transfer ?? []);
 // A message that changes the document: it carries a `seq` the worker's `doc` echoes.
 const change = (kind, payload = {}) => { const s = ++seq; post({ kind, ...payload, seq: s }); return s; };
@@ -392,7 +395,7 @@ const dprNow = () => devicePixelRatio || 1;
     cv.width = Math.max(1, Math.round(cv.clientWidth * dprNow()));
     cv.height = Math.max(1, Math.round(cv.clientHeight * dprNow()));
     const off = cv.transferControlToOffscreen();
-    post({ kind: "canvas", canvas: off }, [off]);
+    post({ kind: "canvas", canvas: off, cpuCloth }, [off]);
 }
 // The two windows' rects from the strips over them (layout.js), sent to the worker's View.
 function postRects() {
@@ -793,6 +796,9 @@ worker.onmessageerror = () => workerFailed("worker: a message could not be read"
 worker.onmessage = ({ data: m }) => {
     switch (m.kind) {
         case "ready":
+            if (m.clothEngine !== "gpu") startClothWorker();
+            $("sim-engine").textContent = ENGINE_TEXT[m.clothEngine === "gpu" ? "gpu" : "cpu"];
+            $("sim-engine").title = ENGINE_TITLE[m.clothEngine === "gpu" ? "gpu" : "cpu"];
             $("lic").textContent = `cadaclysm ${m.version} · ${m.backend}${m.license ? ` · ${m.license}` : ""}`;
             status("ready");
             fitNext = true;
