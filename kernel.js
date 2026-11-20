@@ -10,8 +10,15 @@ const NOTCH_KINDS = ["slit", "v", "t", "castle", "u"];
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 const text = (e) => String(e && e.message ? e.message : e);
 
+// The kernel calls this app needs beyond 0.15's: a package without them fails here, saying how
+// to get one (scripts/setup.mjs says the same).
+const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "profile_fillet_corner", "profile_piece_count",
+    "profile_piece", "profile_chain", "profile_close_loop", "profile_beziers", "profile_contains", "profile_offset", "face", "mesh"];
+
 export class Atelier {
     constructor(k) {
+        const lacks = NEEDS.filter((n) => typeof k[`cadaclysm_blacksmith_${n}`] !== "function");
+        if (lacks.length) throw new Error(`this package lacks ${lacks.join(", ")}: npm run setup -- --pkg <a cadaclysm master build>`);
         this.k = k;
         this.f = (n) => k[`cadaclysm_blacksmith_${n}`];
         this.d = this.f("document_new")("mm");

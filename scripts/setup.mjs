@@ -10,10 +10,15 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unzipSync } from "fflate";
 
-// The release whose web package Atelier is built against.
-const VERSION = "0.15.0";
-const ASSET = `cadaclysm-${VERSION}-web.zip`;
-const URL = `https://github.com/rdeioris/cadaclysm-sdk/releases/download/v${VERSION}/${ASSET}`;
+// The release whose web package Atelier is built against: none yet. The 2D window needs the
+// View's picking and snapping (view ABI 1.30) and the kernel's document_clear_history, which no
+// release carries before 0.16: until then, --pkg <a kernel+view build of cadaclysm master>
+// (README, "The package"). At 0.16: VERSION = "0.16.0".
+const VERSION = null;
+const ASSET = VERSION && `cadaclysm-${VERSION}-web.zip`;
+const URL = VERSION && `https://github.com/rdeioris/cadaclysm-sdk/releases/download/v${VERSION}/${ASSET}`;
+// Names the package must carry: the View's 1.30 calls and the kernel's fresh history.
+const CARRIES = ["pickRect", "setSnapBase", "cadaclysm_blacksmith_document_clear_history", "cadaclysm_blacksmith_document_head"];
 // What Atelier loads from the package.
 const NEEDED = ["cadaclysm.js", "cadaclysm_bg.wasm", "index.js", "view.js"];
 
@@ -52,6 +57,7 @@ async function main() {
         let bytes;
         if (zip) bytes = readFileSync(zip);
         else {
+            if (!VERSION) throw new Error("no release carries what Atelier needs yet (the View's picking and snapping, document_clear_history): npm run setup -- --pkg <folder> (README, \"The package\")");
             console.log(`fetching ${URL}`);
             const response = await fetch(URL);
             if (!response.ok) throw new Error(`HTTP ${response.status} fetching ${URL}`);
@@ -62,6 +68,9 @@ async function main() {
     }
     const missing = NEEDED.filter((f) => !files.has(f));
     if (missing.length) throw new Error(`${from} has no ${missing.join(", ")}: Atelier needs the web package's pkg/ (the kernel and the View)`);
+    const glue = new TextDecoder().decode(files.get("cadaclysm.js"));
+    const lacks = CARRIES.filter((n) => !glue.includes(n));
+    if (lacks.length) throw new Error(`${from} predates ${lacks.join(", ")}: build the package from cadaclysm master (README, "The package")`);
     // Written beside, then swapped in: a failed setup leaves the pkg/ there was.
     const next = `${out}.next`;
     rmSync(next, { recursive: true, force: true });

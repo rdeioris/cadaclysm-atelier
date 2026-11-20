@@ -59,6 +59,8 @@ async function createViewer(canvas) {
     // the grid the world's floor (4 m square about the origin, at y = 0): without one the View
     // sizes and places it from the scene's bounds, and the live cloth moves those every frame.
     const v = await View.create(canvas, { upAxis: "y", background: "#1e2024", grid: { step: 100, extent: 2000 } });
+    if (typeof v.pickRect !== "function" || typeof v.setSnapBase !== "function")
+        throw new Error("Atelier needs the View's picking and snapping (view 1.30, cadaclysm 0.16 or a master build): npm run setup -- --pkg <folder>");
     receiveControls(v);
     v.start();
     return v;

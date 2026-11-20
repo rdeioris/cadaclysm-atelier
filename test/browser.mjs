@@ -403,6 +403,12 @@ async function check(cdp, base) {
             };
             await sample();
             ok("sample: 4 patterns, 10 seams, no issues");
+            if (process.env.ATELIER_SHOT_SAMPLE) {
+                await frames(); // the View's first frames of the sample: a picture, not an assertion
+                const { data } = await send("Page.captureScreenshot", { format: "png" });
+                writeFileSync(process.env.ATELIER_SHOT_SAMPLE, Buffer.from(data, "base64"));
+                ok(`screenshot ${process.env.ATELIER_SHOT_SAMPLE}`);
+            }
 
             // 6. DXF export: one BLOCK per piece; imported into a new document, four pieces
             await evaluate(`document.getElementById("menu-export-dxf").click()`);
