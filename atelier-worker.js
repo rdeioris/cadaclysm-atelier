@@ -7,6 +7,8 @@
 // document, sends it every later change (it re-meshes or goes stale), and draws its frames: one
 // mesh per pattern, moved in place by setMeshPositions as each frame arrives. The View keeps
 // drawing and orbiting at the display rate however slowly the cloth steps.
+// On a WebGPU View (and no ?cloth=cpu) clothPort is gpu-drape.js's host instead: the cloth
+// steps on this View's GPU, drawn as one item the host shows; no positions come per frame.
 import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
@@ -15,6 +17,7 @@ import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCE
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
 import { pxToWorld, mmPerPx, hitOf, unionBounds } from "./view2d.js";
+import { GpuDrapeHost, gpuClothOk } from "./gpu-drape.js";
 
 const ready = (async () => {
     const module = await load();
@@ -45,6 +48,8 @@ let items2d = null, overlay2d = null, rects = null, hover2d = null, pointSel = [
 // ---- the live drape ---------------------------------------------------------------------------
 const PIN_COLOUR = "#ff4d6d";
 let clothPort = null;
+// "gpu": the cloth steps on this View (gpu-drape.js's host is clothPort); "cpu": cloth-worker.js
+let clothEngine = "cpu";
 let avatarCollider = null;               // the avatar as the cloth's mesh, sent at every build
 let lastSaved = null;                    // the committed document's text, kept outside previews
 const sim = {
@@ -223,7 +228,7 @@ function refresh3d() {
 function paintSelection() {
     for (const [id, s] of slabs) viewer.setColour(s.item, selected("pattern", id) ? ACCENT : s.colour);
     for (const [id, s] of seamLines) viewer.setColour(s.item, selected("seam", id) ? ACCENT : s.colour);
-    for (const m of sim.meshes) viewer.setColour(m.item, selected("pattern", m.id) ? ACCENT : m.colour);
+    for (const m of sim.meshes) if (!m.gpu) viewer.setColour(m.item, selected("pattern", m.id) ? ACCENT : m.colour);
 }
 
 // The flat slabs and seam lines, shown while there is no cloth.
@@ -244,11 +249,12 @@ function simPost() {
     post({
         kind: "sim", live: sim.live, running: sim.running, building: sim.building, stale: sim.stale,
         health: sim.health, phase: sim.phase, fps: r.fps, ms: r.ms, pins: sim.pins ? sim.pins.length / 3 : 0, meshGen: sim.meshGen,
+        engine: clothEngine,
     });
 }
 
 function removeCloth() {
-    for (const m of sim.meshes) { viewer.remove(m.item); items.items.delete(m.item); }
+    for (const m of sim.meshes) { if (!m.gpu) viewer.remove(m.item); items.items.delete(m.item); }
     sim.meshes = [];
     if (sim.pinsItem) { viewer.remove(sim.pinsItem); sim.pinsItem = 0; }
     sim.positions = null; sim.pins = null; sim.health = null; sim.status = null;
@@ -267,12 +273,15 @@ function showPins() {
 
 // A new mesh from the cloth worker (a build or a re-mesh): one showMesh per pattern.
 function onTopology(t) {
-    for (const m of sim.meshes) { viewer.remove(m.item); items.items.delete(m.item); }
+    for (const m of sim.meshes) { if (!m.gpu) viewer.remove(m.item); items.items.delete(m.item); }
     sim.meshes = [];
     const nodes = atelier.nodes();
     const colours = fabricColours(nodes);
     const fabricOf = new Map(nodes.filter((n) => n.kind === "garment.pattern").map((n) => [n.id, n.fabric]));
-    for (const [p, g] of splitByPattern(t.triangles, t.vertexPatterns)) {
+    // the GPU cloth: one item, shown by the host; the vertex patterns kept for picks
+    sim.vertexPatterns = t.vertexPatterns; sim.patterns = t.patterns;
+    if (t.gpu) sim.meshes.push({ item: t.gpu.item, id: null, verts: null, gpu: true, colour: null });
+    else for (const [p, g] of splitByPattern(t.triangles, t.vertexPatterns)) {
         const id = t.patterns[p];
         const colour = colours.get(fabricOf.get(id)) ?? "#cccccc";
         const buf = gather(t.positions, g.verts);
@@ -291,9 +300,9 @@ function onTopology(t) {
 }
 
 function onFrame(f) {
-    sim.positions = f.positions; sim.pins = f.pins; sim.status = f.status; sim.phase = f.phase;
+    sim.positions = f.positions ?? sim.positions; sim.pins = f.pins; sim.status = f.status; sim.phase = f.phase;
     if (f.health) { sim.health = f.health; sim.rate.add(performance.now(), f.ms); }
-    for (const m of sim.meshes) viewer.setMeshPositions(m.item, gather(f.positions, m.verts, m.buf), null);
+    if (f.positions) for (const m of sim.meshes) viewer.setMeshPositions(m.item, gather(f.positions, m.verts, m.buf), null);
     showPins();
     simPost();
 }
@@ -341,11 +350,12 @@ async function tool3d(data) {
         if (!sim.live) { post({ kind: "status", text: "Simulate first: pins and drags act on the cloth" }); return; }
         const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
         const hit = p && sim.meshes.find((m) => m.item === p.item);
-        if (!hit || !p.point || !sim.positions) { post({ kind: "status", text: "not on the cloth" }); return; }
-        const vertex = nearestVertex(sim.positions, p.point, hit.verts);
+        const positions = hit?.gpu && p.point ? await clothPort.positions() : sim.positions;   // the GPU's, read back
+        if (!hit || !p.point || !positions) { post({ kind: "status", text: "not on the cloth" }); return; }
+        const vertex = nearestVertex(positions, p.point, hit.verts);
         if (data.tool === "pin") { clothPort.postMessage({ kind: "pin", vertex }); return; }
         if (press !== pressId) return;             // a drag let go before the pick came back
-        const start = Array.from(sim.positions.subarray(3 * vertex, 3 * vertex + 3));
+        const start = Array.from(positions.subarray(3 * vertex, 3 * vertex + 3));
         const basis = dragBasis(viewer.camera(0), start, rects?.[0]?.[3] ?? canvasRef?.height ?? 800);
         if (!basis) { post({ kind: "status", text: "dragging needs the orbit camera" }); return; }
         dragging = { vertex, start, x: data.x, y: data.y, basis };
@@ -404,19 +414,24 @@ const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open",
 self.onmessage = async ({ data }) => {
     try {
         if (data.cadaclysm) return;      // forwarded input: receiveControls hears it
-        if (data.kind === "clothPort") { clothPort = data.port; clothPort.onmessage = onCloth; return; }
+        if (data.kind === "clothPort") { if (clothEngine === "cpu") { clothPort = data.port; clothPort.onmessage = onCloth; } return; }
         if (data.kind === "canvas") {
             canvasRef = data.canvas;
             try {
                 viewer = await createViewer(data.canvas);
                 atelier = new Atelier(await ready);
+                if (gpuClothOk(viewer) && !data.cpuCloth) {
+                    clothEngine = "gpu";
+                    clothPort = new GpuDrapeHost(viewer, await ready);
+                    clothPort.onmessage = onCloth;
+                }
                 startedResolve();
             } catch (e) { startedReject(e); throw e; }
             try {
                 const r = await fetch(new URL("./assets/f-M.stp", import.meta.url));
                 if (r.ok) await loadAvatar(await r.arrayBuffer(), "f-M");
             } catch (e) { post({ kind: "error", text: `avatar: ${e.message ?? e}` }); }
-            post({ kind: "ready", backend: viewer.backend, version: version(), license: licenseInfo() });
+            post({ kind: "ready", backend: viewer.backend, version: version(), license: licenseInfo(), clothEngine });
             changed();
             return;
         }
@@ -467,7 +482,14 @@ self.onmessage = async ({ data }) => {
             case "select": selection = data.selection ?? null; pointSel = []; paintSelection(); refresh2d(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
-                post({ kind: "picked", seq: data.seq ?? null, selection: p ? items.resolve(p.item) : null });
+                let selection = p ? items.resolve(p.item) : null;
+                // the GPU cloth is one item: the piece is the nearest vertex's
+                if (p?.point && sim.meshes.some((m) => m.gpu && m.item === p.item)) {
+                    const positions = await clothPort.positions();
+                    const v = positions ? nearestVertex(positions, p.point) : -1;
+                    selection = v >= 0 ? { kind: "pattern", id: sim.patterns[sim.vertexPatterns[v]] } : null;
+                }
+                post({ kind: "picked", seq: data.seq ?? null, selection });
                 break;
             }
             case "resize": viewer.resize?.(data.width, data.height, data.dpr); break;
