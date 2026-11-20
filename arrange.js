@@ -113,6 +113,17 @@ export function seamSegments(seam, frameA, frameB) {
 }
 
 // Whether `selection` ({kind, id} or null) is the item of that kind and id.
+// The selection after a document change: the ids that still exist (`has`), the primary id kept
+// when it survives; one survivor is a plain selection, none is null. Unchanged: the same object.
+export function survivingSelection(selection, has) {
+    if (!selection) return null;
+    if (!selection.ids) return has(selection.id) ? selection : null;
+    const ids = selection.ids.filter(has);
+    if (ids.length === selection.ids.length && has(selection.id)) return selection;
+    if (!ids.length) return null;
+    const id = ids.includes(selection.id) ? selection.id : ids[0];
+    return ids.length > 1 ? { kind: selection.kind, id, ids } : { kind: selection.kind, id };
+}
 export const isSelected = (selection, kind, id) => !!selection && selection.kind === kind && (selection.id === id || !!selection.ids?.includes(id));
 
 // The seams in the 3D window: one lines item per seam, in its 2D colour (the accent when

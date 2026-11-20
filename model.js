@@ -84,13 +84,15 @@ export function addPattern(nodes, { label, path, fabric, layer = 0, allowance = 
     return { id, ops };
 }
 
-export function removePattern(nodes, id) {
-    const seams = nodes.filter((n) => n.kind === "garment.seam" && (n.a === id || n.b === id)).map((n) => n.id);
+export const removePattern = (nodes, id) => removePatterns(nodes, [id]);
+// Several pieces, their seams and outlines in one batch (one undo step): a seam between two of
+// them is removed once.
+export function removePatterns(nodes, ids) {
+    const seams = nodes.filter((n) => n.kind === "garment.seam" && (ids.includes(n.a) || ids.includes(n.b))).map((n) => n.id);
     return [
-        ...garmentOps(nodes, listOf(nodes, "patterns").filter((p) => p !== id), listOf(nodes, "seams").filter((s) => !seams.includes(s))),
+        ...garmentOps(nodes, listOf(nodes, "patterns").filter((p) => !ids.includes(p)), listOf(nodes, "seams").filter((s) => !seams.includes(s))),
         ...seams.map((s) => ({ op: "remove", id: s })),
-        { op: "remove", id },
-        { op: "remove", id: `${id}_outline` },
+        ...ids.flatMap((id) => [{ op: "remove", id }, { op: "remove", id: `${id}_outline` }]),
     ];
 }
 

@@ -11,7 +11,7 @@ import { PRESETS, presetParams } from "./fabrics.js";
 import { makeTool, SNAPPING } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
-import { SLOTS, slotFields, fabricColours, isSelected } from "./arrange.js";
+import { SLOTS, slotFields, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
 
 const $ = (id) => document.getElementById(id);
@@ -210,13 +210,15 @@ function renderProps() {
     if (target) { target.focus(); target.select?.(); }
 }
 
-// The selected piece (with its seams) or seam out of the document: one undo step.
+// The selected pieces (with their seams) or seam out of the document: one undo step.
 function removeSelected() {
     if (!selection || (selection.kind !== "pattern" && selection.kind !== "seam") || !nodes.some((n) => n.id === selection.id)) return false;
     cancelPreview();
     const kind = selection.kind;
-    change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${kind === "pattern" ? "piece" : "seam"}` });
-    status(kind === "pattern" ? "removed the piece" : "removed the seam");
+    const pieces = kind === "pattern" ? (selection.ids ?? [selection.id]).filter((id) => nodes.some((n) => n.id === id)) : [];
+    const ops = pieces.length > 1 ? model.removePatterns(nodes, pieces) : opsFor(selection, nodes, "remove", null);
+    change("ops", { ops, message: `remove ${kind === "pattern" ? (pieces.length > 1 ? "pieces" : "piece") : "seam"}` });
+    status(kind === "pattern" ? (pieces.length > 1 ? `removed ${pieces.length} pieces` : "removed the piece") : "removed the seam");
     setSelection(null);
     return true;
 }
@@ -714,10 +716,17 @@ worker.onmessage = ({ data: m }) => {
     }
 };
 
+// The selected outline's point count: box-selected point indices hold only while it stands.
+const pointCount = () => (selection?.kind === "pattern" ? nodes.find((n) => n.id === `${selection.id}_outline`)?.path?.segments?.length ?? 0 : 0);
 function onDoc(m) {
+    const points0 = pointCount();
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
     drawings = new Map(drawingList.map((d) => [d.id, d]));
-    if (!exists(selection)) { selection = null; post({ kind: "select", selection: null }); }
+    // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
+    // the worker and drops the point selection
+    const kept = survivingSelection(selection, (id) => exists({ kind: selection.kind, id }));
+    if (kept !== selection) setSelection(kept);
+    else if (pointSel.length && pointCount() !== points0) { pointSel = []; post({ kind: "pointSel", indices: [] }); }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
     // A fresh tool for the new nodes, unless a gesture (and its previews) is under way.
     if (previewing || gesture2d()) toolStale = true; else freshTool();

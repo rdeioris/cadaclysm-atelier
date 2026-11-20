@@ -445,11 +445,17 @@ async function check(cdp, base) {
             await until("the hover dropped in 3D", async () => (await hover2d()) === "", 10000);
             // a middle drag and a Space drag pan the 2D window: the pattern point under one pixel moves
             const px0 = [sx + sw * 0.5, sy + sh * 0.2];
-            const worldAt = async (p) => {
-                await mouse("mouseMoved", p[0] + 1, p[1], { buttons: 0 });
+            // the pattern point under p, from a hover answered after the move (a sentinel, then
+            // until it changes; never a fixed wait: a late answer read the pre-pan point)
+            const answered = async (p) => {
+                await evaluate(`document.body.dataset.world = "__"`);
                 await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
-                await sleep(300);
-                return (await evaluate(`document.body.dataset.world ?? ""`)).split(",").map(Number);
+                await until("a hover answered", async () => (await evaluate(`document.body.dataset.world ?? "__"`)) !== "__", 10000);
+            };
+            const worldAt = async (p) => {
+                await answered([p[0] + 1, p[1]]);
+                await answered(p);
+                return (await evaluate(`document.body.dataset.world`)).split(",").map(Number);
             };
             const panBy = async (press, release) => {
                 const before = await worldAt(px0);
@@ -547,7 +553,6 @@ async function check(cdp, base) {
                 await evaluate(`document.body.dataset.hit = "__"`);
                 await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
                 await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
-                await sleep(200);
                 if ((await evaluate(`document.body.dataset.hit`)) === "pattern" && (await evaluate(`document.body.dataset.hover2d ?? ""`)) === firstId) { on = at; break; }
             }
             if (!on) throw new Error(`no spot on ${firstId} found in the 2D window`);
@@ -697,12 +702,55 @@ async function check(cdp, base) {
             await drag([rx0 + rw0 * 0.55, ry0 + rh0 * 0.3], [rx0 + rw0 * 0.8, ry0 + rh0 * 0.7]);
             await until("two rectangles", async () => (await patternCount()) === 2, 30000);
             await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
+            const onIds = () => evaluate(`[...document.querySelectorAll("#browser-patterns li.on")].map((li) => li.dataset.id).join(",")`);
+            const secondId = await evaluate(`document.querySelectorAll('#browser-patterns li[data-kind=pattern]')[1].dataset.id`);
+            // window vs crossing (plan ruling 18): the same box over part of the second piece, from
+            // the gap between the pieces, selects nothing left to right (a window: not wholly
+            // inside) and the piece right to left (a crossing box: touched)
+            await until("the second piece selected", async () => (await onIds()) === secondId, 30000);
+            await drag([rx0 + rw0 * 0.5, ry0 + rh0 * 0.4], [rx0 + rw0 * 0.7, ry0 + rh0 * 0.6]);
+            await until("a window touching a piece selects nothing", async () => (await onIds()) === "", 30000);
+            await drag([rx0 + rw0 * 0.9, ry0 + rh0 * 0.6], [rx0 + rw0 * 0.7, ry0 + rh0 * 0.4]);
+            await until("a crossing box selects the piece it touches", async () => (await onIds()) === secondId, 30000);
             await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
             const [bx, bY, bw, bh] = await windowBox("rect2d");
-            await drag([bx + 4, bY + 24], [bx + bw - 4, bY + bh - 4]);
-            await until("a box selection", async () => (await evaluate(`document.querySelectorAll("#browser-patterns li.on").length`)) === 2, 30000);
+            const boxAll = async () => {
+                await drag([bx + 4, bY + 24], [bx + bw - 4, bY + bh - 4]);
+                await until("a box selection", async () => (await evaluate(`document.querySelectorAll("#browser-patterns li.on").length`)) === 2, 30000);
+            };
+            await boxAll();
             failIfErrors();
-            ok("box select: the Move tool's window selects both pieces");
+            ok("box select: a window and a crossing box; the Move tool's window selects both pieces");
+
+            // Delete takes every selected piece in one undo step
+            await key("Delete", "Delete", 46);
+            await until("both pieces removed", async () => (await patternCount()) === 0, 30000);
+            await key("z", "KeyZ", 90, 2);
+            await until("both pieces back after one Ctrl+Z", async () => (await patternCount()) === 2, 30000);
+            // an undo that takes a selected piece away leaves the others selected, and they still move
+            await boxAll();
+            await key("z", "KeyZ", 90, 2);                  // the second rectangle's creation
+            await until("the second piece undone", async () => (await patternCount()) === 1, 30000);
+            const firstId2 = await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').dataset.id`);
+            await until("the survivor still selected", async () => (await onIds()) === firstId2, 30000);
+            const onlyOutline = (json) => json.nodes.find((n) => n.kind === "profile.path" && n.id === `${firstId2}_outline`).path;
+            const saveJson = async () => { await key("s", "KeyS", 83, 2); return JSON.parse(await takeFile("garment.json")); };
+            const before1 = onlyOutline(await saveJson());
+            let onPiece = null;
+            for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.5], [0.4, 0.5], [0.2, 0.5], [0.6, 0.5], [0.35, 0.4], [0.35, 0.6]]) {
+                const at = [bx + bw * fx, bY + bh * fy];
+                await evaluate(`document.body.dataset.hit = "__"`);
+                await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
+                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
+                if ((await evaluate(`document.body.dataset.hit`)) === "pattern") { onPiece = at; break; }
+            }
+            if (!onPiece) throw new Error("no spot on the surviving piece found");
+            await drag(onPiece, [onPiece[0] + 40, onPiece[1]], 6);
+            const after1 = onlyOutline(await saveJson());      // the save waits for the drag's last step
+            if (!(after1.start[0] - before1.start[0] > 1)) throw new Error(`the survivor did not move: ${before1.start} -> ${after1.start}`);
+            await noStatusError();
+            failIfErrors();
+            ok("box select: Delete removes both in one undo; an undone member leaves the selection, the rest still moves");
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

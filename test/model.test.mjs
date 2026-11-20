@@ -47,6 +47,16 @@ nodes = apply(nodes, s.ops);
 assert.deepEqual(m.byId(nodes).get("garment").seams, ["s1"]);
 assert.deepEqual(m.byId(nodes).get("s1").meta, { atelier: { a: [0, 0, 1], b: [0, 0, 1] } });
 
+// removing several patterns is one batch: a seam between two of them is removed once
+{
+    const both = apply(nodes, m.removePatterns(nodes, ["p1", "p2"]));
+    const ops = m.removePatterns(nodes, ["p1", "p2"]);
+    assert.equal(ops.filter((o) => o.op === "remove" && o.id === "s1").length, 1);
+    assert.deepEqual(["p1", "p2", "p1_outline", "p2_outline", "s1"].map((id) => m.byId(both).get(id)), [undefined, undefined, undefined, undefined, undefined]);
+    assert.deepEqual(m.byId(both).get("garment").patterns, []);
+    assert.deepEqual(m.byId(both).get("garment").seams, []);
+    assert.deepEqual(m.removePatterns(nodes, ["p2"]), m.removePattern(nodes, "p2"));
+}
 // removing a pattern takes its seams and its outline along, and updates the garment
 nodes = apply(nodes, m.removePattern(nodes, "p2"));
 assert.equal(m.byId(nodes).get("s1"), undefined);

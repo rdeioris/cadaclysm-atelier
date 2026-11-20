@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, ACCENT } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT } from "../arrange.js";
 import { seamColour } from "../sewing.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
@@ -70,6 +70,16 @@ assert.deepEqual(ss.slice(12, 18), [0, 0, 0, 0, 10, 5], "reversed: first of a me
     assert.equal(isSelected({ kind: "pattern", id: "s2" }, "seam", "s2"), false);
     assert.equal(isSelected(null, "seam", "s2"), false);
     assert.ok(isSelected({ kind: "pattern", id: "p1", ids: ["p1", "p2"] }, "pattern", "p2"));
+    // a selection after a document change keeps only the pieces that still exist
+    const has = (id) => id !== "p2";
+    assert.deepEqual(survivingSelection({ kind: "pattern", id: "p1", ids: ["p1", "p2", "p3"] }, has), { kind: "pattern", id: "p1", ids: ["p1", "p3"] });
+    assert.deepEqual(survivingSelection({ kind: "pattern", id: "p1", ids: ["p1", "p2"] }, has), { kind: "pattern", id: "p1" });
+    assert.deepEqual(survivingSelection({ kind: "pattern", id: "p2", ids: ["p2", "p3"] }, has), { kind: "pattern", id: "p3" });
+    assert.equal(survivingSelection({ kind: "pattern", id: "p2", ids: ["p2"] }, has), null);
+    assert.equal(survivingSelection({ kind: "seam", id: "p2" }, has), null);
+    const keep = { kind: "seam", id: "s1" };
+    assert.equal(survivingSelection(keep, has), keep, "an intact selection is the same object");
+    assert.equal(survivingSelection(null, has), null);
     const map = new ItemMap();
     for (const s of shown) map.set(s.item, { kind: "seam", id: s.id });
     assert.deepEqual(map.resolve(103), { kind: "seam", id: "s3" });
