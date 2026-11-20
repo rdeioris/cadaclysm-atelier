@@ -106,3 +106,11 @@ export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anc
 
 export const removeSeam = (nodes, id) =>
     [...garmentOps(nodes, listOf(nodes, "patterns"), listOf(nodes, "seams").filter((s) => s !== id)), { op: "remove", id }];
+
+// A path that comes back to its start: the last segment lands exactly on `start` (the shape
+// tools write it so), or within 1e-9 of it.
+export function isClosedPath(path) {
+    const last = path?.segments?.at(-1);
+    const end = last?.to ?? last?.points?.at(-1);
+    return !!end && Math.hypot(end[0] - path.start[0], end[1] - path.start[1]) <= 1e-9;
+}

@@ -9,6 +9,14 @@ const STEP = 1;          // outline sample spacing for picking, mm
 const NOTCH_KINDS = ["slit", "v", "t", "castle", "u"];
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 const text = (e) => String(e && e.message ? e.message : e);
+const FILL_Z = -1;       // fills lie under every line (z = 0): a hundredth of a mm higher per layer
+const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
+
+// A drawing without what only the worker draws (posted to the page with every `doc`).
+export function forPage(d) {
+    const { beziers, fill, ...rest } = d;
+    return { ...rest, holes: d.holes.map(({ beziers: _, ...h }) => h), internal: d.internal.map(({ beziers: _, ...l }) => l) };
+}
 
 // The kernel calls this app needs beyond 0.15's: a package without them fails here, saying how
 // to get one (scripts/setup.mjs says the same).
@@ -139,7 +147,9 @@ export class Atelier {
     rows(arr) { const out = []; for (let i = 0; i + 9 < arr.length; i += 10) out.push(arr.subarray(i, i + 10)); return out; }
 
     drawing(id) {
-        const node = m.byId(this.nodes()).get(id);
+        const byId = m.byId(this.nodes());
+        const node = byId.get(id);
+        const outlineNode = byId.get(`${id}_outline`);
         const pid = this.patternIndex(id);
         const [gx, gy] = node.grain ?? [0, 1];
         return this.withOutline(id, (p) => {
@@ -157,7 +167,15 @@ export class Atelier {
                 const r = this.f("profile_point_at_length")(p, notchRaw[i], ACC);
                 notches.push([r[0], r[1], notchRaw[i + 1]]);
             }
-            const internal = (node.internal ?? []).map((l) => ({ kind: l.kind, points: this.openPoints(l.path) }));
+            const allowance0 = (node.allowance ?? [0])[0];
+            const holes = (outlineNode.path.holes ?? []).map((h) => ({
+                beziers: this.beziersOf(h),
+                ring: this.openPoints({ start: h.start, segments: h.segments }),
+                cut: this.holeCutOf(h, allowance0),
+            }));
+            const internal = (node.internal ?? []).map((l) => ({
+                kind: l.kind, points: this.openPoints(l.path), beziers: this.beziersOf(l.path), closed: m.isClosedPath(l.path),
+            }));
             const cx = (bounds[0] + bounds[2]) / 2, cy = (bounds[1] + bounds[3]) / 2;
             const half = 0.4 * Math.min(bounds[2] - bounds[0], bounds[3] - bounds[1]) || 10;
             const gl = Math.hypot(gx, gy) || 1;
@@ -166,6 +184,8 @@ export class Atelier {
                 id, label: node.label, fabric: node.fabric, layer: node.layer ?? 0,
                 sew, cut: Array.from(this.f("garment_cut_line")(this.g, pid, TOL)),
                 samples, sides, notches, internal, grain, bounds,
+                beziers: this.beziersOf(outlineNode.path), holes, fill: this.fillOf(id, node.layer ?? 0),
+                sig: JSON.stringify([node, outlineNode.path]),
             };
         });
     }
@@ -193,6 +213,35 @@ export class Atelier {
             const p = this.f("document_result_profile")(tmp, "l");
             try { return fn(p); } finally { this.f("profile_free")(p); }
         } finally { this.f("document_free")(tmp); }
+    }
+    // A profile handle for a path JSON (a copy that outlives the scratch document); the caller frees it.
+    profileOf(path) { return this.withPath(path, (p) => this.f("profile_transform2d")(p, Float64Array.of(1, 0, 0, 0, 1, 0))); }
+    // A path's exact Béziers, 16 doubles each, z = 0 (holes left out: each is drawn on its own).
+    beziersOf(path) { return this.withPath({ start: path.start, segments: path.segments }, (p) => Float64Array.from(this.f("profile_beziers")(p, null))); }
+    // The piece's fill: its outline (holes cut out) as the kernel's planar face, triangulated.
+    fillOf(id, layer) {
+        return this.withOutline(id, (p) => {
+            const sheet = this.f("face")(p, Float64Array.of(0, 0, FILL_Z + 0.01 * layer, 1, 0, 0, 0, 1, 0, 0, 0, 1));
+            try {
+                const t = this.f("mesh")(sheet, TOL);
+                return { positions: Float32Array.from(t.positions), indices: Uint32Array.from(t.indices) };
+            } finally { this.f("solid_free")(sheet); }
+        });
+    }
+    // A hole's cut line: the hole shrunk by the allowance (plan ruling 10), each ring flattened.
+    holeCutOf(hole, allowance) {
+        if (!(allowance > 0)) return [];
+        return this.withPath(hole, (p) => {
+            const list = this.f("profile_offset")(p, -allowance, 0);
+            try {
+                const out = [];
+                for (let i = 0; i < this.f("profile_list_count")(list); i++) {
+                    const q = this.f("profile_list_get")(list, i);
+                    try { const { points, offsets } = this.f("profile_polylines")(q, TOL); out.push(ring(points, offsets[0], offsets[1])); } finally { this.f("profile_free")(q); }
+                }
+                return out;
+            } finally { this.f("profile_list_free")(list); }
+        });
     }
     // An internal line's path JSON flattened.
     openPoints(path) {
