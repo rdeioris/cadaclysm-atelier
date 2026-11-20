@@ -171,9 +171,10 @@ async function check(cdp, base) {
     const noStatusError = async () => { const se = await statusError(); if (se) throw new Error(`the status line says: ${se}`); };
     const mouse = (type, x, y, extra = {}) => send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: 1, ...extra });
     const click = async ([x, y]) => { await mouse("mouseMoved", x, y, { buttons: 0 }); await mouse("mousePressed", x, y); await mouse("mouseReleased", x, y); };
-    const drag = async (a, b, steps = 8) => {
+    const drag = async (a, b, steps = 8, holdMs = 0) => {
         await mouse("mouseMoved", a[0], a[1], { buttons: 0 });
         await mouse("mousePressed", a[0], a[1]);
+        if (holdMs) await sleep(holdMs);
         for (let i = 1; i <= steps; i++) await mouse("mouseMoved", a[0] + ((b[0] - a[0]) * i) / steps, a[1] + ((b[1] - a[1]) * i) / steps);
         await mouse("mouseReleased", b[0], b[1]);
     };
@@ -546,7 +547,8 @@ async function check(cdp, base) {
             await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
             if (await evaluate(`document.querySelector('[data-tool3d=pin]').classList.contains("on")`)) throw new Error("Pin and Drag both on");
             const f0 = await frameNo();
-            await tryOnCloth("drag", (p) => drag(p, [p[0] + 80, p[1]], 6), (t) => t === "dragging the cloth");
+            // a held press first, as a hand does: on the GPU the press waits for a positions readback
+            await tryOnCloth("drag", (p) => drag(p, [p[0] + 80, p[1]], 6, 400), (t) => t === "dragging the cloth");
             await until("frames after the drag", async () => (await frameNo()) >= f0 + 2, 60000);
             await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
             failIfErrors();

@@ -23,7 +23,8 @@ shirt sews with gravity off until every seam is closed (or 60 frames), then drap
 avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces back.
 
 - **Engine**: on a WebGPU browser the cloth steps on the View's GPU (`gpu-drape.js`, in the View's
-  worker), at <fps> frames a second for the sample T-shirt in Chrome. Elsewhere (WebGL2), or
+  worker), at about 28 frames a second for the sample T-shirt in Chrome on an RTX 3070 (2 on the
+  CPU worker; `ATELIER_FPS=1 node test/browser.mjs` measures it). Elsewhere (WebGL2), or
   with `?cloth=cpu` in the URL, it steps on the CPU in a worker of its own (`cloth-worker.js`).
   The 3D strip says which: `GPU · GIA off` or `CPU`.
 

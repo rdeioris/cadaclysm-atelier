@@ -169,33 +169,53 @@ export class GpuDrapeHost {
         })());
     }
 
-    // One frame in flight: step, await its health, report, yield a task.
+    // Two frames in flight: step frame N+1, then await frame N's health and report it, so the
+    // GPU always has the next frame queued while the CPU reads the last one back.
     async loop() {
         if (this.looping) return;
         this.looping = true;
+        let inflight = null;
+        this.lastDone = 0;
         try {
             while (this.running && this.drape?.id) {
-                try { await this.tick(); }
-                catch (e) { this.running = false; this.state({ error: String(e?.message ?? e) }); }
+                try {
+                    if (this.pending) {
+                        if (inflight) { const f = inflight; inflight = null; await this.finish(f); }
+                        await this.applyPending();
+                    } else {
+                        const f = this.submit();
+                        const prev = inflight;
+                        inflight = f;
+                        if (prev) await this.finish(prev);
+                    }
+                } catch (e) { inflight = null; this.running = false; this.state({ error: String(e?.message ?? e) }); }
                 await this.yieldTask();
             }
+            if (inflight) await this.finish(inflight).catch(() => {});
         } finally { this.looping = false; }
     }
-    async tick() {
-        if (this.pending) { await this.applyPending(); return; }
+    // One frame submitted, its health asked for (not awaited).
+    submit() {
         const d = this.drape, gen = d.gen;
-        const t0 = performance.now();
         const n = this.viewer.stepCloth(d.id, 1);
         // a removed item's readback may fail: not an error once the item is gone
-        const h = await this.viewer.clothHealth(d.id).catch((e) => { if (d.gen === gen) throw e; return null; });
-        if (d.gen !== gen) return;                       // reset or re-shown meanwhile
-        this.health = h;
+        const h = this.viewer.clothHealth(d.id).catch((e) => { if (d.gen === gen) throw e; return null; });
+        return { d, gen, n, h };
+    }
+    // A submitted frame's health: the count, the sewing switch, the report.
+    async finish({ d, gen, n, h }) {
+        const health0 = await h;
+        if (d !== this.drape || d.gen !== gen) return;   // reset or re-shown meanwhile
+        this.health = health0;
         this.frames += n;
-        d.maybeDrape(h, this.frames);
+        d.maybeDrape(health0, this.frames);
         if (!n || !this.running) return;                 // a round trip held the frame back, or paused
+        const now = performance.now();
+        const ms = this.lastDone ? now - this.lastDone : 0;
+        this.lastDone = now;
         const health = healthOf(this.status(), d.phase);
         if (health.stop) this.running = false;
-        this.frame(health, performance.now() - t0);
+        this.frame(health, ms);
         if (health.stop) this.state({ reason: `paused, the cloth blew up: ${health.text}` });
     }
 
