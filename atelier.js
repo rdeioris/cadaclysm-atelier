@@ -11,6 +11,7 @@ import { PRESETS, presetParams } from "./fabrics.js";
 import { makeTool, SNAPPING, typedPoint, typedValues, readout } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
+import { KeyHold } from "./keyhold.js";
 import { SLOTS, slotFields, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
 
@@ -476,11 +477,10 @@ let ups2d = 0;                            // 2D releases sent, not yet answered:
 let pan2d = null;                         // the pointer panning the 2D window (the View's), while it does
 let in2d = false;                         // a hover was sent since the pointer last left the 2D window
 const gesture2d = () => drag2d || ups2d > 0;
-// A key for the tool waits while a click's release is on its way to the worker and back: the
-// click comes first (Enter right after a click ends the line with that click's point in it).
-const heldKeys = [];
-const afterUps = (fn) => { if (ups2d > 0) heldKeys.push(fn); else fn(); };
-function flushKeys() { while (ups2d === 0 && heldKeys.length) heldKeys.shift()(); }
+// A key for the tool waits for the clicks made before it, each a round trip to the worker (not
+// for later ones): Enter right after a click ends the line with that click's point in it.
+const keyHold = new KeyHold((e) => toolFailed(e));
+const afterUps = (fn) => keyHold.key(seq2d, fn);
 const claims = new Map();                 // pointerId -> "2d" | "3d"
 const pending2d = new Map();              // seq -> mods of a 2D event in flight
 let seq2d = 0, moveBusy = false, moveNext = null, down3d = null;
@@ -550,6 +550,7 @@ listen(cv, (ev) => {
         lastUp = { t: now, p: css, detail };
         ups2d++;
         send2d("up", ev, mods2d(ev, { detail, dblclick: detail === 2 }));
+        keyHold.sent(seq2d);
         return;
     }
     if (claim === "3d") {
@@ -602,7 +603,8 @@ function onAt2d(m) {
 function at2dAnswer(m) {
     const mods = pending2d.get(m.seq) ?? {};
     pending2d.delete(m.seq);
-    if (m.phase === "up") { ups2d = Math.max(0, ups2d - 1); queueMicrotask(flushKeys); }
+    // the keys typed after this release run once the tool has heard it (below), before the next answer
+    if (m.phase === "up") { ups2d = Math.max(0, ups2d - 1); keyHold.answered(m.seq); queueMicrotask(() => keyHold.flush()); }
     if (m.mmPerPx > 0 && Number.isFinite(m.mmPerPx)) mmPerPx = m.mmPerPx;
     if (m.phase === "move" || m.phase === "hover") { moveBusy = false; queueMicrotask(flushMove); }
     document.body.dataset.hit = m.hit?.kind ?? "";
@@ -689,8 +691,18 @@ document.addEventListener("keydown", (e) => {
         });
         return;
     }
-    // a digit with a last point to measure from: the typed length, not a shortcut
-    if (/^[0-9.]$/.test(e.key) && typed.box.hidden && !drag2d && tool?.lastPoint?.()) { e.preventDefault(); openTyped(e.key); return; }
+    // Enter on a focused button presses it
+    if (e.key === "Enter" && e.target.closest?.("button, a, [role=button]")) return;
+    // a digit with a last point to measure from (once the clicks before it are in): the typed length
+    if (/^[0-9.]$/.test(e.key) && typed.box.hidden && !drag2d) {
+        e.preventDefault();
+        const d = e.key;
+        afterUps(() => {
+            if (typed.box.hidden && !drag2d && tool?.lastPoint?.()) openTyped(d);
+            else if (tool) { const r = tool.key(d); if (r && Object.keys(r).length) apply(r); }
+        });
+        return;
+    }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
     // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
     if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
@@ -766,6 +778,8 @@ function workerFailed(text) {
     for (const w of waiting.values()) w.reject(new Error(text));
     waiting.clear();
     previewing = false; previewPattern = null;
+    // no 2D answer will come: nothing waits for one (Escape back to Edit still works)
+    ups2d = 0; pending2d.clear(); keyHold.reset(); settle2d();
     status(text, true);
 }
 worker.onerror = (e) => { e.preventDefault?.(); workerFailed(`worker: ${e.message || "failed"}`); };

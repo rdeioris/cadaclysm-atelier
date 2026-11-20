@@ -1010,10 +1010,31 @@ async function check(cdp, base) {
                 try { await until("two pieces from one", async () => (await patternCount()) === nC + 1, 30000); }
                 catch (e) { throw new Error(`${e.message}: ${await patternCount()} pieces (${nC}); status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }
                 await noStatusError();
-                // select the left half (Edit, a click on its fill), then Cut & Sew across its middle
-                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
-                await click(screenOf([c0[0] + 25, c0[1] + 25]));
-                await until("the left half selected", async () => /size\s*50\s*×\s*50/.test(await evaluate(`document.getElementById("props").textContent`)), 30000);
+                // the halves by their outlines (the saved document): at this zoom a half's fill lies under its
+                // neighbour's label, so a click on the fill may answer the other piece; the list selects by id
+                const halves = (await saveJson()).nodes.filter((n) => n.kind === "profile.path" && Math.abs(n.path.start[1] - c0[1]) < 60)
+                    .map((n) => ({ id: n.id.replace(/_outline$/, ""), x: Math.min(n.path.start[0], ...n.path.segments.map((g) => g.to[0])) }));
+                const leftHalf = halves.find((h) => Math.abs(h.x - c0[0]) < 1)?.id, rightHalf = halves.find((h) => Math.abs(h.x - c0[0] - 50) < 1)?.id;
+                if (!leftHalf || !rightHalf) throw new Error(`the halves: ${JSON.stringify(halves)}`);
+                const selectedPiece = () => evaluate(`document.querySelector("#browser-patterns li[data-kind=pattern].on")?.dataset.id ?? ""`);
+                const selectPiece = async (id) => {
+                    await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern][data-id="${id}"]').click()`);
+                    await until(`${id} selected`, async () => (await selectedPiece()) === id, 30000);
+                };
+                // the order kept with two clicks in flight: click, Enter, click within one held-up round trip on the
+                // right half. Enter goes to the tool between the clicks (one point: refused), not after both (a cut)
+                await selectPiece(rightHalf);
+                await evaluate(`document.querySelector('#tools2d [data-tool=cut]').click()`);
+                await stallWorker(2500);
+                await click(screenOf([c0[0] + 75, c0[1] - 15]));
+                await key("Enter", "Enter", 13);
+                await click(screenOf([c0[0] + 75, c0[1] + 65]));
+                await until("Enter between the clicks", async () => /a cutter needs two points/.test((await statusError()) ?? ""), 30000);
+                await sleep(300);
+                if ((await patternCount()) !== nC + 1) throw new Error("Enter waited for the click after it: the piece was cut");
+                await key("Escape", "Escape", 27);
+                // the left half, then Cut & Sew across its middle
+                await selectPiece(leftHalf);
                 const sC = await seamCount();
                 await evaluate(`document.querySelector('#tools2d [data-tool=cut-sew]').click()`);
                 await click(screenOf([c0[0] - 15, c0[1] + 25]));
