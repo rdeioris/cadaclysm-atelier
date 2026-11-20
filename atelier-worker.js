@@ -38,6 +38,7 @@ let selection = null;
 const items = new ItemMap();
 const slabs = new Map();                 // pattern id -> { item, colour }
 const seamLines = new Map();             // seam id -> { item, colour }
+const slabBoxes = new Map();             // pattern id -> its slab's world box [x0, y0, z0, x1, y1, z1]
 let canvasRef = null;                    // the OffscreenCanvas: its height is the drag's pixel scale
 let items2d = null, overlay2d = null, rects = null, hover2d = null, pointSel = [];
 
@@ -74,14 +75,26 @@ const doc = () => ({ nodes: atelier.nodes(), drawings: atelier.drawings().map(fo
 
 const selected = (kind, id) => isSelected(selection, kind, id);
 
-// The 3D camera framed on the avatar item alone (as M4a's frame() did with only the avatar
-// shown); never frame()/frameAll() of everything, which would take in the pattern pieces on
-// layer 1 (plan ruling 6). With no avatar, a sphere on the default box (1.5 x its
-// half-diagonal): frameSphere on an orbit camera fits generously, so it is only the fallback.
+// The 3D camera framed on the avatar and the garment's slabs (layer 0): the union of their
+// boxes, never frame()/frameAll() of everything, which would take in the pattern pieces on
+// layer 1 (plan ruling 6). The avatar alone, while there are no pieces, is framed as its item.
+// frameSphere fits an orbit camera to the cube about the sphere, with its own margin: half the
+// box's half-diagonal as the radius frames the avatar as frame(avatar) does.
+const ORBIT_FIT = 0.5;
 function frame3d() {
-    if (avatar && viewer.frame(avatar.id, undefined, 0)) return;
-    const b = avatar?.bounds ?? [-200, 0, -150, 200, 1700, 150];
-    viewer.frameSphere(0, [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2], 0.75 * Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]));
+    const boxes = [...slabBoxes.values()];
+    if (avatar && !boxes.length && viewer.frame(avatar.id, undefined, 0)) return;
+    let b = avatar?.bounds ?? (boxes.length ? null : [-200, 0, -150, 200, 1700, 150]);
+    for (const s of boxes) b = b ? [0, 1, 2].map((k) => Math.min(b[k], s[k])).concat([3, 4, 5].map((k) => Math.max(b[k], s[k]))) : s;
+    const half = Math.hypot(b[3] - b[0], b[4] - b[1], b[5] - b[2]) / 2;
+    viewer.frameSphere(0, [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2], ORBIT_FIT * half);
+}
+// A slab's world box: the drawing's 2D bounds through its frame.
+function slabBox(bounds, frame) {
+    const f = frame12(frame), out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (const [x, y] of [[bounds[0], bounds[1]], [bounds[2], bounds[1]], [bounds[0], bounds[3]], [bounds[2], bounds[3]]])
+        for (let k = 0; k < 3; k++) { const v = f[k] + x * f[3 + k] + y * f[6 + k]; out[k] = Math.min(out[k], v); out[3 + k] = Math.max(out[3 + k], v); }
+    return out;
 }
 
 // The two windows: viewport 0 the orbit camera on layer 0 (the avatar, slabs, seams, cloth),
@@ -109,7 +122,7 @@ function refresh2d() {
     if (!viewer || !atelier || !items2d) return;
     const nodes = atelier.nodes();
     items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, hover: hover2d, colours: fabricColours(nodes) }));
-    post({ kind: "scene2d", items: items2d.byKey.size });
+    post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d });
 }
 
 function fit2d() {
@@ -128,11 +141,16 @@ function pointer2d(data) {
     });
 }
 async function at2d({ seq, phase, x, y, snap }) {
-    const r = viewer.frameReport()[1];
+    const none = () => post({ kind: "at2d", seq, phase, world: null, hit: null, snap: null, mmPerPx: 0 });
     // no 2D window (F3 hides it: an empty rect) maps nothing, and its mmPerPx would be Infinity
-    if (!r || !items2d || !(r.rect[2] > 0 && r.rect[3] > 0)) { post({ kind: "at2d", seq, phase, world: null, hit: null, snap: null, mmPerPx: 0 }); return; }
-    const px = [x - r.rect[0], y - r.rect[1]];
+    const shown = (r) => r && items2d && r.rect[2] > 0 && r.rect[3] > 0;
+    const r0 = viewer.frameReport()[1];
+    if (!shown(r0)) { none(); return; }
+    const px = [x - r0.rect[0], y - r0.rect[1]];
     const p = await viewer.pick(1, px[0], px[1]);
+    // the camera the pick ran with (a zoom, a pan or a rects change may have landed meanwhile)
+    const r = viewer.frameReport()[1];
+    if (!shown(r)) { none(); return; }
     const drawings = new Map(atelier.drawings().map((d) => [d.id, d]));
     const hit = p ? hitOf(items2d.what(p.item), p, drawings) : null;
     let world = pxToWorld(r, px), snapped = null;
@@ -160,11 +178,12 @@ function refresh3d() {
     const bounds = avatar?.bounds ?? [-200, 0, -150, 200, 1700, 150];
     const frames = new Map();
     let first = null;
-    slabs.clear(); seamLines.clear();
+    slabs.clear(); seamLines.clear(); slabBoxes.clear();
     for (const d of atelier.drawings()) {
         const node = byId.get(d.id);
         const frame = drawFrame(node, bounds);
         frames.set(d.id, frame);
+        if (d.bounds) slabBoxes.set(d.id, slabBox(d.bounds, frame));
         try {
             const solid = atelier.withOutline(d.id, (p) => k.cadaclysm_blacksmith_extrude(p, frame12(frame), 1));
             try {
@@ -304,7 +323,7 @@ async function tool3d(data) {
         const press = ++pressId;
         dragging = null;
         if (!sim.live) { post({ kind: "status", text: "Simulate first: pins and drags act on the cloth" }); return; }
-        const p = await viewer.pick(0, data.x, data.y);
+        const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
         const hit = p && sim.meshes.find((m) => m.item === p.item);
         if (!hit || !p.point || !sim.positions) { post({ kind: "status", text: "not on the cloth" }); return; }
         const vertex = nearestVertex(sim.positions, p.point, hit.verts);
@@ -409,7 +428,7 @@ self.onmessage = async ({ data }) => {
             case "avatar": await loadAvatar(data.bytes, data.name); break;
             case "select": selection = data.selection ?? null; pointSel = []; paintSelection(); refresh2d(); break;
             case "pick3d": {
-                const p = await viewer.pick(0, data.x, data.y);
+                const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
                 post({ kind: "picked", seq: data.seq ?? null, selection: p ? items.resolve(p.item) : null });
                 break;
             }
@@ -418,6 +437,8 @@ self.onmessage = async ({ data }) => {
             case "tool3d": await tool3d(data); break;
             case "rects": setRects(data.rects); break;
             case "pointer2d": pointer2d(data); break;
+            // the pointer left the 2D window: no piece is hovered (after the events before it)
+            case "leave2d": chain2d = chain2d.then(() => { if (hover2d !== null) { hover2d = null; refresh2d(); } }).catch(() => {}); break;
             case "overlay2d": overlay2d?.set({ lines: data.lines ?? [], points: data.points ?? [], curves: null, text: data.text ?? null }); break;
             case "pointSel": pointSel = data.indices ?? []; refresh2d(); break;
             case "fit2d": if (rects) fit2d(); break;

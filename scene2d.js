@@ -4,67 +4,101 @@
 // lines or points of the same look go in place (setCurves / setLines / setPoints), anything else
 // is shown again. Every item is on user layer 1, which only viewport 1 draws. No geometry: the
 // curves, rings, fills and samples are the kernel's (kernel.js drawing()).
+//
+// Depth does the stacking (the View has no draw order for world items): the grid lies at z = 0,
+// and each piece, in `layer` order, gets a band above it -- its fill, then its lines, then its
+// seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
+// picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
 import { seamColour } from "./sewing.js";
-import { pointsOf, notchNormals } from "./view2d.js";
+import { pointsOf, notchNormals, ringArea } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
 const LINE = "#d8dce2", HOVER = "#ffffff", INTERNAL = "#b0b6c0", CUT = "#8a9099", GRAIN = "#9aa0aa", LABEL = "#c8ccd4", BG = "#1e2024";
 const STATE = { normal: 0, hover: 1, selected: 2, first: 3 };
+/** A piece's depths by its rank in layer order: fill, lines, seams (mm above the grid's z = 0). */
+export const bandOf = (rank) => ({ fill: 1 + 4 * rank, line: 2 + 4 * rank, seam: 3 + 4 * rank });
+// The View's "tick" glyph is a slash turned 45 degrees from its `dir`: this turn makes the
+// stroke run along the notch's outward normal (M4a's notch mark).
+export const TICK_TURN = -Math.PI / 4;
+const turn = ([x, y], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
+const SEAM_NO_PX = 8;          // a seam's number stands this far out from its seam's middle
 
 const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const toHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 /** A fabric colour mixed 30 % over the background: opaque, so the lines read over it (ruling 17). */
 export const fillColour = (c, k = 0.3) => { const a = hex(c), b = hex(BG); return toHex(a.map((v, i) => b[i] + (v - b[i]) * k)); };
 
-// [x0, y0, x1, y1, ...] -> segments x y 0 x y 0, closed when asked
-function segs(ring, closed = false) {
+// [x0, y0, x1, y1, ...] -> segments x y z x y z, closed when asked
+function segs(ring, closed = false, z = 0) {
     const out = [];
     const n = ring.length >> 1;
-    for (let i = 0; i + 1 < n; i++) out.push(ring[2 * i], ring[2 * i + 1], 0, ring[2 * i + 2], ring[2 * i + 3], 0);
-    if (closed && n > 2 && (ring[0] !== ring[2 * n - 2] || ring[1] !== ring[2 * n - 1])) out.push(ring[2 * n - 2], ring[2 * n - 1], 0, ring[0], ring[1], 0);
+    for (let i = 0; i + 1 < n; i++) out.push(ring[2 * i], ring[2 * i + 1], z, ring[2 * i + 2], ring[2 * i + 3], z);
+    if (closed && n > 2 && (ring[0] !== ring[2 * n - 2] || ring[1] !== ring[2 * n - 1])) out.push(ring[2 * n - 2], ring[2 * n - 1], z, ring[0], ring[1], z);
     return out;
 }
-const xyz = (pts) => pts.flatMap((p) => [p[0], p[1], 0]);
+const xyz = (pts, z = 0) => pts.flatMap((p) => [p[0], p[1], z]);
+// Beziers (x, y, z, w a control point) and a mesh's positions moved to depth z.
+function liftBeziers(b, z) { const out = Float64Array.from(b); for (let i = 2; i < out.length; i += 4) out[i] = z; return out; }
+function liftMesh(m, z) { const p = Float32Array.from(m.positions); for (let i = 2; i < p.length; i += 3) p[i] = z; return { positions: p, indices: m.indices }; }
+// The point halfway along a polyline (x, y pairs, along a piece's outline in path order) and
+// the unit normal there out of the piece.
+function midOut(pts, ccw) {
+    const n = pts.length >> 1;
+    let total = 0;
+    for (let i = 0; i + 1 < n; i++) total += Math.hypot(pts[2 * i + 2] - pts[2 * i], pts[2 * i + 3] - pts[2 * i + 1]);
+    let left = total / 2;
+    for (let i = 0; i + 1 < n; i++) {
+        const tx = pts[2 * i + 2] - pts[2 * i], ty = pts[2 * i + 3] - pts[2 * i + 1], l = Math.hypot(tx, ty);
+        if (left <= l || i + 2 === n) {
+            const t = l > 0 ? Math.min(left / l, 1) : 0, u = l || 1;
+            return { at: [pts[2 * i] + tx * t, pts[2 * i + 1] + ty * t], normal: ccw ? [ty / u, -tx / u] : [-ty / u, tx / u] };
+        }
+        left -= l;
+    }
+    return { at: [pts[0], pts[1]], normal: [0, 0] };
+}
 
 export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], hover = null, colours = new Map() }) {
     const out = [];
     const picked = (id) => selection?.kind === "pattern" && (selection.id === id || selection.ids?.includes(id));
     const ordered = [...drawings].sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0));
-    for (const d of ordered) {
+    const rank = new Map(ordered.map((d, r) => [d.id, r]));
+    for (const [r, d] of ordered.entries()) {
         const id = d.id, sel = picked(id), line = sel ? ACCENT : hover === id ? HOVER : LINE;
-        if (d.fill) out.push({ key: `${id}/fill`, show: "mesh", data: d.fill, colour: fillColour(colours.get(d.fabric) ?? "#cccccc"), what: { kind: "fill", id }, sig: d.sig });
-        const notchAt = xyz((d.notches ?? []).map((n) => [n[0], n[1]]));
-        out.push({ key: `${id}/sew`, show: "curves", data: d.beziers, colour: line, what: { kind: "sew", id }, sig: d.sig, snapPoints: notchAt, snapLabel: "notch" });
-        if (d.cut?.length >= 4) out.push({ key: `${id}/cut`, show: "lines", data: segs(d.cut, true), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig: d.sig });
+        const z = bandOf(r), sig = `${d.sig}@${r}`;
+        if (d.fill) out.push({ key: `${id}/fill`, show: "mesh", data: liftMesh(d.fill, z.fill), colour: fillColour(colours.get(d.fabric) ?? "#cccccc"), what: { kind: "fill", id }, sig });
+        const notchAt = xyz((d.notches ?? []).map((n) => [n[0], n[1]]), z.line);
+        out.push({ key: `${id}/sew`, show: "curves", data: liftBeziers(d.beziers, z.line), colour: line, what: { kind: "sew", id }, sig, snapPoints: notchAt, snapLabel: "notch" });
+        if (d.cut?.length >= 4) out.push({ key: `${id}/cut`, show: "lines", data: segs(d.cut, true, z.line), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig });
         (d.holes ?? []).forEach((h, k) => {
-            out.push({ key: `${id}/hole/${k}`, show: "curves", data: h.beziers, colour: line, what: { kind: "hole", id, index: k }, sig: d.sig });
-            h.cut.forEach((c, j) => out.push({ key: `${id}/holecut/${k}/${j}`, show: "lines", data: segs(c, true), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig: d.sig }));
+            out.push({ key: `${id}/hole/${k}`, show: "curves", data: liftBeziers(h.beziers, z.line), colour: line, what: { kind: "hole", id, index: k }, sig });
+            h.cut.forEach((c, j) => out.push({ key: `${id}/holecut/${k}/${j}`, show: "lines", data: segs(c, true, z.line), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig }));
         });
         (d.internal ?? []).forEach((l, k) => out.push({
-            key: `${id}/internal/${k}`, show: "curves", data: l.beziers, colour: sel ? ACCENT : INTERNAL,
-            dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig: d.sig,
+            key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line), colour: sel ? ACCENT : INTERNAL,
+            dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig,
         }));
         if (notchAt.length) {
-            const dir = xyz(notchNormals(d));
-            out.push({ key: `${id}/notches`, show: "glyphs", data: notchAt, colour: line, glyph: { kind: "tick", dir, sizePt: 10 }, what: { kind: "notch", id }, sig: d.sig });
+            const dir = xyz(notchNormals(d).map((n) => turn(n, TICK_TURN)));
+            out.push({ key: `${id}/notches`, show: "glyphs", data: notchAt, colour: line, glyph: { kind: "tick", dir, sizePt: 10 }, what: { kind: "notch", id }, sig });
         }
         if (d.grain?.length >= 4) {
             const g = d.grain;
-            out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], 0, g[2], g[3], 0], colour: GRAIN, what: { kind: "grain", id }, sig: d.sig });
-            out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], 0], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig: d.sig });
+            out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });
+            out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], z.line], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig });
         }
-        if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, 0], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + d.sig });
+        if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
         if (selection?.kind === "pattern" && selection.id === id) {
             const p = pointsOf(nodes, id);
             const chosen = new Set(pointSel);
-            out.push({ key: `${id}/points`, show: "points", data: xyz(p.points), colour: "#ffffff", size: 8, pointStyle: { shape: "square", hollow: false },
-                states: p.points.map((_, i) => (chosen.has(i) ? STATE.selected : STATE.normal)), onTop: true, what: { kind: "points", id }, sig: JSON.stringify(p.points) });
+            out.push({ key: `${id}/points`, show: "points", data: xyz(p.points, z.seam), colour: "#ffffff", size: 8, pointStyle: { shape: "square", hollow: false },
+                states: p.points.map((_, i) => (chosen.has(i) ? STATE.selected : STATE.normal)), onTop: true, what: { kind: "points", id }, sig: JSON.stringify(p.points) + r });
             if (p.handles.length) {
-                const tangents = p.handles.flatMap((h) => [h.from, h.to].filter((i) => i !== undefined).flatMap((i) => [p.points[i][0], p.points[i][1], 0, h.at[0], h.at[1], 0]));
-                out.push({ key: `${id}/tangents`, show: "lines", data: tangents, colour: ACCENT, onTop: true, what: { kind: "tangents", id }, sig: JSON.stringify(tangents) });
-                out.push({ key: `${id}/handles`, show: "points", data: xyz(p.handles.map((h) => h.at)), colour: ACCENT, size: 7, pointStyle: { shape: "diamond", hollow: false },
-                    onTop: true, what: { kind: "handles", id, handles: p.handles }, sig: JSON.stringify(p.handles) });
+                const tangents = p.handles.flatMap((h) => [h.from, h.to].filter((i) => i !== undefined).flatMap((i) => [p.points[i][0], p.points[i][1], z.seam, h.at[0], h.at[1], z.seam]));
+                out.push({ key: `${id}/tangents`, show: "lines", data: tangents, colour: ACCENT, onTop: true, what: { kind: "tangents", id, handles: p.handles, points: p.points }, sig: JSON.stringify(tangents) });
+                out.push({ key: `${id}/handles`, show: "points", data: xyz(p.handles.map((h) => h.at), z.seam), colour: ACCENT, size: 7, pointStyle: { shape: "diamond", hollow: false },
+                    onTop: true, what: { kind: "handles", id, handles: p.handles }, sig: JSON.stringify(p.handles) + r });
             }
         }
     }
@@ -74,18 +108,24 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
         const colour = selection?.kind === "seam" && selection.id === s.id ? ACCENT : seamColour(i);
         for (const [end, pts, pattern] of [["a", s.points_a, s.a], ["b", s.points_b, s.b]]) {
             if (!pts || pts.length < 4) continue;
-            out.push({ key: `seam/${s.id}/${end}`, show: "lines", data: segs(pts), colour, what: { kind: "seam", id: s.id, pattern }, sig: `${byId.get(pattern)?.sig}|${pts.length}|${pts[0]},${pts[1]},${pts.at(-2)},${pts.at(-1)}` });
+            const r = rank.get(pattern) ?? 0;
+            out.push({ key: `seam/${s.id}/${end}`, show: "lines", data: segs(pts, false, bandOf(r).seam), colour, what: { kind: "seam", id: s.id, pattern }, sig: `${byId.get(pattern)?.sig}@${r}|${pts.length}|${pts[0]},${pts[1]},${pts.at(-2)},${pts.at(-1)}` });
         }
         if (s.points_a?.length >= 4) {
-            const mid = (s.points_a.length >> 2) * 2;
-            out.push({ key: `seam/${s.id}/no`, show: "text", text: String(i + 1), data: [s.points_a[mid], s.points_a[mid + 1], 0], colour, size: 11, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${i + 1}@${s.points_a[mid]},${s.points_a[mid + 1]}` });
+            // the number stands out from the seam's middle, along the normal out of piece a, over a
+            // box of the background so it reads over any line
+            const r = rank.get(s.a) ?? 0;
+            const { at, normal: [nx, ny] } = midOut(s.points_a, ringArea(byId.get(s.a)?.sew ?? s.points_a) >= 0);
+            const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(-SEAM_NO_PX * ny * 10) / 10 + 0];   // screen y runs down
+            out.push({ key: `seam/${s.id}/no`, show: "text", text: String(i + 1), data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
+                offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${i + 1}@${at[0]},${at[1]}@${r}` });
         }
     });
     return out.filter((s) => s.show === "text" || (s.data && (s.data.length ?? s.data.indices?.length) > 0));
 }
 
 const IN_PLACE = { curves: "setCurves", lines: "setLines", points: "setPoints" };
-const lookOf = (s) => JSON.stringify([s.dash ?? null, s.size ?? null, s.pointStyle ?? null, !!s.onTop, s.glyph?.kind ?? null, s.glyph?.sizePt ?? null]);
+const lookOf = (s) => JSON.stringify([s.dash ?? null, s.size ?? null, s.pointStyle ?? null, !!s.onTop, s.glyph?.kind ?? null, s.glyph?.sizePt ?? null, s.offset ?? null, s.box ?? null, s.padding ?? null]);
 const snapSig = (s) => (s.snapPoints?.length ? `${s.snapLabel}:${Array.from(s.snapPoints).join(",")}` : "");
 
 export class Items2d {
@@ -133,7 +173,13 @@ export class Items2d {
             case "points": item = v.showPoints(s.data, s.colour, s.size ?? 8); break;
             case "mesh": item = v.showMesh({ positions: s.data.positions, indices: s.data.indices, colour: s.colour }); break;
             case "glyphs": item = v.showGlyphs(s.data, { kind: s.glyph.kind, sizePt: s.glyph.sizePt ?? 10, colour: s.colour, dir: s.glyph.dir ?? null }); break;
-            case "text": item = v.showText(s.text, { at: s.data, size: s.size ?? 12, colour: s.colour, align: "centre" }); break;
+            case "text": {
+                const o = { at: s.data, size: s.size ?? 12, colour: s.colour, align: "centre" };
+                if (s.offset) o.offset = s.offset;
+                if (s.box) { o.box = s.box; o.padding = s.padding ?? 0; }
+                item = v.showText(s.text, o);
+                break;
+            }
             default: throw new Error(`scene2d: no show ${s.show}`);
         }
         v.setItemLayer(item, this.layer);

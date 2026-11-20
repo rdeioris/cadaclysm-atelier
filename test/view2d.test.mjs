@@ -1,7 +1,7 @@
 // The 2D window's mapping from its frame report, the nearest arc length, the edit handles and
 // the pick decoding: M4a's camera-mapping checks carried over to the View's ortho camera.
 import assert from "node:assert/strict";
-import { pxToWorld, worldToPx, mmPerPx, isOrtho, arcAt, pointsOf, hitOf, unionBounds } from "../view2d.js";
+import { pxToWorld, worldToPx, mmPerPx, isOrtho, arcAt, pointsOf, hitOf, unionBounds, notchNormals } from "../view2d.js";
 
 // A top view centred on (cx, cy), half-height H, of a w x h viewport: what frameReport() gives.
 function topView(cx, cy, H, w, h) {
@@ -61,8 +61,23 @@ assert.equal(hitOf({ kind: "seam", id: "s1", pattern: "p1" }, pick([100, 25]), d
 assert.deepEqual(hitOf({ kind: "fill", id: "p1" }, pick([50, 25]), drawings), { kind: "pattern", id: "p1" });
 assert.deepEqual(hitOf({ kind: "internal", id: "p1", index: 2 }, pick([5, 5]), drawings), { kind: "internal", id: "p1", index: 2 });
 assert.deepEqual(hitOf({ kind: "hole", id: "p1", index: 0 }, pick([5, 5]), drawings), { kind: "hole", id: "p1", index: 0 });
-assert.equal(hitOf({ kind: "tangents", id: "p1" }, pick([105, 5], 0), drawings), null, "a pick on a tangent line is no point");
+// a pick on a tangent line grabs the handle that tangent belongs to (the nearest tangent to the point)
+const tan = { kind: "tangents", id: "p1", handles: pts.handles, points: pts.points };
+assert.deepEqual(hitOf(tan, pick([105, 5]), drawings), { kind: "handle", id: "p1", index: 1, which: "c1" });
+assert.deepEqual(hitOf(tan, pick([105, 45]), drawings), { kind: "handle", id: "p1", index: 1, which: "c2" });
+assert.deepEqual(hitOf(tan, pick([75, 65]), drawings), { kind: "handle", id: "p1", index: 2, which: "control" }, "a conic's tangent from its start");
+assert.deepEqual(hitOf(tan, pick([25, 65]), drawings), { kind: "handle", id: "p1", index: 2, which: "control" }, "and from its end");
+assert.equal(hitOf({ kind: "tangents", id: "p1" }, pick([105, 5]), drawings), null, "no handles known: no hit");
 assert.equal(hitOf(null, pick([0, 0]), drawings), null);
 assert.deepEqual(unionBounds([{ bounds: [0, 0, 10, 10] }, { bounds: [-5, 2, 3, 20] }]), [-5, 0, 10, 20]);
 assert.equal(unionBounds([]), null);
+// notch normals point out of the piece, whichever way its outline runs
+const sq = (ccw) => { const r = [[0, 0], [100, 0], [100, 50], [0, 50]]; const o = ccw ? r : r.reverse(); const out = [];
+    let s = 0; o.forEach((p, i) => { const q = o[(i + 1) % 4], l = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        for (let k = 0; k < 10; k++) out.push(s + (l * k) / 10, p[0] + ((q[0] - p[0]) * k) / 10, p[1] + ((q[1] - p[1]) * k) / 10); s += l; }); return out; };
+for (const ccw of [true, false]) {
+    const d = { samples: sq(ccw), sew: ccw ? [0, 0, 100, 0, 100, 50, 0, 50, 0, 0] : [0, 0, 0, 50, 100, 50, 100, 0, 0, 0], notches: [[0, 25, 0], [50, 0, 0], [100, 25, 0]] };
+    const n = notchNormals(d).map((v) => v.map((x) => Math.round(x * 1000) / 1000 + 0));
+    assert.deepEqual(n, [[-1, 0], [0, -1], [1, 0]], `outward on a ${ccw ? "ccw" : "cw"} outline: ${JSON.stringify(n)}`);
+}
 console.log("view2d: ok");

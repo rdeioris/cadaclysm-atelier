@@ -92,6 +92,7 @@ export function hitOf(what, pick, drawings) {
     switch (what.kind) {
         case "points": return { kind: "point", id: what.id, index: pick.node };
         case "handles": { const h = what.handles?.[pick.node]; return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
+        case "tangents": { const h = tangentHandle(what, at); return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
         case "sew": return edge(what.id, {});
         case "seam": return edge(what.pattern, { seam: what.id });
         case "internal": return { kind: "internal", id: what.id, index: what.index };
@@ -99,6 +100,25 @@ export function hitOf(what, pick, drawings) {
         case "fill": case "label": case "grain": case "notch": case "cut": return { kind: "pattern", id: what.id };
         default: return null;
     }
+}
+
+// The handle whose tangent line (from a path point to the handle) passes nearest `at`.
+function tangentHandle(what, at) {
+    if (!what.handles?.length || !what.points || !at) return null;
+    let best = null, bd = Infinity;
+    for (const h of what.handles)
+        for (const i of [h.from, h.to]) {
+            const a = i === undefined ? null : what.points[i];
+            if (!a) continue;
+            const d = segDist(at, a, h.at);
+            if (d < bd) { bd = d; best = h; }
+        }
+    return best;
+}
+function segDist([x, y], a, b) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l2)) : 0;
+    return Math.hypot(x - (a[0] + t * dx), y - (a[1] + t * dy));
 }
 
 /** The box around every drawing's bounds; null for none. */
@@ -111,13 +131,23 @@ export function unionBounds(drawings) {
     return b;
 }
 
-// Per drawing, once: the unit world-space normal at each notch, from the nearest sample's tangent.
+// Twice the signed area of a ring of x, y pairs: positive when it runs counter-clockwise.
+export function ringArea(r) {
+    let a = 0;
+    for (let i = 0, n = r.length >> 1; i < n; i++) { const j = (i + 1) % n; a += r[2 * i] * r[2 * j + 1] - r[2 * j] * r[2 * i + 1]; }
+    return a;
+}
+
+// Per drawing, once: the unit world-space normal at each notch pointing out of the piece, from
+// the nearest sample's tangent and the way the outline runs.
 const normalsCache = new WeakMap();
 function normalsOf(d) {
     let r = normalsCache.get(d);
     if (r) return r;
     r = [];
     const s = d.samples;
+    const ring = d.sew ?? s.filter((_, i) => i % 3 !== 0);
+    const out = ringArea(ring) >= 0 ? -1 : 1;          // counter-clockwise: the right of the tangent
     for (const [nx, ny] of d.notches ?? []) {
         let bi = 0, bd = Infinity;
         for (let i = 0; i + 2 < s.length; i += 3) {
@@ -126,7 +156,7 @@ function normalsOf(d) {
         }
         const a = Math.max(bi - 3, 0), b = Math.min(bi + 3, s.length - 3);
         const tx = s[b + 1] - s[a + 1], ty = s[b + 2] - s[a + 2], l = Math.hypot(tx, ty) || 1;
-        r.push([-ty / l, tx / l]);
+        r.push([(-ty / l) * out, (tx / l) * out]);
     }
     normalsCache.set(d, r);
     return r;

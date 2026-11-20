@@ -282,7 +282,7 @@ function handle(r) {
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length ? r.overlay : null;
     if (r.select !== undefined) setSelection(r.select);
     if (r.done) setTool("edit");
-    else if (toolStale && !previewing && !drag2d) freshTool();
+    else if (toolStale && !previewing && !gesture2d()) freshTool();
     draw2d();
 }
 
@@ -294,8 +294,7 @@ function command(name) {
     else if (name === "arrange") arrange();
     else if (name === "simulate") post({ kind: "sim", action: "toggle" });
     else if (name === "reset") post({ kind: "sim", action: "reset" });
-    else if (name === "undo") { cancelPreview(); change("undo"); }
-    else if (name === "redo") { cancelPreview(); change("redo"); }
+    else if (name === "undo" || name === "redo") afterGesture(() => { cancelPreview(); change(name); });
     else if (name === "save") menu.save();
     else if (name === "open") menu.open();
     else if (name === "maximise2d") maximise("max2d");
@@ -369,6 +368,10 @@ for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("
 // is that tool's. Everything else is the View's camera input; a hover over the 2D window is
 // also sent as `pointer2d` (the worker hovers the piece under it).
 let space = false, shiftHeld = false, drag2d = false, lastUp = null;
+let ups2d = 0;                            // 2D releases sent, not yet answered: the gesture is still the tool's
+let pan2d = null;                         // the pointer panning the 2D window (the View's), while it does
+let in2d = false;                         // a hover was sent since the pointer last left the 2D window
+const gesture2d = () => drag2d || ups2d > 0;
 const claims = new Map();                 // pointerId -> "2d" | "3d"
 const pending2d = new Map();              // seq -> mods of a 2D event in flight
 let seq2d = 0, moveBusy = false, moveNext = null, down3d = null;
@@ -380,7 +383,19 @@ function send2d(phase, ev, mods) {
     post({ kind: "pointer2d", seq, phase, x: ev.x, y: ev.y, snap: false });
 }
 // one move or hover in flight at a time: the newest waits, older ones are dropped
-function move2d(ev) { moveNext = ev; if (!moveBusy) flushMove(); }
+function move2d(ev) { moveNext = ev; in2d = true; if (!moveBusy) flushMove(); }
+// The pointer is out of the 2D window: the worker drops its hover (after the events before it).
+function leave2d() {
+    if (!in2d || drag2d) return;
+    in2d = false; moveNext = null;
+    post({ kind: "leave2d" });
+}
+cv.addEventListener("pointerleave", leave2d);
+// The cursor of the window under the pointer: a crosshair in 2D (grabbing while it pans), a
+// crosshair in 3D while Pin or Drag is on.
+function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && tool3d ? "crosshair" : ""; }
+// Tab leaves the canvas (listen would keep it there; the app binds no Tab on the canvas)
+$("well").addEventListener("keydown", (e) => { if (e.key === "Tab") e.stopPropagation(); }, true);
 function flushMove() {
     const ev = moveNext;
     moveNext = null;
@@ -423,6 +438,7 @@ listen(cv, (ev) => {
         const now = performance.now(), css = [ev.x / dprNow(), ev.y / dprNow()];
         const detail = lastUp && now - lastUp.t < 400 && Math.hypot(css[0] - lastUp.p[0], css[1] - lastUp.p[1]) < CLICK_PX ? lastUp.detail + 1 : 1;
         lastUp = { t: now, p: css, detail };
+        ups2d++;
         send2d("up", ev, mods2d(ev, { detail, dblclick: detail === 2 }));
         return;
     }
@@ -431,18 +447,33 @@ listen(cv, (ev) => {
         post({ kind: "tool3d", tool: tool3d, phase: ev.kind === "cancel" ? "up" : ev.kind, x: ev.x, y: ev.y });
         return;
     }
-    if (ev.kind === "move" && viewportAt(rects, [ev.x, ev.y]) === 1) move2d(ev);
+    const vpNow = ev.x === undefined ? -1 : viewportAt(rects, [ev.x, ev.y]);
+    if (ev.kind === "down" && vpNow === 1) { pan2d = ev.pointerId; cursorAt(1); }      // Space, middle or right: a pan
+    if (ev.kind === "move") {
+        if (vpNow === 1 && pan2d === null) move2d(ev);
+        else if (vpNow !== 1) leave2d();
+        if (pan2d === null) cursorAt(vpNow);
+    }
     if (ev.kind === "up" && down3d) {                                    // a click without a drag picks in 3D
         if (Math.hypot(ev.x - down3d[0], ev.y - down3d[1]) < CLICK_PX * dprNow()) post({ kind: "pick3d", x: ev.x, y: ev.y, seq: selSeq });
         down3d = null;
     }
     post({ cadaclysm: "input", event: ev });
+    // the pan or the zoom has moved the pattern under the pointer: ask its hover again
+    if ((ev.kind === "up" || ev.kind === "cancel") && pan2d === ev.pointerId) {
+        pan2d = null;
+        if (vpNow === 1) move2d(ev);
+        cursorAt(vpNow);
+    }
+    if (ev.kind === "wheel" && vpNow === 1) move2d(ev);
 }, () => post({ cadaclysm: "clearKeys" }));
 
 // Resolves once every 2D event sent so far has been answered and its tool result queued: a
 // save waits on it, so it holds the drag that was let go just before it (the events go to the
 // worker and back now, where M4a's tool heard them at once). Later events do not hold it up.
 const waits2d = [];
+// `fn` once the 2D events sent so far are answered and the tool results they queued are handled.
+function afterGesture(fn) { after2d().then(() => { queue = queue.then(fn).catch(toolFailed); }); }
 function after2d() {
     const upto = seq2d;
     return new Promise((resolve) => { waits2d.push({ upto, resolve }); settle2d(); });
@@ -461,6 +492,7 @@ function onAt2d(m) {
 function at2dAnswer(m) {
     const mods = pending2d.get(m.seq) ?? {};
     pending2d.delete(m.seq);
+    if (m.phase === "up") ups2d = Math.max(0, ups2d - 1);
     if (m.mmPerPx > 0 && Number.isFinite(m.mmPerPx)) mmPerPx = m.mmPerPx;
     if (m.phase === "move" || m.phase === "hover") { moveBusy = false; queueMicrotask(flushMove); }
     document.body.dataset.hit = m.hit?.kind ?? "";
@@ -590,7 +622,7 @@ const menu = {
     },
     open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; setSelection(null); change("open", { text }); }); },
     // after the 2D events in flight and the tool results still queued (a drag's last step): they are saved too
-    save() { after2d().then(() => { queue = queue.then(() => { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); }).catch(toolFailed); }); },
+    save() { afterGesture(() => { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); }); },
     importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text, fabric: currentFabric() }); }); },
     exportDxf() { document.activeElement?.blur(); post({ kind: "exportDxf" }); },
     avatar() {
@@ -638,7 +670,7 @@ worker.onmessage = ({ data: m }) => {
         case "status": status(m.text); break;
         case "sim": onSim(m); break;
         case "at2d": onAt2d(m); break;
-        case "scene2d": document.body.dataset.items2d = String(m.items); break;
+        case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
@@ -657,7 +689,7 @@ function onDoc(m) {
     if (!exists(selection)) { selection = null; post({ kind: "select", selection: null }); }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
     // A fresh tool for the new nodes, unless a gesture (and its previews) is under way.
-    if (previewing || drag2d) toolStale = true; else freshTool();
+    if (previewing || gesture2d()) toolStale = true; else freshTool();
     renderBrowser();
     renderProps();
     renderIssues();

@@ -428,6 +428,50 @@ async function check(cdp, base) {
                 ok(`screenshot ${process.env.ATELIER_SHOT_SAMPLE}`);
             }
 
+            // the hover follows the pointer: a piece hovered in 2D, then nothing once the pointer is in 3D
+            const hover2d = () => evaluate(`document.body.dataset.hover2d ?? ""`);
+            let hovered = "";
+            for (const [fx, fy] of [[0.32, 0.43], [0.68, 0.43], [0.3, 0.5], [0.7, 0.5], [0.5, 0.75]]) {
+                await evaluate(`document.body.dataset.hit = "__"`);
+                await mouse("mouseMoved", sx + sw * fx, sy + sh * fy, { buttons: 0 });
+                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
+                await sleep(200);
+                hovered = await hover2d();
+                if (hovered) break;
+            }
+            if (!hovered) throw new Error("no piece hovered in the 2D window");
+            const [hx, hy, hw, hh] = await windowBox("rect3d");
+            await mouse("mouseMoved", hx + hw / 2, hy + hh / 2, { buttons: 0 });
+            await until("the hover dropped in 3D", async () => (await hover2d()) === "", 10000);
+            // a middle drag and a Space drag pan the 2D window: the pattern point under one pixel moves
+            const px0 = [sx + sw * 0.5, sy + sh * 0.2];
+            const worldAt = async (p) => {
+                await mouse("mouseMoved", p[0] + 1, p[1], { buttons: 0 });
+                await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
+                await sleep(300);
+                return (await evaluate(`document.body.dataset.world ?? ""`)).split(",").map(Number);
+            };
+            const panBy = async (press, release) => {
+                const before = await worldAt(px0);
+                await press();
+                for (let i = 1; i <= 6; i++) await mouse("mouseMoved", px0[0] + 10 * i, px0[1], { ...release.held });
+                await release.done();
+                const after = await worldAt(px0);
+                return after[0] - before[0];
+            };
+            const midDx = await panBy(() => mouse("mousePressed", px0[0], px0[1], { button: "middle", buttons: 4 }),
+                { held: { button: "middle", buttons: 4 }, done: () => mouse("mouseReleased", px0[0] + 60, px0[1], { button: "middle", buttons: 0 }) });
+            if (!(midDx < -1)) throw new Error(`a middle drag right did not pan the 2D window (world x moved by ${midDx})`);
+            const spaceDx = await panBy(async () => {
+                await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: " ", code: "Space", windowsVirtualKeyCode: 32 });
+                await mouse("mousePressed", px0[0], px0[1]);
+            }, { held: {}, done: async () => { await mouse("mouseReleased", px0[0] + 60, px0[1]); await send("Input.dispatchKeyEvent", { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 32 }); } });
+            if (!(spaceDx < -1)) throw new Error(`a Space drag right did not pan the 2D window (world x moved by ${spaceDx})`);
+            if ((await patternCount()) !== 4) throw new Error("a pan changed the garment");
+            await key("f", "KeyF", 70);
+            failIfErrors();
+            ok(`hover dropped in 3D; middle and Space drags pan 2D (${midDx.toFixed(1)}, ${spaceDx.toFixed(1)} mm)`);
+
             // 6. DXF export: one BLOCK per piece; imported into a new document, four pieces
             await evaluate(`document.getElementById("menu-export-dxf").click()`);
             const dxf = await waitFile("garment.dxf");
