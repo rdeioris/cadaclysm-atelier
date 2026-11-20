@@ -1,7 +1,8 @@
 // The kernel facade: the one place the app calls cadaclysm_blacksmith_*. It owns a
 // blacksmith document holding the garment, and hands back plain arrays for drawing.
 import * as m from "./model.js";
-import { reanchor } from "./sewing.js";
+import { reanchor, anchorOf } from "./sewing.js";
+import { arcAt } from "./view2d.js";
 import { translatePath } from "./drape.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
@@ -13,6 +14,8 @@ const text = (e) => String(e && e.message ? e.message : e);
 const HOLE_GAP = 0.05;    // mm: a hole nearer the outline or another hole than this touches it
 const HOLE_TOL = 0.01;    // mm: profile_deviation's accuracy for that gap (1e-4 costs 50 times more)
 const FILL_Z = -1;       // fills lie under every line (z = 0): a hundredth of a mm higher per layer
+const OUTSIDE = 0, INSIDE = 1, ON = 2;   // profile_contains
+const LAND = 0.5;                        // mm: how near a point must lie to land on an outline
 const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
 
 // A drawing without what only the worker draws (posted to the page with every `doc`).
@@ -161,8 +164,7 @@ export class Atelier {
             const sew = [];
             for (let j = offsets[0]; j < offsets[1]; j++) sew.push(points[3 * j], points[3 * j + 1]);
             const perimeter = this.f("profile_length")(p, ACC)[0];
-            const samples = [];
-            this.rows(this.f("profile_divide_by_length")(p, STEP, ACC)).forEach((r, i) => samples.push(i * STEP, r[0], r[1]));
+            const samples = this.samplesOf(p);
             const sides = this.sidesOf(id);
             const bounds = Array.from(this.f("profile_bounds")(p));
             const notchRaw = Array.from(this.f("garment_pattern_notches")(this.g, pid));
@@ -196,6 +198,8 @@ export class Atelier {
             };
         });
     }
+    // The outline every 1 mm: flat triples arc, x, y (what edge picking reads).
+    samplesOf(p) { const out = []; this.rows(this.f("profile_divide_by_length")(p, STEP, ACC)).forEach((r, i) => out.push(i * STEP, r[0], r[1])); return out; }
     // Every pattern's drawing, once per evaluation. A pattern that cannot be drawn is left out
     // and listed in `errors` (an issue on the page), so one bad piece never blanks the rest.
     drawState() {
@@ -390,6 +394,108 @@ export class Atelier {
     // m6 is the kernel's row-major 2x3: x' = m0 x + m1 y + m2, y' = m3 x + m4 y + m5.
     transformed(id, m6) { return this.mapped(id, (p) => this.f("profile_transform2d")(p, Float64Array.from(m6))); }
     mirrored(id, [px, py, dx, dy]) { return this.mapped(id, (p) => this.f("profile_mirror")(p, px, py, dx, dy)); }
+
+    // The two pieces an open `cutter` (path JSON) cuts pattern `id` into, all from kernel calls
+    // (spec §4): the outline's two pieces where the cutter crosses it (profile_pieces), each
+    // chained with the cutter's stretch inside it and closed. Holes, notches and internal lines go
+    // to the piece holding them (internal line `consume`, the cutter, to neither); each seam end
+    // to the piece its whole range lies on, or the seam is dropped; the cut edge on each piece is
+    // the stretch between the cutter's ends that lies on the other piece. Throws, changing
+    // nothing, where the cutter does not cross the outline exactly twice, or where it crosses or
+    // touches a hole (a hole is never split nor dropped: cut beside it).
+    cutPieces(id, cutter, consume = null) {
+        const f = this.f, byId = m.byId(this.nodes()), node = byId.get(id), path = byId.get(`${id}_outline`)?.path;
+        if (!node || !path) throw new Error(`no pattern ${id}`);
+        const owned = [];
+        const own = (h) => { owned.push(h); return h; };
+        try {
+            const out = own(this.profileOf({ start: path.start, segments: path.segments }));
+            const cut = own(this.profileOf(cutter));
+            const n = f("profile_piece_count")(out, Uint32Array.of(cut), 0);
+            if (n !== 2) throw new Error(n < 2 ? "the cutter does not cross the piece" : `the cutter crosses the outline ${n} times: one line across the piece makes two`);
+            (path.holes ?? []).forEach((h, i) => {
+                const hp = own(this.profileOf({ start: h.start, segments: h.segments }));
+                if (f("profile_piece_count")(hp, Uint32Array.of(cut), 0) !== 1) throw new Error(`the cutter crosses hole ${i + 1}: cut beside it`);
+            });
+            const halves = [0, 1].map((i) => own(f("profile_piece")(out, Uint32Array.of(cut), i, 0)));
+            const inner = [];
+            for (let i = 0, cn = f("profile_piece_count")(cut, Uint32Array.of(out), 0); i < cn; i++) {
+                const q = own(f("profile_piece")(cut, Uint32Array.of(out), i, 0));
+                const mid = f("profile_point_at_length")(q, this.openLength(q) / 2, ACC);
+                if (f("profile_contains")(out, mid[0], mid[1], 0) === INSIDE) inner.push(q);
+            }
+            if (inner.length !== 1) throw new Error("the cutter must cross the piece once, end to end");
+            const loops = halves.map((h) => own(f("profile_close_loop")(own(f("profile_chain")(Uint32Array.of(h, inner[0]), 0)))));
+            const on = (p, [x, y]) => f("profile_contains")(p, x, y, LAND) === ON;
+            const holding = (p, [x, y]) => f("profile_contains")(p, x, y, LAND) !== OUTSIDE;
+            const pieces = loops.map((p) => {
+                const { start, segments } = this.pathJson(p);
+                const perimeter = f("profile_length")(p, ACC)[0];
+                return { path: { start, segments }, samples: this.samplesOf(p), sides: this.sideStarts(p, perimeter, segments.length), perimeter };
+            });
+            const arc = (k, pt) => arcAt(pieces[k].samples, pieces[k].sides, pt).s;
+            // a range that only seems to wrap, ending at the loop's start (or starting at its end):
+            // that end at P (or 0), so it reads as the plain range it is
+            const span = (k, from, to) => {
+                const P = pieces[k].perimeter;
+                if (from > to && to < LAND) to = P;
+                else if (from > to && from > P - LAND) from = 0;
+                return [from, to];
+            };
+            const pointOn = (p, s) => { const r = f("profile_point_at_length")(p, s, ACC); return [r[0], r[1]]; };
+            const holes = [[], []], notches = [[], []], internal = [[], []];
+            // a hole the cutter does not meet lies wholly on one side: its start says which
+            for (const h of path.holes ?? []) holes[holding(loops[0], h.start) ? 0 : 1].push(h);
+            for (const nt of node.notches ?? []) {
+                const pt = pointOn(out, nt.at), k = on(loops[0], pt) ? 0 : on(loops[1], pt) ? 1 : -1;
+                if (k >= 0) notches[k].push({ ...nt, at: arc(k, pt) });
+            }
+            (node.internal ?? []).forEach((l, i) => { if (i !== consume) internal[holding(loops[0], l.path.start) ? 0 : 1].push(l); });
+            const seamMoves = [], dropped = [];
+            for (const s of this.seams()) {
+                for (const end of ["a", "b"]) {
+                    if (s[end] !== id) continue;
+                    const flat = s[`points_${end}`], pts = [];
+                    for (let i = 0; i + 1 < flat.length; i += 2) pts.push([flat[i], flat[i + 1]]);
+                    const k = [0, 1].find((j) => pts.every((pt) => on(loops[j], pt)));
+                    if (k === undefined) { if (!dropped.includes(s.id)) dropped.push(s.id); continue; }
+                    const [from, to] = span(k, arc(k, pts[0]), arc(k, pts.at(-1)));
+                    seamMoves.push({ id: s.id, end, piece: k, from, to, anchor: anchorOf(pieces[k].sides, from, to) });
+                }
+            }
+            const live = seamMoves.filter((mv) => !dropped.includes(mv.id));
+            const ends = [0, this.openLength(inner[0])].map((s) => pointOn(inner[0], s));
+            const cutEdges = [0, 1].map((k) => {
+                const P = pieces[k].perimeter;
+                let [from, to] = ends.map((pt) => arc(k, pt));
+                const midS = (from + ((((to - from) % P) + P) % P) / 2) % P;
+                if (!on(loops[1 - k], pointOn(loops[k], midS))) [from, to] = [to, from];
+                [from, to] = span(k, from, to);
+                return { from, to, anchor: anchorOf(pieces[k].sides, from, to) };
+            });
+            const [pa, pb] = [pointOn(loops[0], cutEdges[0].from), pointOn(loops[1], cutEdges[1].from)];
+            return {
+                pieces: pieces.map((pc, k) => ({ path: holes[k].length ? { ...pc.path, holes: holes[k] } : pc.path, notches: notches[k], internal: internal[k] })),
+                seamMoves: live, dropped, cutEdges, reversed: Math.hypot(pa[0] - pb[0], pa[1] - pb[1]) > LAND,
+            };
+        } finally { for (const h of owned) this.f("profile_free")(h); }
+    }
+
+    // An open chain's own length: profile_length (and profile_point_at_length) run on along the
+    // chord from its end back to its start, which comes last.
+    openLength(q) {
+        const { start, segments } = this.pathJson(q), last = segments.at(-1), end = last.to ?? last.points.at(-1);
+        return this.f("profile_length")(q, ACC)[0] - Math.hypot(end[0] - start[0], end[1] - start[1]);
+    }
+
+    // The ops of a cut (and with `sew`, one seam joining the cut edges): one batch, one undo.
+    cutOps(id, cutter, { sew = false, consume = null } = {}) {
+        const r = this.cutPieces(id, cutter, consume);
+        const label = m.byId(this.nodes()).get(id).label ?? "Piece";
+        const out = m.replacePattern(this.nodes(), id, r.pieces.map((p, k) => ({ ...p, label: `${label} ${"AB"[k]}` })),
+            { seamMoves: r.seamMoves, dropped: r.dropped, sew: sew ? { a: r.cutEdges[0], b: r.cutEdges[1], reversed: r.reversed } : null });
+        return { ...out, dropped: r.dropped };
+    }
 
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }
     // The pieces of an AAMA DXF as ops adding them, in `fabric` (absent or unknown: the first fabric).

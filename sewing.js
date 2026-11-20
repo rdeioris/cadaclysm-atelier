@@ -23,6 +23,13 @@ const frac = (sides, side, s) => {
     const len = sides[side + 1] - sides[side];
     return len > 0 ? Math.min(1, Math.max(0, (s - sides[side]) / len)) : 0;
 };
+// A range's anchor on `sides` (side + fractions, as the sewing tools write it): one side when the
+// range starts and ends on it running forward, else the start side and the end side.
+export function anchorOf(sides, from, to) {
+    const sideOf = (s) => { let k = 0; for (let i = 0; i < sides.length - 1; i++) if (sides[i] <= s) k = i; return k; };
+    const a = sideOf(from), b = sideOf(to);
+    return a === b && from <= to ? [a, frac(sides, a, from), frac(sides, b, to)] : [a, frac(sides, a, from), frac(sides, b, to), b];
+}
 const arcOf = (sides, side, t) => sides[side] + t * (sides[side + 1] - sides[side]);
 const sidesOf = (ctx, id) => ctx.drawings.get(id)?.sides;
 

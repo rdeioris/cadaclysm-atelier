@@ -977,6 +977,60 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok("typed lengths: 100, 50 at 90°, 100 at 180°, closed: 100 x 50; refusals, Shift, mid-drag, clamp, Ctrl+S in the box");
+
+                // ---- Cut, and Cut & Sew (Task 17): the polygon cut along x + 50, then its left half sewn across ----
+                // its corner from the saved document; the screen mapping re-measured with Edit armed (no snap on the hover)
+                const saved = await saveJson();
+                const polyId = saved.nodes.find((n) => n.id === "garment").patterns.at(-1);
+                const c0 = saved.nodes.find((n) => n.id === `${polyId}_outline`).path.start;
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const wA = await fresh([P[0] + 1, P[1]]), wB = await worldOf([P[0] + 51, P[1]]);
+                const pxPerMm = 50 / (wB[0] - wA[0]);
+                const wAt = [wA[0] - 1 / pxPerMm, wA[1]];            // the world under P
+                const screenOf = ([x, y]) => [P[0] + (x - wAt[0]) * pxPerMm, P[1] - (y - wAt[1]) * pxPerMm];
+                // a cutter point: Enter goes to the tool at once while a click's release is a round trip to the
+                // worker, so each click waits for its point: the read-out (readoutMm, above) from the last point to
+                // the pointer is long on the hover there (after the first) and 0 once the point is placed
+                const cutPoint = async (p, first) => {
+                    await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
+                    if (!first) await until("the hover's read-out", async () => (await readoutMm()) > 5, 10000);
+                    await mouse("mousePressed", p[0], p[1]); await mouse("mouseReleased", p[0], p[1]);
+                    await until("the cutter point", async () => (await readoutMm()) < 1, 10000);
+                };
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                await until("the polygon selected", () => evaluate(`/size\\s*100\\s*×\\s*50/.test(document.getElementById("props").textContent)`), 30000);
+                const nC = await patternCount();
+                await evaluate(`document.querySelector('#tools2d [data-tool=cut]').click()`);
+                await cutPoint(screenOf([c0[0] + 50, c0[1] - 15]), true);
+                await cutPoint(screenOf([c0[0] + 50, c0[1] + 65]));
+                await key("Enter", "Enter", 13);
+                try { await until("two pieces from one", async () => (await patternCount()) === nC + 1, 30000); }
+                catch (e) { throw new Error(`${e.message}: ${await patternCount()} pieces (${nC}); status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }
+                await noStatusError();
+                // select the left half (Edit, a click on its fill), then Cut & Sew across its middle
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                await click(screenOf([c0[0] + 25, c0[1] + 25]));
+                await until("the left half selected", async () => /size\s*50\s*×\s*50/.test(await evaluate(`document.getElementById("props").textContent`)), 30000);
+                const sC = await seamCount();
+                await evaluate(`document.querySelector('#tools2d [data-tool=cut-sew]').click()`);
+                await cutPoint(screenOf([c0[0] - 15, c0[1] + 25]), true);
+                await cutPoint(screenOf([c0[0] + 60, c0[1] + 25]));
+                await key("Enter", "Enter", 13);
+                try { await until("cut and sewn", async () => (await patternCount()) === nC + 2 && (await seamCount()) === sC + 1, 30000); }
+                catch (e) { throw new Error(`${e.message}: ${await patternCount()} pieces (${nC} before the cut), ${await seamCount()} seams (${sC}); status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }
+                await noStatusError();
+                // a cutter that does not cross the piece: refused, the status says so, nothing changes
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=cut]').click()`);
+                await cutPoint(screenOf([c0[0] + 75, c0[1] - 40]), true);
+                await cutPoint(screenOf([c0[0] + 75, c0[1] - 25]));
+                await key("Enter", "Enter", 13);
+                try { await until("the refusal", async () => /cross/.test((await statusError()) ?? ""), 30000); }
+                catch (e) { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }
+                if ((await patternCount()) !== nC + 2 || (await seamCount()) !== sC + 1) throw new Error("a refused cut changed the garment");
+                await key("Escape", "Escape", 27);
+                failIfErrors();
+                ok("cut: one piece became two; cut & sew: two more and one seam joining them; a miss refused");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

@@ -99,4 +99,8 @@ assert.deepEqual(m.addFabric(nodes, "x", "X", fabric.params).ops, []);
     assert.equal(m.convertToHole(withLine, "p1", 1), null, "an open line is no hole");
     assert.equal(m.convertToHole(withLine, "p1", 5), null, "nor a missing one");
 }
+{
+    const nodes = [{ id: "a", kind: "x", v: 1 }];
+    assert.deepEqual(m.withAdded(nodes, [{ op: "add", node: { id: "b" } }, { op: "set", id: "a", fields: { v: 2 } }, { op: "remove", id: "b" }]), [{ id: "a", kind: "x", v: 2 }]);
+}
 console.log("model: ok");

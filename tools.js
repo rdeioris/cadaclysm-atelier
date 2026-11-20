@@ -5,7 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
+import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
 import { pointsOf } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -155,6 +155,40 @@ const internalAt = (ctx) => (path, hit) => {
     return id ? { ops: addInternal(ctx.nodes, id, path), done: true } : { status: "start the shape on a piece, or select the piece first" };
 };
 
+// Cut / Cut & Sew: a click on an internal open line cuts along it; else clicks draw a cutter
+// across the selected piece, Enter or a double click ends it (spec §4).
+function cutTool(ctx, sew) {
+    const pts = [];
+    const finish = () => {
+        const id = selectedId(ctx);
+        const cutter = pts.length >= 2 ? { start: [...pts[0]], segments: pts.slice(1).map((to) => ({ type: "line", to: [...to] })) } : null;
+        pts.length = 0;
+        if (!id) return { status: "select the piece to cut first", overlay: { lines: [] } };
+        if (!cutter) return { status: "a cutter needs two points", overlay: { lines: [] } };
+        return { cut: { id, cutter, sew, consume: null }, overlay: { lines: [] }, done: true };
+    };
+    return {
+        down() { return {}; },
+        move(w) { return pts.length ? { overlay: line([...pts, w]) } : {}; },
+        up(w, h, mods) {
+            if (!pts.length && h?.kind === "internal") {
+                const entry = nodeOf(ctx, h.id)?.internal?.[h.index];
+                if (entry && !isClosedPath(entry.path)) return { cut: { id: h.id, cutter: clone(entry.path), sew, consume: h.index }, done: true };
+            }
+            if (mods?.dblclick) return finish();
+            pts.push([...w]);
+            return { overlay: line(pts) };
+        },
+        lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
+        key(k) {
+            if (k === "Enter") return finish();
+            if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; }
+            if (k === "Backspace") { pts.pop(); return { overlay: line(pts) }; }
+            return {};
+        },
+    };
+}
+
 // The point a typed length places: `length` mm from `last`, at `angleDeg` (counter-clockwise
 // from +x) when typed, else toward the cursor (+x when the cursor sits on the last point).
 export function typedPoint(last, cursor, length, angleDeg = null) {
@@ -192,6 +226,8 @@ const TOOLS = {
     "internal-rectangle": (ctx) => boxShape(ctx, "rectangle", internalAt(ctx)),
     "internal-ellipse": (ctx) => boxShape(ctx, "ellipse", internalAt(ctx)),
     "internal-polygon": (ctx) => polygonShape(ctx, internalAt(ctx)),
+    cut: (ctx) => cutTool(ctx, false),
+    "cut-sew": (ctx) => cutTool(ctx, true),
     // Convert to Hole: a click on an internal closed shape moves it into the outline's holes (one
     // batch: one undo); the kernel's hole checks refuse it as they refuse a drawn hole.
     "to-hole"(ctx) {

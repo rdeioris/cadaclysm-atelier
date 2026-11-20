@@ -48,6 +48,13 @@ const edge = (id, s) => ({ kind: "edge", id, s, side: sides.findIndex((v, i) => 
     t.down([0, 0], edge("p1", 10), {});
     assert.deepEqual(t.down([0, 0], { kind: "edge", id: "p1", s: 60, side: 9 }, {}), {});
 }
+{
+    const { anchorOf } = await import("../sewing.js");
+    const sides = [0, 100, 150, 250, 300];
+    assert.deepEqual(anchorOf(sides, 110, 140), [1, 0.2, 0.8]);
+    assert.deepEqual(anchorOf(sides, 280, 20), [3, 0.6, 0.2, 0], "a wrapped range names its end side");
+    assert.deepEqual(anchorOf(sides, 140, 110), [1, 0.8, 0.2, 1], "a range wrapping round from one side back onto it");
+}
 assert.notEqual(seamColour(0), seamColour(1));
 assert.equal(seamColour(0), seamColour(12));
 console.log("sewing: ok");

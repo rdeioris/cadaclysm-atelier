@@ -46,6 +46,7 @@
         <button data-tool="internal" title="Internal line on the selected piece (G); Enter or double click ends">Internal</button><button data-tool="internal-rectangle" title="An internal rectangle on a piece">Int □</button><button data-tool="internal-ellipse" title="An internal ellipse on a piece">Int ○</button><button data-tool="internal-polygon" title="An internal polygon on a piece">Int ⬠</button><button data-tool="to-hole" title="Convert to hole: click an internal closed shape">To hole</button>
         <button data-tool="notch" title="Notch: click an edge">Notch</button>
         <button data-tool="dart" title="Dart: two edge points, then the apex">Dart</button>
+        <span class="sep"></span><button data-tool="cut" title="Cut: click an internal line, or draw a cutter across the selected piece (Enter ends)">Cut</button><button data-tool="cut-sew" title="Cut &amp; sew: cut, and sew the two new edges">Cut &amp; sew</button>
         <span class="sep"></span><button data-tool="hole-rectangle" title="A rectangular hole in a piece: drag, or click for a size">Hole □</button><button data-tool="hole-ellipse" title="An elliptical hole in a piece">Hole ○</button><button data-tool="hole-polygon" title="A polygonal hole in a piece">Hole ⬠</button>
         <button data-tool="mirror" title="Mirror the selected piece across a two-click axis">Mirror</button>
         <button data-tool="allowance" title="Seam allowance: click an edge, type mm, Enter">Allowance</button>
@@ -57,7 +58,7 @@
         <button data-toggle="grid" title="Snap to the 10 mm grid">Grid</button>
         <button data-command="fit" title="Fit the pieces (F)">Fit</button>
     </div>
-    <div class="well" id="well"><canvas id="view" tabindex="0"></canvas><div id="typed" hidden><input id="typed-length" inputmode="decimal" title="Length, mm"> mm <input id="typed-angle" inputmode="decimal" title="Angle, degrees (blank: toward the pointer)"> °</div></div>
+    <div class="well" id="well"><canvas id="view" tabindex="0"></canvas><div id="typed" tabindex="-1" hidden><input id="typed-length" inputmode="decimal" title="Length, mm"> mm <input id="typed-angle" inputmode="decimal" title="Angle, degrees (blank: toward the pointer)"> °</div></div>
     <aside id="dock">
         <div id="browser">
             <h2>Fabrics</h2><ul id="browser-fabrics"></ul>

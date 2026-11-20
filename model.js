@@ -118,6 +118,59 @@ export function convertToHole(nodes, id, index) {
     return [...setPattern(nodes, id, { internal: p.internal.filter((_, i) => i !== index) }), ...addHole(nodes, id, entry.path)];
 }
 
+// `nodes` with ops applied (add, set, remove): what a batch leaves, for the next builder's ids.
+export function withAdded(nodes, ops) {
+    let out = nodes.slice();
+    for (const o of ops) {
+        if (o.op === "add") out = [...out, o.node];
+        else if (o.op === "set") out = out.map((n) => (n.id === o.id ? { ...n, ...o.fields } : n));
+        else if (o.op === "remove") out = out.filter((n) => n.id !== o.id);
+    }
+    return out;
+}
+
+// Piece `id` replaced by `pieces` (a cut): each a new pattern with the old one's fabric, grain,
+// layer and frame, and its allowance (a per-side list collapsed to its first width: ruling 14);
+// each seam end moved to its piece (`seamMoves`), `dropped` seams removed, and with `sew` one seam
+// joining the two cut edges. One batch. -> {ops, ids, collapsed}
+export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = [], sew = null } = {}) {
+    const old = byId(nodes).get(id);
+    const allowance = old.allowance ?? [10];
+    const collapsed = new Set(allowance).size > 1;
+    const ops = [], ids = [];
+    let cur = nodes;
+    for (const p of pieces) {
+        const r = addPattern(cur, { label: freeLabel(cur, p.label), path: p.path, fabric: old.fabric, layer: old.layer ?? 0, allowance: allowance[0], grain: old.grain ?? [0, 1] });
+        const node = r.ops.find((o) => o.node?.kind === "garment.pattern").node;
+        if (p.notches?.length) node.notches = p.notches;
+        if (p.internal?.length) node.internal = p.internal;
+        if (old.frame !== undefined) node.frame = old.frame;
+        ops.push(...r.ops); ids.push(r.id);
+        cur = withAdded(cur, r.ops);
+    }
+    const bySeam = new Map();
+    for (const mv of seamMoves) bySeam.set(mv.id, [...(bySeam.get(mv.id) ?? []), mv]);
+    for (const [sid, moves] of bySeam) {
+        const seam = byId(cur).get(sid);
+        const fields = {}, anchor = { ...(seam.meta?.atelier ?? {}) };
+        for (const mv of moves) {
+            fields[mv.end] = ids[mv.piece]; fields[`${mv.end}_from`] = mv.from; fields[`${mv.end}_to`] = mv.to;
+            anchor[mv.end] = mv.anchor;
+        }
+        fields.meta = { ...(seam.meta ?? {}), atelier: anchor };
+        ops.push({ op: "set", id: sid, fields });
+    }
+    const g = byId(cur).get("garment");
+    ops.push({ op: "set", id: "garment", fields: { patterns: g.patterns.filter((p) => p !== id), seams: g.seams.filter((s) => !dropped.includes(s)) } });
+    for (const s of dropped) ops.push({ op: "remove", id: s });
+    ops.push({ op: "remove", id }, { op: "remove", id: `${id}_outline` });
+    if (sew) {
+        const after = withAdded(nodes, ops);
+        ops.push(...addSeam(after, { a: ids[0], b: ids[1], a_from: sew.a.from, a_to: sew.a.to, b_from: sew.b.from, b_to: sew.b.to, reversed: sew.reversed, anchor: { a: sew.a.anchor, b: sew.b.anchor } }).ops);
+    }
+    return { ops, ids, collapsed };
+}
+
 export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor }) {
     const id = nextId(nodes, "s");
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };

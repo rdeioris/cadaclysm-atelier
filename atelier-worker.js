@@ -399,7 +399,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -437,6 +437,17 @@ self.onmessage = async ({ data }) => {
                 const r = atelier.endPreview(data.commit, data.reanchor ?? null);
                 changed(data.seq);
                 if (r.removed.length) post({ kind: "status", text: `removed seam${r.removed.length === 1 ? "" : "s"} ${r.removed.join(", ")}: the side is gone` });
+                break;
+            }
+            // a cut (and sew): one batch; a refusal changes nothing and says why (the error)
+            case "cut": {
+                const r = atelier.cutOps(data.id, data.cutter, { sew: data.sew, consume: data.consume });
+                atelier.apply(r.ops, data.sew ? "cut & sew" : "cut");
+                changed(data.seq);
+                const notes = [];
+                if (r.dropped.length) notes.push(`dropped seam${r.dropped.length === 1 ? "" : "s"} ${r.dropped.join(", ")}: the cut split its range`);
+                if (r.collapsed) notes.push("the per-side allowance is now one width");
+                post({ kind: "status", text: [data.sew ? "cut and sewn" : "cut", ...notes].join("; ") });
                 break;
             }
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }

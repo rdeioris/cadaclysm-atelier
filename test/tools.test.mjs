@@ -415,6 +415,17 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     // (the rubber band's direction), so a pointer behind the new point turns the shape back
     assert.deepEqual(typedPoint([100, 0], [40, 0], 30), [70, 0], "toward the still pointer");
 }
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
+        { id: "p1", kind: "garment.pattern", outline: "p1_outline", internal: [{ kind: "line", path: { start: [50, -5], segments: [{ type: "line", to: [50, 55] }] } }] }];
+    const t = makeTool("cut", ctx({ nodes }));
+    assert.deepEqual(t.up([50, 10], { kind: "internal", id: "p1", index: 0 }, {}).cut,
+        { id: "p1", cutter: { start: [50, -5], segments: [{ type: "line", to: [50, 55] }] }, sew: false, consume: 0 }, "a picked internal line is the cutter");
+    const d = makeTool("cut-sew", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    d.up([20, -10], null, {}); d.up([20, 60], null, {});
+    assert.deepEqual(d.key("Enter").cut, { id: "p1", cutter: { start: [20, -10], segments: [{ type: "line", to: [20, 60] }] }, sew: true, consume: null });
+    assert.match(makeTool("cut", ctx({ nodes })).key("Enter").status, /select/);
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

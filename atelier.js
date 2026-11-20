@@ -321,6 +321,8 @@ function handle(r) {
         previewPattern = null;
     }
     if (r.cancel) cancelPreview();
+    // a cut goes to the kernel whole: the worker builds its batch (one undo) or refuses it
+    if (r.cut) change("cut", r.cut);
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);
