@@ -41,7 +41,6 @@ const state = (over = {}) => ({ drawings: [drawing("p1", 0), drawing("p2", 200)]
 const specs = specs2d(state());
 const keys = specs.map((s) => s.key);
 for (const k of ["p1/fill", "p1/sew", "p1/cut", "p1/notches", "p1/grain", "p1/grainhead", "p1/label", "seam/s1/a", "seam/s1/b", "seam/s1/no"]) assert.ok(keys.includes(k), `${k} in ${keys}`);
-assert.ok(specs.find((s) => s.key === "p1/label").box, "the name on a box: the grain line runs under it, not through it");
 assert.ok(!keys.includes("p1/points"), "handles only on the selected piece");
 const sew = specs.find((s) => s.key === "p1/sew");
 assert.equal(sew.show, "curves"); assert.deepEqual(sew.what, { kind: "sew", id: "p1" });

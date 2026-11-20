@@ -112,8 +112,7 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });
             out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], z.line], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig });
         }
-        if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12,
-            box: BG, padding: 2, what: { kind: "label", id }, sig: d.label + sig });   // a box: the grain line runs under, not through, the name
+        if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
         if (selection?.kind === "pattern" && selection.id === id) {
             const p = pointsOf(nodes, id);
             const chosen = new Set(pointSel);
