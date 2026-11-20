@@ -2,6 +2,7 @@
 // nothing again, that a moved piece is updated in place, that the item map answers picks.
 import assert from "node:assert/strict";
 import { specs2d, Items2d, Overlay2d, fillColour, LAYER_2D } from "../scene2d.js";
+import { hitOf, pointsOf } from "../view2d.js";
 
 function fakeViewer() {
     let next = 1;
@@ -65,6 +66,8 @@ assert.deepEqual(v.calls, [], "an unchanged scene calls nothing");
 // hover recolours in place
 items.apply(specs2d(state({ hover: "p1" })));
 assert.ok(v.calls.length >= 1 && v.calls.every((c) => c[0] === "setColour"), "the sew line and the notches recoloured, nothing shown again");
+const recoloured = v.calls.map((c) => c[1]);
+for (const k of ["p1/sew", "p1/notches"]) assert.ok(recoloured.includes(items.item(k)), `${k} recoloured on hover`);
 v.calls.length = 0;
 // a moved piece: its curves and lines in place, its fill and glyphs shown again
 const moved = state({ drawings: [drawing("p1", 10), drawing("p2", 200)] });
@@ -88,4 +91,72 @@ v.calls.length = 0;
 o.set({ lines: [[[0, 0], [20, 0]]], points: [] });
 assert.ok(v.calls.some((c) => c[0] === "setLines"));
 assert.ok(v.calls.some((c) => c[0] === "setItemVisible" && c[2] === false), "no points: hidden");
+// the read-out: shown once, its text replaced in place while the anchor stays, shown again when it moves
+v.calls.length = 0;
+o.set({ text: { text: "10 mm", at: [5, 5] } });
+assert.equal(v.calls.filter((c) => c[0] === "showText").length, 1);
+v.calls.length = 0;
+o.set({ text: { text: "12 mm", at: [5, 5] } });
+assert.deepEqual(v.calls.filter((c) => c[0].includes("Text") || c[0] === "remove").map((c) => c[0]), ["setText"]);
+v.calls.length = 0;
+o.set({ text: { text: "12 mm", at: [5, 5] } });
+assert.ok(!v.calls.some((c) => c[0].includes("Text") || c[0] === "remove"), "unchanged read-out: no call");
+o.set({ text: { text: "12 mm", at: [9, 5] } });
+assert.ok(v.calls.some((c) => c[0] === "remove") && v.calls.some((c) => c[0] === "showText"), "moved: shown again");
+v.calls.length = 0;
+o.set({});
+assert.ok(v.calls.some((c) => c[0] === "remove"), "no text: removed");
+// holes, internal lines: a holed piece's items
+const holeCut = [430, 10, 470, 10, 470, 40, 430, 40];
+const holed = drawing("p3", 400, {
+    holes: [{ beziers: square(440), cut: [holeCut] }],
+    internal: [{ kind: "fold", beziers: square(400) }, { kind: "dart", beziers: square(410) }],
+    fill: { positions: Float32Array.of(400, 0, -1, 500, 0, -1, 400, 50, -1, 440, 10, -1), indices: Uint32Array.of(0, 1, 3, 1, 2, 3) },
+});
+const hs = specs2d(state({ drawings: [holed], seams: [], hover: "p3" }));
+const hk = (k) => { const s = hs.find((x) => x.key === k); assert.ok(s, `${k} in ${hs.map((x) => x.key)}`); return s; };
+const hole = hk("p3/hole/0");
+assert.equal(hole.show, "curves"); assert.equal(hole.data, holed.holes[0].beziers);
+assert.deepEqual(hole.what, { kind: "hole", id: "p3", index: 0 });
+assert.equal(hole.colour, hk("p3/sew").colour, "a hole is drawn as the sew line, hover included");
+assert.notEqual(hole.colour, specs2d(state({ drawings: [holed], seams: [] })).find((x) => x.key === "p3/hole/0").colour, "hover recolours the hole");
+const hc = hk("p3/holecut/0/0");
+assert.equal(hc.show, "lines"); assert.deepEqual(hc.dash, { dash: 4, gap: 4 }); assert.deepEqual(hc.what, { kind: "cut", id: "p3" });
+assert.deepEqual(Array.from(hc.data), [430, 10, 0, 470, 10, 0, 470, 10, 0, 470, 40, 0, 470, 40, 0, 430, 40, 0, 430, 40, 0, 430, 10, 0], "the hole cut ring closed");
+const fold = hk("p3/internal/0");
+assert.equal(fold.show, "curves"); assert.equal(fold.data, holed.internal[0].beziers);
+assert.deepEqual(fold.dash, { dash: 6, gap: 4 }); assert.deepEqual(fold.what, { kind: "internal", id: "p3", index: 0 });
+assert.equal(hk("p3/internal/1").dash, null, "only a fold is dashed");
+assert.deepEqual(hk("p3/internal/1").what, { kind: "internal", id: "p3", index: 1 });
+assert.equal(hk("p3/fill").data, holed.fill, "the fill with its hole reaches the View as the kernel made it");
+const hv = fakeViewer(), hItems = new Items2d(hv);
+hItems.apply(hs);
+const mesh = hv.calls.find((c) => c[0] === "showMesh");
+assert.equal(mesh[1].positions, holed.fill.positions); assert.equal(mesh[1].indices, holed.fill.indices);
+const holeItem = hItems.item("p3/hole/0"), holeCutItem = hItems.item("p3/holecut/0/0");
+assert.ok(holeItem && holeCutItem);
+assert.deepEqual(hItems.what(holeItem), { kind: "hole", id: "p3", index: 0 });
+hv.calls.length = 0;
+hItems.apply(specs2d(state({ drawings: [{ ...holed, holes: [] }], seams: [], hover: "p3" })));
+const removed = hv.calls.filter((c) => c[0] === "remove").map((c) => c[1]);
+assert.ok(removed.includes(holeItem) && removed.includes(holeCutItem), "the hole's items removed");
+assert.equal(hItems.what(holeItem), null); assert.equal(hItems.item("p3/hole/0"), 0);
+
+// handles and tangents on a selected piece with a bezier and a conic side
+const curvy = [{ id: "f_x", kind: "garment.fabric" }, { id: "p1_outline", kind: "profile.path", path: { start: [0, 0], segments: [
+    { type: "bezier", c1: [30, -10], c2: [70, -10], to: [100, 0] }, { type: "conic", control: [120, 25], to: [100, 50] },
+    { type: "line", to: [0, 50] }, { type: "line", to: [0, 0] }] } }];
+const cs = specs2d(state({ nodes: curvy, selection: { kind: "pattern", id: "p1" } }));
+const p = pointsOf(curvy, "p1");
+const handles = cs.find((s) => s.key === "p1/handles");
+assert.equal(handles.show, "points"); assert.equal(handles.onTop, true);
+assert.deepEqual(Array.from(handles.data), p.handles.flatMap((h) => [h.at[0], h.at[1], 0]), "the handles in pointsOf order");
+const tangents = cs.find((s) => s.key === "p1/tangents");
+assert.equal(tangents.show, "lines"); assert.deepEqual(tangents.what, { kind: "tangents", id: "p1" });
+const ends = p.handles.reduce((n, h) => n + (h.from !== undefined) + (h.to !== undefined), 0);
+assert.equal(ends, 4, "c1, c2 and the conic's two ends");
+assert.equal(tangents.data.length, 6 * ends);
+assert.deepEqual(tangents.data.slice(0, 6), [0, 0, 0, 30, -10, 0], "c1 hangs off the bezier's start");
+const dmap = new Map([["p1", drawing("p1", 0)]]);
+p.handles.forEach((h, k) => assert.deepEqual(hitOf(handles.what, { node: k }, dmap), { kind: "handle", id: "p1", index: h.index, which: h.which }));
 console.log("scene2d: ok");

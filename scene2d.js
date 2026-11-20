@@ -167,8 +167,15 @@ export class Overlay2d {
         this.put("lines", lines.flatMap((pl) => segs(pl.flat())), (d) => v.showLines(d, ACCENT), "setLines");
         this.put("points", xyz(points), (d) => v.showPoints(d, ACCENT, 8), "setPoints");
         this.put("curves", curves ? Array.from(curves) : [], (d) => v.showCurves(d, ACCENT), "setCurves");
+        // the read-out changes every pointer move: same anchor, setText; a new anchor, shown again
+        const at = text?.text ? `${text.at[0]},${text.at[1]}` : null;
+        if (this.text && at === this.textAt) {
+            if (text.text !== this.textNow) { v.setText(this.text, text.text); this.textNow = text.text; }
+            return;
+        }
         if (this.text) { v.remove(this.text); this.text = null; }
-        if (text?.text) {
+        this.textAt = at; this.textNow = text?.text ?? null;
+        if (at) {
             this.text = v.showText(text.text, { at: [text.at[0], text.at[1], 0], size: 12, colour: ACCENT, align: "bottom-left", offset: [12, -12], onTop: true });
             v.setItemLayer(this.text, this.layer);
         }
