@@ -99,6 +99,12 @@ export function removePatterns(nodes, ids) {
 export const setOutline = (nodes, id, path) => [{ op: "set", id: `${id}_outline`, fields: { path } }];
 export const setPattern = (nodes, id, fields) => [{ op: "set", id, fields }];
 
+// A hole added to piece `id`'s outline (path JSON, closed). Hole edges are not sewn this round.
+export function addHole(nodes, id, path) {
+    const outline = byId(nodes).get(`${id}_outline`).path;
+    return setOutline(nodes, id, { ...outline, holes: [...(outline.holes ?? []), { start: path.start, segments: path.segments }] });
+}
+
 export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor }) {
     const id = nextId(nodes, "s");
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };

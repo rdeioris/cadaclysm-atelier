@@ -2,6 +2,7 @@
 // blacksmith document holding the garment, and hands back plain arrays for drawing.
 import * as m from "./model.js";
 import { reanchor } from "./sewing.js";
+import { translatePath } from "./drape.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
@@ -9,6 +10,8 @@ const STEP = 1;          // outline sample spacing for picking, mm
 const NOTCH_KINDS = ["slit", "v", "t", "castle", "u"];
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 const text = (e) => String(e && e.message ? e.message : e);
+const HOLE_GAP = 0.05;    // mm: a hole nearer the outline or another hole than this touches it
+const HOLE_TOL = 0.01;    // mm: profile_deviation's accuracy for that gap (1e-4 costs 50 times more)
 const FILL_Z = -1;       // fills lie under every line (z = 0): a hundredth of a mm higher per layer
 const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
 
@@ -33,6 +36,7 @@ export class Atelier {
         this.g = 0;          // the evaluated garment handle (a copy), 0 when none
         this.open = null;    // an open preview: {nodes, problems} from before it, `ops` its last good frame
         this.sidesCache = new Map();
+        this.holeChecks = new Map(); // checkHoles: an outline shape -> its error, or null
         this.evalErrors = [];
         this.drawn = null;   // this evaluation's drawings, and the patterns that failed to draw
     }
@@ -168,6 +172,9 @@ export class Atelier {
                 notches.push([r[0], r[1], notchRaw[i + 1]]);
             }
             const allowance0 = (node.allowance ?? [0])[0];
+            // the face first: it refuses crossing holes, and checkHoles counts on none crossing
+            const fill = this.fillOf(id, node.layer ?? 0);
+            this.checkHoles(outlineNode.path);
             const holes = (outlineNode.path.holes ?? []).map((h) => ({
                 beziers: this.beziersOf(h),
                 ring: this.openPoints({ start: h.start, segments: h.segments }),
@@ -184,7 +191,7 @@ export class Atelier {
                 id, label: node.label, fabric: node.fabric, layer: node.layer ?? 0,
                 sew, cut: Array.from(this.f("garment_cut_line")(this.g, pid, TOL)),
                 samples, sides, notches, internal, grain, bounds,
-                beziers: this.beziersOf(outlineNode.path), holes, fill: this.fillOf(id, node.layer ?? 0),
+                beziers: this.beziersOf(outlineNode.path), holes, fill,
                 sig: JSON.stringify([node, outlineNode.path]),
             };
         });
@@ -240,6 +247,40 @@ export class Atelier {
                 return { positions: Float32Array.from(t.positions), indices: Uint32Array.from(t.indices) };
             } finally { this.f("solid_free")(sheet); }
         });
+    }
+    // The holes the kernel's face takes but the cloth cannot: the face refuses holes that cross
+    // the outline or each other, not one nested in another, nor one that only touches (a snap to
+    // the piece's corner lands within float32 of it). Throws for either (called after the face:
+    // holes never cross here, so a hole's start point says where all of it lies, and the
+    // outlines' smallest distance says whether two touch).
+    // Remembered by the outline's shape (a moved piece is the same shape: a 2D drag does not
+    // measure again), the error or null.
+    checkHoles(path) {
+        if (!path.holes?.length) return;
+        const key = JSON.stringify(translatePath(path, [-path.start[0], -path.start[1]]), (_, v) => (typeof v === "number" ? Math.round(v * 1e6) / 1e6 : v));
+        if (!this.holeChecks.has(key)) {
+            if (this.holeChecks.size > 256) this.holeChecks.clear();
+            let error = null;
+            try { this.measureHoles(path); } catch (e) { error = text(e); }
+            this.holeChecks.set(key, error);
+        }
+        const error = this.holeChecks.get(key);
+        if (error) throw new Error(error);
+    }
+    measureHoles(path) {
+        const holes = path.holes;
+        const profiles = holes.map((h) => this.profileOf({ start: h.start, segments: h.segments }));
+        try {
+            const gap = (a, b) => this.f("profile_deviation")(a, b, HOLE_TOL)[5];
+            this.withPath({ start: path.start, segments: path.segments }, (outer) => profiles.forEach((p, j) => {
+                if (gap(outer, p) < HOLE_GAP) throw new Error(`hole ${j} touches the outline`);
+            }));
+            profiles.forEach((p, j) => profiles.forEach((q, i) => {
+                if (i === j) return;
+                if (this.f("profile_contains")(p, holes[i].start[0], holes[i].start[1], 1e-9) === 1) throw new Error(`hole ${i} lies inside hole ${j}`);
+                if (i > j && gap(p, q) < HOLE_GAP) throw new Error(`hole ${i} touches hole ${j}`);
+            }));
+        } finally { profiles.forEach((p) => this.f("profile_free")(p)); }
     }
     // A hole's cut line: the hole shrunk by the allowance (plan ruling 10), each ring flattened.
     holeCutOf(hole, allowance) {

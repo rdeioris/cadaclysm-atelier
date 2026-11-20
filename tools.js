@@ -5,7 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
+import { addPattern, addHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
 import { pointsOf } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -141,6 +141,14 @@ export function polygonShape(ctx, place) {
 
 const newPiece = (ctx) => (path) => newPattern(ctx, pieceLabel(ctx.nodes), path);
 
+// Where a hole goes: the piece under the first press, else the selected one. The kernel (and
+// kernel.js checkHoles) refuses a hole not inside the material; the app reports it, nothing changes.
+const targetOf = (ctx, hit) => hit?.id ?? selectedId(ctx);
+const holeAt = (ctx) => (path, hit) => {
+    const id = targetOf(ctx, hit);
+    return id ? { ops: addHole(ctx.nodes, id, path), done: true } : { status: "start a hole on a piece, or select the piece first" };
+};
+
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
     "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
@@ -149,6 +157,9 @@ const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
     ellipse: (ctx) => boxShape(ctx, "ellipse", newPiece(ctx)),
     polygon: (ctx) => polygonShape(ctx, newPiece(ctx)),
+    "hole-rectangle": (ctx) => boxShape(ctx, "rectangle", holeAt(ctx)),
+    "hole-ellipse": (ctx) => boxShape(ctx, "ellipse", holeAt(ctx)),
+    "hole-polygon": (ctx) => polygonShape(ctx, holeAt(ctx)),
 
     edit(ctx) {
         const { DRAG } = tols(ctx);

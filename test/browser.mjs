@@ -7,11 +7,13 @@
 // allowance and saves with Ctrl+S (the download is read back), New and Open, refuses an STL
 // avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Then
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
-// of a piece while it runs (re-meshed), Pause, Reset. Each step prints ok. Any console error or
-// uncaught exception, in the page or its workers, fails.
+// of a piece while it runs (re-meshed), Pause, Reset. Then the 2D tools on a new garment, ending
+// with holes: a rectangle and an ellipse hole by dialog, one over the edge refused. Each step
+// prints ok. Any console error or uncaught exception, in the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
 //     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the drape
+//     ATELIER_SHOT_HOLES=holes.png ...                   # also one of the holed piece in 2D
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     node test/browser.mjs --chrome <path>              # (or the CHROME variable)
 //     node test/browser.mjs --headed                     # watch it
@@ -788,6 +790,61 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok("rectangle by dialog: Enter confirms 80 x 40; Cancel places nothing");
+
+            // ---- holes (Task 14): a piece by dialog, a rectangle and an ellipse hole by dialog on it ----
+            await evaluate(`document.getElementById("menu-new").click()`);
+            await until("an empty garment", async () => (await patternCount()) === 0, 30000);
+            // a 200 x 100 piece by dialog at hc, then a 20 x 20 hole by dialog inside it
+            const [qx, qy, qw, qh] = await windowBox("rect2d");     // hx.. and c are taken above
+            const hc = [qx + qw * 0.15, qy + qh * 0.85];
+            // pattern mm per CSS px from two hovers 50 px apart (the 2D window's own mapping); each waits for a fresh answer
+            let lastSeen = await evaluate(`document.body.dataset.world ?? ""`);
+            const worldOf = async (p) => {
+                await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
+                await until("the hover answer", async () => { const w = await evaluate(`document.body.dataset.world ?? ""`); return w !== "" && w !== lastSeen; }, 10000);
+                lastSeen = await evaluate(`document.body.dataset.world`);
+                return lastSeen.split(",").map(Number);
+            };
+            const wc1 = await worldOf([hc[0] + 1, hc[1]]), wc2 = await worldOf([hc[0] + 51, hc[1]]);
+            const pxPerMm = 50 / (wc2[0] - wc1[0]);
+            // the whole 200 x 100 piece must fit the window at this zoom (sizes are mm, offsets below go through pxPerMm)
+            if (!(hc[0] + 200 * pxPerMm < qx + qw && hc[1] - 100 * pxPerMm > qy)) throw new Error("the 200 x 100 piece does not fit the 2D window");
+            const n0 = await patternCount();
+            await byDialog("rectangle", hc, 200, 100);
+            await until("the piece", async () => (await patternCount()) === n0 + 1, 30000);
+            await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+            // 40 x 30 mm in, clear of the corner: 10 mm in, a click snaps to the corner (a hole touching the outline is refused)
+            await byDialog("hole-rectangle", [hc[0] + 40 * pxPerMm, hc[1] - 30 * pxPerMm], 20, 20);
+            await until("one hole", () => evaluate(`/1 hole/.test(document.getElementById("props").textContent)`), 30000);
+            await noStatusError();
+            {   // where it went, from the saved document: 40 x 30 mm in from the piece's first corner (a CSS px is about half a mm)
+                const outline = (await saveJson()).nodes.find((n) => n.kind === "profile.path").path;
+                const off = [0, 1].map((i) => outline.holes?.[0]?.start[i] - outline.start[i]);
+                if (!(Math.abs(off[0] - 40) < 1 && Math.abs(off[1] - 30) < 1)) throw new Error(`the hole is at ${off} mm from the corner, not 40, 30`);
+            }
+            ok("hole by dialog on a piece");
+
+            // an ellipse hole by dialog: centred 150 x 50 mm into the piece, 60 x 40
+            await byDialog("hole-ellipse", [hc[0] + 150 * pxPerMm, hc[1] - 50 * pxPerMm], 60, 40);
+            await until("two holes", () => evaluate(`/2 holes/.test(document.getElementById("props").textContent)`), 30000);
+            await noStatusError();
+            failIfErrors();
+            ok("ellipse hole by dialog: 2 holes");
+
+            // a hole over the piece's edge: the kernel refuses it, the status says so, nothing changes
+            await byDialog("hole-rectangle", [hc[0] + 190 * pxPerMm, hc[1] - 50 * pxPerMm], 20, 20);
+            await until("the refusal on the status line", async () => /boundary|cross/.test((await statusError()) ?? ""), 30000);
+            await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+            await until("still two holes", () => evaluate(`/2 holes/.test(document.getElementById("props").textContent)`), 30000);
+            failIfErrors();
+            ok("a hole over the edge refused with a status; still 2 holes");
+            if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
+                await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                await sleep(1000);
+                const { data } = await send("Page.captureScreenshot", { format: "png" });
+                writeFileSync(process.env.ATELIER_SHOT_HOLES, Buffer.from(data, "base64"));
+                ok(`screenshot ${process.env.ATELIER_SHOT_HOLES}`);
+            }
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

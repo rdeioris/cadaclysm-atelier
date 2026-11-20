@@ -78,4 +78,13 @@ assert.deepEqual(m.setFabric(nodes, "f_x", { density: 2, bogus: 9 })[0].fields, 
 
 // a fabric added twice is one fabric
 assert.deepEqual(m.addFabric(nodes, "x", "X", fabric.params).ops, []);
+// a hole is appended to the outline's holes, one set of the outline
+{
+    const nodes = [{ id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 200, 100) }];
+    const [op] = m.addHole(nodes, "p1", m.rectPath(10, 10, 20, 20));
+    assert.equal(op.id, "p1_outline");
+    assert.deepEqual(op.fields.path.holes, [{ start: [10, 10], segments: m.rectPath(10, 10, 20, 20).segments }]);
+    const [op2] = m.addHole([{ ...nodes[0], path: op.fields.path }], "p1", m.rectPath(50, 10, 20, 20));
+    assert.equal(op2.fields.path.holes.length, 2, "appended");
+}
 console.log("model: ok");

@@ -215,7 +215,7 @@ function renderProps() {
     const kids = [h, dl];
     if (selection.kind === "pattern") {
         const d = drawings.get(selection.id);
-        if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
+        if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides${d.holes?.length ? `, ${d.holes.length} hole${d.holes.length === 1 ? "" : "s"}` : ""}, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
     }
     el.replaceChildren(...kids);
     const inputs = [...el.querySelectorAll("[data-key]")];
