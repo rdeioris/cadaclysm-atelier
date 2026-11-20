@@ -167,6 +167,20 @@ async function at2d({ seq, phase, x, y, snap }) {
     post({ kind: "at2d", seq, phase, world, hit, snap: snapped, mmPerPx: mmPerPx(r) });
 }
 
+// Box select over viewport 1 (device pixels local to it): the selected piece's points, or pieces.
+// `what` is "points" or "pieces"; left to right a window, right to left a crossing box.
+function boxSelect({ from, to, what }) {
+    const [x, y] = from, w = to[0] - x, h = to[1] - y;
+    const hits = viewer.pickRect(x, y, w, h, { viewport: 1, crossing: w < 0 });
+    if (what === "points") {
+        const item = selection?.kind === "pattern" ? items2d.item(`${selection.id}/points`) : 0;
+        return { indices: item ? hits.filter((r) => r.item === item && r.kind === "point").map((r) => r.index) : [] };
+    }
+    const ids = new Set();
+    for (const r of hits) { const what2 = items2d.what(r.item); if (what2?.kind === "fill" || what2?.kind === "sew") ids.add(what2.id); }
+    return { ids: [...ids] };
+}
+
 // Redraw the garment: a 1 mm slab per pattern at its frame, each seam as its own lines item.
 function refresh3d() {
     if (!viewer || !atelier) return;
@@ -421,6 +435,8 @@ self.onmessage = async ({ data }) => {
             case "redo": atelier.redo(); changed(data.seq); break;
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
             case "mirror": answer(data, () => atelier.mirrored(data.id, data.axis)); break;
+            case "transformAll": answer(data, () => Object.fromEntries(data.ids.map((id) => [id, atelier.transformed(id, data.matrix)]))); break;
+            case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
             // an opened garment is framed with the avatar: its pieces may stand beyond the form
             case "open": atelier.load(data.text); changed(data.seq); if (rects) frame3d(); break;

@@ -37,6 +37,24 @@ function movePoint(path, i, d) {
     if (starts?.type === "bezier") starts.c1 = add(starts.c1, d);
 }
 
+// A box drag on nothing: the rectangle as overlay lines while dragging; on release the worker's
+// pickRect over viewport-1 pixels (left to right a window, right to left a crossing box).
+function boxGesture(ctx, kind) {
+    let from = null;
+    const box = (a, b) => [a, [b[0], a[1]], b, [a[0], b[1]], a];
+    return {
+        start(w, mods) { from = mods?.px ? { w, px: mods.px } : null; return !!from; },
+        get on() { return !!from; },
+        move(w) { return { overlay: { lines: [box(from.w, w)] } }; },
+        async end(mods) {
+            const f = from; from = null;
+            if (!mods?.px) return null;
+            return ctx.request("pickRect", { from: f.px, to: mods.px, kind });
+        },
+        cancel() { from = null; },
+    };
+}
+
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
     "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
@@ -102,45 +120,60 @@ const TOOLS = {
     edit(ctx) {
         const { DRAG } = tols(ctx);
         let start = null, hit = null, path0 = null, id = null, sent = false;
+        const box = boxGesture(ctx, "points");
+        let chosen = new Set();
         const preview = (w) => {
             const d = [w[0] - start[0], w[1] - start[1]];
             const path = clone(path0);
-            if (hit.kind === "point") movePoint(path, hit.index, d);
-            else if (hit.kind === "handle") { const s = path.segments[hit.index]; s[hit.which] = add(s[hit.which], d); }
+            // a press on one of the box-selected points moves every selected point
+            if (hit.kind === "point") {
+                for (const i of chosen.has(hit.index) ? chosen : [hit.index]) if (i < path.segments.length) movePoint(path, i, d);
+            } else if (hit.kind === "handle") { const s = path.segments[hit.index]; s[hit.which] = add(s[hit.which], d); }
             else { const n = path.segments.length; movePoint(path, hit.side, d); movePoint(path, (hit.side + 1) % n, d); }
             return { preview: setOutline(ctx.nodes, id, path) };
         };
         return {
-            down(w, h) {
+            down(w, h, mods) {
+                if (!h && selectedId(ctx)) { box.start(w, mods); return {}; }
                 if (h?.kind === "pattern") return { select: { kind: "pattern", id: h.id } };
                 if (h && (h.kind === "point" || h.kind === "handle" || h.kind === "edge")) {
                     id = h.id; path0 = outlineOf(ctx, id);
                     if (!path0) return {};
                     start = w; hit = h; sent = false;
+                    // the box-selected points belong to the selected piece (read now: the app keeps one tool across them)
+                    chosen = new Set(h.id === selectedId(ctx) ? ctx.pointSel ?? [] : []);
                 }
                 return {};
             },
             // less travel than a drag is still a click: no preview yet
             move(w) {
+                if (box.on) return box.move(w);
                 if (!hit || (!sent && dist(w, start) < DRAG)) return {};
                 sent = true;
                 return preview(w);
             },
             // a click (no preview went out) on a seamed edge selects the seam; a drag commits
-            up() {
+            up(w, h0, mods) {
+                if (box.on) return box.end(mods).then((r) => ({ pointSel: r?.indices ?? [], overlay: { lines: [] } }), () => ({ overlay: { lines: [] } }));
                 if (!hit) return {};
                 const h = hit; hit = null;
                 if (sent) return { endPreview: true };
                 return h.seam ? { select: { kind: "seam", id: h.seam } } : {};
             },
-            key(k) { if (k === "Escape" && hit) { hit = null; return { cancel: true }; } return {}; },
+            key(k) {
+                if (k === "Escape" && box.on) { box.cancel(); return { overlay: { lines: [] } }; }
+                if (k === "Escape" && hit) { hit = null; return { cancel: true }; }
+                return {};
+            },
         };
     },
 
     transform(ctx) {
-        const fresh = () => ({ id: null, start: null, want: null, asked: null, busy: null, result: null, live: true });
+        const fresh = () => ({ id: null, ids: [], start: null, want: null, asked: null, busy: null, result: null, live: true });
         let st = fresh();
-        const preview = (g) => (g.result ? { preview: setOutline(ctx.nodes, g.id, g.result) } : {});
+        const box = boxGesture(ctx, "pieces");
+        // g.result is always {[id]: path}
+        const preview = (g) => (g.result ? { preview: g.ids.flatMap((id) => (g.result[id] ? setOutline(ctx.nodes, id, g.result[id]) : [])) } : {});
         // One request in flight; the latest wanted delta is sent when it returns. A request that
         // rejects ends the loop and keeps the last good path; a cancelled gesture resolves to {}.
         const pump = (g) => {
@@ -148,7 +181,11 @@ const TOOLS = {
                 try {
                     while (g.live && g.want && !(g.asked && g.want[0] === g.asked[0] && g.want[1] === g.asked[1])) {
                         const d = g.want; g.asked = d;
-                        const r = await ctx.request("transform", { id: g.id, matrix: [1, 0, d[0], 0, 1, d[1]] });
+                        const matrix = [1, 0, d[0], 0, 1, d[1]];
+                        // one piece: the single transform (one path back); a multi-selection: transformAll ({[id]: path})
+                        const r = g.ids.length === 1
+                            ? { [g.id]: await ctx.request("transform", { id: g.id, matrix }) }
+                            : await ctx.request("transformAll", { ids: g.ids, matrix });
                         if (g.live) g.result = r;
                     }
                 } catch { /* keep the last good path */ }
@@ -159,18 +196,28 @@ const TOOLS = {
             return run;
         };
         return {
-            down(w, h) {
+            down(w, h, mods) {
                 st.live = false; st = fresh();
-                st.id = h && h.kind !== "handle" && h.kind !== "seam" ? h.id : selectedId(ctx);
+                // a press on nothing always starts the box: a drag from empty space never moves a piece
+                if (!h) { box.start(w, mods); return {}; }
+                st.id = h.kind !== "handle" && h.kind !== "seam" ? h.id : selectedId(ctx);
                 st.start = st.id ? w : null;
-                return h?.kind === "pattern" ? { select: { kind: "pattern", id: st.id } } : {};
+                st.ids = st.id ? (ctx.selection?.ids?.includes(st.id) ? [...ctx.selection.ids] : [st.id]) : [];
+                // a press on a piece of the multi-selection keeps it
+                return h.kind === "pattern" && st.ids.length === 1 ? { select: { kind: "pattern", id: st.id } } : {};
             },
             move(w) {
+                if (box.on) return box.move(w);
                 if (!st.start) return {};
                 st.want = [w[0] - st.start[0], w[1] - st.start[1]];
                 return st.busy ? {} : pump(st);
             },
-            async up(w) {
+            async up(w, h, mods) {
+                if (box.on) {
+                    const r = await box.end(mods).catch(() => null);
+                    const overlay = { lines: [] };
+                    return r?.ids?.length ? { select: { kind: "pattern", id: r.ids[0], ids: r.ids }, overlay } : { select: null, overlay };
+                }
                 const g = st;
                 if (!g.start) return {};
                 g.want = [w[0] - g.start[0], w[1] - g.start[1]];
@@ -184,6 +231,7 @@ const TOOLS = {
                 return p.preview ? { ...p, endPreview: true } : {};
             },
             key(k) {
+                if (k === "Escape" && box.on) { box.cancel(); return { overlay: { lines: [] } }; }
                 if (k !== "Escape" || !st.start) return {};
                 st.live = false; st = fresh();
                 return { cancel: true };

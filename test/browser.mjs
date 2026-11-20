@@ -538,7 +538,20 @@ async function check(cdp, base) {
             const g0 = await gen();
             const size = () => evaluate(`/size [^<]*/.exec(document.getElementById("props").textContent)?.[0]`);
             const s0 = await size();
-            await drag([x2 + w2 * 0.3, y2 + h2 * 0.5], [x2 + w2 * 0.3 + 30, y2 + h2 * 0.5], 6);
+            // the Move tool moves a piece pressed on (a press on empty space is a box select):
+            // start where the hover answers the selected piece
+            const firstId = await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').dataset.id`);
+            let on = null;
+            for (const [fx, fy] of [[0.3, 0.5], [0.32, 0.43], [0.68, 0.43], [0.7, 0.5], [0.5, 0.75], [0.4, 0.5], [0.6, 0.5], [0.5, 0.4]]) {
+                const at = [x2 + w2 * fx, y2 + h2 * fy];
+                await evaluate(`document.body.dataset.hit = "__"`);
+                await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
+                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
+                await sleep(200);
+                if ((await evaluate(`document.body.dataset.hit`)) === "pattern" && (await evaluate(`document.body.dataset.hover2d ?? ""`)) === firstId) { on = at; break; }
+            }
+            if (!on) throw new Error(`no spot on ${firstId} found in the 2D window`);
+            await drag(on, [on[0] + 30, on[1]], 6);
             const f1 = await frameNo();
             await until("frames after the move", async () => (await frameNo()) >= f1 + 2, 60000);
             if ((await gen()) !== g0) throw new Error("a 2D move re-meshed the cloth");
@@ -643,9 +656,53 @@ async function check(cdp, base) {
             await mouse("mouseMoved", lockAt[0] + 60, lockAt[1] - 35, { buttons: 0, modifiers: 8 });   // about 30 degrees up
             await until("the angle lock", async () => (await evaluate(`document.body.dataset.snapAngle`)) === "45", 30000);
             await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: 0 });
+            // Shift released: the lock's base is gone, a hover answers no locked angle
+            await mouse("mouseMoved", lockAt[0] + 61, lockAt[1] - 33, { buttons: 0 });
+            await until("the angle lock released", async () => (await evaluate(`document.body.dataset.snapAngle`)) === "", 30000);
             await key("Escape", "Escape", 27);
             failIfErrors();
-            ok("snap: the corner answers end/vertex at the corner; Shift locks 45 degrees");
+            ok("snap: the corner answers end/vertex at the corner; Shift locks 45 degrees, released unlocks");
+
+            // the Grid button adds the grid snap and takes it away: a hover over a grid crossing,
+            // clear of the rectangle, answers "grid" only while Grid is on
+            await evaluate(`document.querySelector('#tools2d [data-tool=polygon]').click()`);
+            const hoverAt = async (p) => {
+                await evaluate(`document.body.dataset.hit = "__"`);
+                await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
+                await until("a hover answered", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
+                return { world: (await evaluate(`document.body.dataset.world ?? ""`)).split(",").map(Number), snap: await evaluate(`document.body.dataset.snap ?? ""`) };
+            };
+            const gp0 = [rx0 + rw0 * 0.75, ry0 + rh0 * 0.15];
+            const gw0 = await hoverAt(gp0), gwx = await hoverAt([gp0[0] + 40, gp0[1]]), gwy = await hoverAt([gp0[0], gp0[1] + 40]);
+            if (gw0.snap || gwx.snap || gwy.snap) throw new Error(`a snap away from geometry with Grid off: ${gw0.snap}/${gwx.snap}/${gwy.snap}`);
+            const kx = (gwx.world[0] - gw0.world[0]) / 40, ky = (gwy.world[1] - gw0.world[1]) / 40;      // world mm a CSS px, each axis
+            const STEP = 100;                                                                          // the worker's grid step
+            const cross = [Math.round(gw0.world[0] / STEP) * STEP, Math.round(gw0.world[1] / STEP) * STEP];
+            const onGrid = [gp0[0] + (cross[0] - gw0.world[0]) / kx, gp0[1] + (cross[1] - gw0.world[1]) / ky];
+            const gridOff = await hoverAt(onGrid);
+            if (gridOff.snap === "grid") throw new Error("a grid snap with Grid off");
+            await evaluate(`document.querySelector('#tools2d [data-toggle=grid]').click()`);
+            await hoverAt([onGrid[0] + 1, onGrid[1]]);
+            await until("a grid snap with Grid on", async () => (await hoverAt(onGrid)).snap === "grid", 30000);
+            await evaluate(`document.querySelector('#tools2d [data-toggle=grid]').click()`);
+            await hoverAt([onGrid[0] + 1, onGrid[1]]);
+            await until("no grid snap with Grid off again", async () => (await hoverAt(onGrid)).snap !== "grid", 30000);
+            await key("Escape", "Escape", 27);
+            failIfErrors();
+            ok("snap: the Grid button adds and removes the grid snap");
+
+            // box select: a second rectangle beside the first, then the Move tool's window over
+            // the whole 2D window selects both
+            await evaluate(`document.querySelector('#tools2d [data-tool=rectangle]').click()`);
+            await drag([rx0 + rw0 * 0.55, ry0 + rh0 * 0.3], [rx0 + rw0 * 0.8, ry0 + rh0 * 0.7]);
+            await until("two rectangles", async () => (await patternCount()) === 2, 30000);
+            await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
+            await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+            const [bx, bY, bw, bh] = await windowBox("rect2d");
+            await drag([bx + 4, bY + 24], [bx + bw - 4, bY + bh - 4]);
+            await until("a box selection", async () => (await evaluate(`document.querySelectorAll("#browser-patterns li.on").length`)) === 2, 30000);
+            failIfErrors();
+            ok("box select: the Move tool's window selects both pieces");
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

@@ -277,6 +277,60 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     r.down([3, 4], null, {});
     assert.deepEqual(r.lastPoint(), [3, 4]);
 }
+// box select: the edit tool's empty-space drag asks for the selected piece's points in the box,
+// and a drag of a selected point moves them all; the transform tool's box selects pieces
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const asked = [];
+    const request = async (kind, p) => { asked.push([kind, p]); return kind === "pickRect" ? { indices: [1, 2] } : null; };
+    const t = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t.down([120, -10], null, { px: [400, 300] });
+    const mv = t.move([90, 60], null, { px: [300, 100] });
+    assert.equal(mv.overlay.lines[0].length, 5, "the box drawn");
+    const up = await t.up([90, 60], null, { px: [300, 100] });
+    assert.deepEqual(asked[0], ["pickRect", { from: [400, 300], to: [300, 100], kind: "points" }]);
+    assert.deepEqual(up.pointSel, [1, 2]);
+    const t2 = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, pointSel: [1, 2], request }));
+    t2.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    const pts = m.pathPoints(t2.move([110, 0], null, {}).preview[0].fields.path);
+    assert.deepEqual([pts[1], pts[2]], [[110, 0], [110, 50]], "both selected points move");
+    assert.deepEqual(pts[0], [0, 0]);
+}
+{
+    const request = async (kind, p) => (kind === "pickRect" ? { ids: ["p1", "p2"] } : null);
+    const t = makeTool("transform", ctx({ request }));
+    t.down([0, 0], null, { px: [10, 10] });
+    t.move([500, 500], null, { px: [600, 400] });
+    const up = await t.up([500, 500], null, { px: [600, 400] });
+    assert.deepEqual(up.select, { kind: "pattern", id: "p1", ids: ["p1", "p2"] });
+}
+// B6: with a piece selected, a Move press on empty space still starts the box, never a move;
+// B4: a press on a piece of a multi-selection moves them all through one transformAll
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" },
+        { id: "p2_outline", kind: "profile.path", path: m.rectPath(200, 0, 100, 50) }, { id: "p2", kind: "garment.pattern", outline: "p2_outline" }];
+    const asked = [];
+    const request = async (kind, p) => {
+        asked.push([kind, p]);
+        if (kind === "pickRect") return { ids: [] };
+        if (kind === "transformAll") return Object.fromEntries(p.ids.map((id) => [id, m.rectPath((id === "p1" ? 0 : 200) + p.matrix[2], p.matrix[5], 100, 50)]));
+        return m.rectPath(p.matrix[2], p.matrix[5], 100, 50);
+    };
+    const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t.down([500, 500], null, { px: [10, 10] });
+    assert.ok(t.move([520, 500], null, { px: [30, 10] }).overlay, "the box, not a move");
+    const up = await t.up([520, 500], null, { px: [30, 10] });
+    assert.deepEqual(asked.map((a) => a[0]), ["pickRect"]);
+    assert.deepEqual(up.select, null, "an empty box clears the selection");
+    asked.length = 0;
+    const t2 = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1", ids: ["p1", "p2"] }, request }));
+    assert.deepEqual(t2.down([5, 5], { kind: "pattern", id: "p2" }, {}), {}, "the multi-selection kept");
+    await t2.move([15, 5], null, {});
+    const up2 = await t2.up([15, 5], null, {});
+    assert.deepEqual(asked, [["transformAll", { ids: ["p1", "p2"], matrix: [1, 0, 10, 0, 1, 0] }]]);
+    assert.equal(up2.endPreview, true);
+    assert.deepEqual(up2.preview.map((o) => m.pathPoints(o.fields.path)[0]), [[10, 0], [210, 0]]);
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

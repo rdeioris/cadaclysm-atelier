@@ -69,6 +69,7 @@ assert.deepEqual(ss.slice(12, 18), [0, 0, 0, 0, 10, 5], "reversed: first of a me
     assert.equal(isSelected({ kind: "seam", id: "s2" }, "seam", "s2"), true);
     assert.equal(isSelected({ kind: "pattern", id: "s2" }, "seam", "s2"), false);
     assert.equal(isSelected(null, "seam", "s2"), false);
+    assert.ok(isSelected({ kind: "pattern", id: "p1", ids: ["p1", "p2"] }, "pattern", "p2"));
     const map = new ItemMap();
     for (const s of shown) map.set(s.item, { kind: "seam", id: s.id });
     assert.deepEqual(map.resolve(103), { kind: "seam", id: "s3" });

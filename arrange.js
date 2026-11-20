@@ -113,7 +113,7 @@ export function seamSegments(seam, frameA, frameB) {
 }
 
 // Whether `selection` ({kind, id} or null) is the item of that kind and id.
-export const isSelected = (selection, kind, id) => !!selection && selection.kind === kind && selection.id === id;
+export const isSelected = (selection, kind, id) => !!selection && selection.kind === kind && (selection.id === id || !!selection.ids?.includes(id));
 
 // The seams in the 3D window: one lines item per seam, in its 2D colour (the accent when
 // selected), so a seam is picked and highlighted on its own. -> {shown: [{item, id, colour}], error}

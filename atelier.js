@@ -11,7 +11,7 @@ import { PRESETS, presetParams } from "./fabrics.js";
 import { makeTool, SNAPPING } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
-import { SLOTS, slotFields, fabricColours } from "./arrange.js";
+import { SLOTS, slotFields, fabricColours, isSelected } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
 
 const $ = (id) => document.getElementById(id);
@@ -21,7 +21,8 @@ const DEFAULT_FABRIC = "cotton_jersey";
 
 // ---- state --------------------------------------------------------------------------------
 let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
-let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id}
+let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id, ids?}: ids a box selection
+let pointSel = [];            // the selected piece's box-selected point indices (the Edit tool)
 let avatar = null;            // {name, bounds}
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let overlay = null;
@@ -45,12 +46,14 @@ const post = (msg, transfer) => worker.postMessage(msg, transfer ?? []);
 // A message that changes the document: it carries a `seq` the worker's `doc` echoes.
 const change = (kind, payload = {}) => { const s = ++seq; post({ kind, ...payload, seq: s }); return s; };
 
-// transform / mirror: the worker answers `path {reqId}` or `error {reqId}`
+// transform / transformAll / mirror / pickRect: the worker answers `path {reqId}` or `error {reqId}`.
+// A payload's own `kind` (pickRect's points or pieces) travels as `what`: `kind` is the message's.
 let nextReq = 0;
 const waiting = new Map();
 function request(kind, payload) {
     const reqId = ++nextReq;
-    return new Promise((resolve, reject) => { waiting.set(reqId, { resolve, reject }); post({ kind, reqId, ...payload }); });
+    const { kind: what, ...rest } = payload ?? {};
+    return new Promise((resolve, reject) => { waiting.set(reqId, { resolve, reject }); post({ ...rest, ...(what !== undefined ? { what } : {}), kind, reqId }); });
 }
 
 const fabricNodes = () => nodes.filter((n) => n.kind === "garment.fabric");
@@ -83,7 +86,8 @@ function exists(sel) {
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
-    selection = sel ? { kind: sel.kind, id: sel.id } : null;
+    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}) } : null;
+    pointSel = [];                // the worker drops its own on `select`
     selSeq++;
     if (selection?.kind === "fabric") pickedFabric = selection.id;
     post({ kind: "select", selection });
@@ -120,7 +124,7 @@ function renderBrowser() {
 function markBrowser() {
     const cur = currentFabric();
     for (const li of $("browser").querySelectorAll("li[data-kind]")) {
-        li.classList.toggle("on", !!selection && li.dataset.kind === selection.kind && li.dataset.id === selection.id);
+        li.classList.toggle("on", isSelected(selection, li.dataset.kind, li.dataset.id));
         li.classList.toggle("current", li.dataset.kind === "fabric" && li.dataset.id === cur);
     }
 }
@@ -237,6 +241,7 @@ function freshTool() {
         nodes, drawings, request,
         get fabric() { return currentFabric(); },
         get selection() { return selection; },
+        get pointSel() { return pointSel; },
         get pxToWorld() { return mmPerPx * dprNow(); },
     };
     tool = makeTool(toolName, ctx);
@@ -301,6 +306,7 @@ function handle(r) {
     if (r.cancel) cancelPreview();
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length ? r.overlay : null;
     if (r.select !== undefined) setSelection(r.select);
+    if (r.pointSel) { pointSel = r.pointSel; post({ kind: "pointSel", indices: pointSel }); }
     if (r.done) setTool("edit");
     else if (toolStale && !previewing && !gesture2d()) freshTool();
     syncSnapBase();                       // done, or the overlay emptied: no last point, no lock
