@@ -16,8 +16,11 @@ export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
 const LINE = "#d8dce2", HOVER = "#ffffff", INTERNAL = "#b0b6c0", CUT = "#8a9099", GRAIN = "#9aa0aa", LABEL = "#c8ccd4", BG = "#1e2024";
 const STATE = { normal: 0, hover: 1, selected: 2, first: 3 };
-/** A piece's depths by its rank in layer order: fill, lines, seams (mm above the grid's z = 0). */
-export const bandOf = (rank) => ({ fill: 1 + 4 * rank, line: 2 + 4 * rank, seam: 3 + 4 * rank });
+/** A piece's depths by its rank in layer order: fill, lines, seams (mm above the grid's z = 0).
+ *  The first band starts well clear of the grid: the View draws its grid with a depth bias
+ *  that let a fill 1 mm above it show the grid through. */
+const BAND_BASE = 10;
+export const bandOf = (rank) => ({ fill: BAND_BASE + 4 * rank, line: BAND_BASE + 1 + 4 * rank, seam: BAND_BASE + 2 + 4 * rank });
 // The View's "tick" glyph is a slash turned 45 degrees from its `dir`: this turn makes the
 // stroke run along the notch's outward normal (M4a's notch mark).
 export const TICK_TURN = -Math.PI / 4;
@@ -40,7 +43,17 @@ function segs(ring, closed = false, z = 0) {
 const xyz = (pts, z = 0) => pts.flatMap((p) => [p[0], p[1], z]);
 // Beziers (x, y, z, w a control point) and a mesh's positions moved to depth z.
 function liftBeziers(b, z) { const out = Float64Array.from(b); for (let i = 2; i < out.length; i += 4) out[i] = z; return out; }
-function liftMesh(m, z) { const p = Float32Array.from(m.positions); for (let i = 2; i < p.length; i += 3) p[i] = z; return { positions: p, indices: m.indices }; }
+// Every triangle is turned to face +z, the 2D camera: a fill whose triangles face away does not
+// hide the grid behind it.
+function liftMesh(m, z) {
+    const p = Float32Array.from(m.positions), t = Uint32Array.from(m.indices);
+    for (let i = 2; i < p.length; i += 3) p[i] = z;
+    for (let i = 0; i + 2 < t.length; i += 3) {
+        const a = 3 * t[i], b = 3 * t[i + 1], c = 3 * t[i + 2];
+        if ((p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[b + 1] - p[a + 1]) * (p[c] - p[a]) < 0) [t[i + 1], t[i + 2]] = [t[i + 2], t[i + 1]];
+    }
+    return { positions: p, indices: t };
+}
 function inRing(ring, [x, y]) {
     let inside = false;
     for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
@@ -127,7 +140,7 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             // box of the background so it reads over any line
             const r = rank.get(s.a) ?? 0;
             const { at, normal: [nx, ny] } = midOut(s.points_a, byId.get(s.a)?.sew);
-            const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(-SEAM_NO_PX * ny * 10) / 10 + 0];   // screen y runs down
+            const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(SEAM_NO_PX * ny * 10) / 10 + 0];   // the View's offset y runs up the screen
             out.push({ key: `seam/${s.id}/no`, show: "text", text: String(i + 1), data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
                 offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${i + 1}@${at[0]},${at[1]}@${r}` });
         }

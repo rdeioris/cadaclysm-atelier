@@ -50,29 +50,39 @@ assert.deepEqual(specs.find((s) => s.key === "seam/s1/b").what, { kind: "seam", 
 assert.equal(specs.find((s) => s.key === "p1/fill").colour, fillColour("#5aa0d9"));
 const sel = specs2d(state({ selection: { kind: "pattern", id: "p1" }, pointSel: [2] }));
 const pts = sel.find((s) => s.key === "p1/points");
-assert.deepEqual(Array.from(pts.data), [0, 0, 3, 100, 0, 3, 100, 50, 3, 0, 50, 3]);
+assert.deepEqual(Array.from(pts.data), [0, 0, 12, 100, 0, 12, 100, 50, 12, 0, 50, 12]);
 assert.deepEqual(pts.states, [0, 0, 2, 0], "point 2 selected");
 assert.equal(pts.onTop, true);
 
 // depth: the grid (z = 0) under every fill; each piece a band above the last in layer order
 const zOf = (sp) => (sp.show === "mesh" ? sp.data.positions.filter((_, i) => i % 3 === 2) : sp.show === "curves" ? sp.data.filter((_, i) => i % 4 === 2) : sp.data.filter((_, i) => i % 3 === 2));
 const zs = (list, key) => [...new Set(Array.from(zOf(list.find((x) => x.key === key))))];
-assert.deepEqual(bandOf(0), { fill: 1, line: 2, seam: 3 });
-assert.deepEqual(zs(specs, "p1/fill"), [1], "the fill over the grid");
+assert.deepEqual(bandOf(0), { fill: 10, line: 11, seam: 12 }); assert.deepEqual(bandOf(1), { fill: 14, line: 15, seam: 16 });
+assert.deepEqual(zs(specs, "p1/fill"), [10], "the fill over the grid");
 assert.deepEqual(Array.from(specs.find((x) => x.key === "p1/fill").data.positions).filter((_, i) => i % 3 !== 2), [0, 0, 100, 0, 0, 50], "its x, y kept");
-assert.deepEqual(zs(specs, "p1/sew"), [2]); assert.deepEqual(zs(specs, "p1/cut"), [2]); assert.deepEqual(zs(specs, "seam/s1/a"), [3]);
-assert.deepEqual(zs(specs, "p2/sew"), [6], "the next piece a band higher");
+// every fill triangle faces the camera (+z, counter-clockwise from above), whichever way the kernel wound it
+const ccwTris = (m) => { const p = m.positions, t = m.indices, out = [];
+    for (let i = 0; i < t.length; i += 3) { const [a, b, c] = [t[i], t[i + 1], t[i + 2]].map((k) => [p[3 * k], p[3 * k + 1]]);
+        out.push((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0); } return out; };
+const cwFill = { positions: Float32Array.of(0, 0, -1, 0, 50, -1, 100, 0, -1, 100, 50, -1), indices: Uint32Array.of(0, 1, 2, 2, 3, 1) };
+const flipped = specs2d(state({ drawings: [drawing("p1", 0, { fill: cwFill })], seams: [] })).find((x) => x.key === "p1/fill");
+assert.deepEqual(ccwTris(cwFill), [false, true], "the fixture mixes both windings");
+assert.deepEqual(ccwTris(flipped.data), [true, true], "every triangle turned to face +z");
+assert.deepEqual(zs(specs, "p1/sew"), [11]); assert.deepEqual(zs(specs, "p1/cut"), [11]); assert.deepEqual(zs(specs, "seam/s1/a"), [12]);
+assert.deepEqual(zs(specs, "p2/sew"), [15], "the next piece a band higher");
 const stacked = specs2d(state({ drawings: [drawing("p1", 0, { layer: 2 }), drawing("p2", 200, { layer: -1 })] }));
 assert.ok(zs(stacked, "p1/fill")[0] > Math.max(...zs(stacked, "p2/sew")), "a higher layer's fill covers a lower layer's lines");
 assert.notEqual(stacked.find((x) => x.key === "p1/fill").sig, specs.find((x) => x.key === "p1/fill").sig, "a new depth is a new look");
 // a seam's number: out of piece a by 8 px (p1 runs counter-clockwise; s1 is its right side), on a box
 const no = specs.find((x) => x.key === "seam/s1/no");
 assert.deepEqual(no.offset, [8, 0], "out of the piece: +x on its right side");
-assert.equal(no.box, "#1e2024"); assert.deepEqual(Array.from(no.data), [100, 25, 3], "at the seam's middle");
+assert.equal(no.box, "#1e2024"); assert.deepEqual(Array.from(no.data), [100, 25, 12], "at the seam's middle");
 const cwSeam = specs2d(state({ drawings: [drawing("p1", 0, { sew: [0, 0, 0, 50, 100, 50, 100, 0, 0, 0] }), drawing("p2", 200)], seams: [{ ...seams[0], points_a: [100, 50, 100, 0] }] }));
 assert.deepEqual(cwSeam.find((x) => x.key === "seam/s1/no").offset, [8, 0], "a clockwise piece: still out of it");
 const against = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 100, 0] }] }));
 assert.deepEqual(against.find((x) => x.key === "seam/s1/no").offset, [8, 0], "a seam range running against the outline: still out of it");
+const top = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 0, 50] }] }));
+assert.deepEqual(top.find((x) => x.key === "seam/s1/no").offset, [0, 8], "on the top side: up the screen (the View's offset y runs up)");
 // a notch tick: its glyph turned so the stroke runs along the outward normal (p1's notch is on its bottom side)
 const ticks = specs.find((x) => x.key === "p1/notches");
 const want = [Math.cos(-Math.PI / 2 + TICK_TURN), Math.sin(-Math.PI / 2 + TICK_TURN), 0];
@@ -145,25 +155,25 @@ const hk = (k) => { const s = hs.find((x) => x.key === k); assert.ok(s, `${k} in
 const hole = hk("p3/hole/0");
 assert.equal(hole.show, "curves");
 assert.deepEqual(Array.from(hole.data).filter((_, i) => i % 4 !== 2), Array.from(holed.holes[0].beziers).filter((_, i) => i % 4 !== 2), "the kernel's hole, x, y and weights");
-assert.deepEqual(zs(hs, "p3/hole/0"), [2]);
+assert.deepEqual(zs(hs, "p3/hole/0"), [11]);
 assert.deepEqual(hole.what, { kind: "hole", id: "p3", index: 0 });
 assert.equal(hole.colour, hk("p3/sew").colour, "a hole is drawn as the sew line, hover included");
 assert.notEqual(hole.colour, specs2d(state({ drawings: [holed], seams: [] })).find((x) => x.key === "p3/hole/0").colour, "hover recolours the hole");
 const hc = hk("p3/holecut/0/0");
 assert.equal(hc.show, "lines"); assert.deepEqual(hc.dash, { dash: 4, gap: 4 }); assert.deepEqual(hc.what, { kind: "cut", id: "p3" });
-assert.deepEqual(Array.from(hc.data), [430, 10, 2, 470, 10, 2, 470, 10, 2, 470, 40, 2, 470, 40, 2, 430, 40, 2, 430, 40, 2, 430, 10, 2], "the hole cut ring closed");
+assert.deepEqual(Array.from(hc.data), [430, 10, 11, 470, 10, 11, 470, 10, 11, 470, 40, 11, 470, 40, 11, 430, 40, 11, 430, 40, 11, 430, 10, 11], "the hole cut ring closed");
 const fold = hk("p3/internal/0");
 assert.equal(fold.show, "curves");
 assert.deepEqual(Array.from(fold.data).filter((_, i) => i % 4 !== 2), Array.from(holed.internal[0].beziers).filter((_, i) => i % 4 !== 2));
 assert.deepEqual(fold.dash, { dash: 6, gap: 4 }); assert.deepEqual(fold.what, { kind: "internal", id: "p3", index: 0 });
 assert.equal(hk("p3/internal/1").dash, null, "only a fold is dashed");
 assert.deepEqual(hk("p3/internal/1").what, { kind: "internal", id: "p3", index: 1 });
-assert.equal(hk("p3/fill").data.indices, holed.fill.indices, "the fill with its hole reaches the View as the kernel made it, lifted");
+assert.deepEqual(hk("p3/fill").data.indices.length, holed.fill.indices.length, "the fill with its hole reaches the View as the kernel made it, lifted");
 assert.deepEqual(Array.from(hk("p3/fill").data.positions).filter((_, i) => i % 3 !== 2), Array.from(holed.fill.positions).filter((_, i) => i % 3 !== 2));
 const hv = fakeViewer(), hItems = new Items2d(hv);
 hItems.apply(hs);
 const mesh = hv.calls.find((c) => c[0] === "showMesh");
-assert.equal(mesh[1].positions, hk("p3/fill").data.positions); assert.equal(mesh[1].indices, holed.fill.indices);
+assert.equal(mesh[1].positions, hk("p3/fill").data.positions); assert.equal(mesh[1].indices, hk("p3/fill").data.indices);
 const holeItem = hItems.item("p3/hole/0"), holeCutItem = hItems.item("p3/holecut/0/0");
 assert.ok(holeItem && holeCutItem);
 assert.deepEqual(hItems.what(holeItem), { kind: "hole", id: "p3", index: 0 });
@@ -181,13 +191,13 @@ const cs = specs2d(state({ nodes: curvy, selection: { kind: "pattern", id: "p1" 
 const p = pointsOf(curvy, "p1");
 const handles = cs.find((s) => s.key === "p1/handles");
 assert.equal(handles.show, "points"); assert.equal(handles.onTop, true);
-assert.deepEqual(Array.from(handles.data), p.handles.flatMap((h) => [h.at[0], h.at[1], 3]), "the handles in pointsOf order");
+assert.deepEqual(Array.from(handles.data), p.handles.flatMap((h) => [h.at[0], h.at[1], 12]), "the handles in pointsOf order");
 const tangents = cs.find((s) => s.key === "p1/tangents");
 assert.equal(tangents.show, "lines"); assert.deepEqual(tangents.what, { kind: "tangents", id: "p1", handles: p.handles, points: p.points });
 const ends = p.handles.reduce((n, h) => n + (h.from !== undefined) + (h.to !== undefined), 0);
 assert.equal(ends, 4, "c1, c2 and the conic's two ends");
 assert.equal(tangents.data.length, 6 * ends);
-assert.deepEqual(tangents.data.slice(0, 6), [0, 0, 3, 30, -10, 3], "c1 hangs off the bezier's start");
+assert.deepEqual(tangents.data.slice(0, 6), [0, 0, 12, 30, -10, 12], "c1 hangs off the bezier's start");
 const dmap = new Map([["p1", drawing("p1", 0)]]);
 p.handles.forEach((h, k) => assert.deepEqual(hitOf(handles.what, { node: k }, dmap), { kind: "handle", id: "p1", index: h.index, which: h.which }));
 // a pick on a tangent line grabs its handle: the conic's tangent from its end (100, 50) to (120, 25)
