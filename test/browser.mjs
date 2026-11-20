@@ -535,7 +535,15 @@ async function check(cdp, base) {
             await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
             if (await evaluate(`document.querySelector('[data-tool3d=pin]').classList.contains("on")`)) throw new Error("Pin and Drag both on");
             const f0 = await frameNo();
-            await tryOnCloth("drag", (p) => drag(p, [p[0] + 80, p[1]], 6), (t) => t === "dragging the cloth");
+            // the press answered first (its pick takes a while with the cloth stepping), then the moves and the release
+            const drag3d = async (p) => {
+                await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
+                await mouse("mousePressed", p[0], p[1]);
+                await until("drag: the press answered", async () => (await statusText()) || null, 30000);
+                for (let i = 1; i <= 6; i++) await mouse("mouseMoved", p[0] + (80 * i) / 6, p[1]);
+                await mouse("mouseReleased", p[0] + 80, p[1]);
+            };
+            await tryOnCloth("drag", drag3d, (t) => t === "dragging the cloth");
             await until("frames after the drag", async () => (await frameNo()) >= f0 + 2, 60000);
             await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
             failIfErrors();

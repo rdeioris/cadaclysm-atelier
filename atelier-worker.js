@@ -323,7 +323,10 @@ async function tool3d(data) {
         if (!hit || !p.point || !sim.positions) { post({ kind: "status", text: "not on the cloth" }); return; }
         const vertex = nearestVertex(sim.positions, p.point, hit.verts);
         if (data.tool === "pin") { clothPort.postMessage({ kind: "pin", vertex }); return; }
-        if (press !== pressId) return;             // a drag let go before the pick came back
+        if (press !== pressId) {                   // a drag let go before the pick came back: say so
+            post({ kind: "status", text: "let go before the cloth answered: hold the press a moment, then drag" });
+            return;
+        }
         const start = Array.from(sim.positions.subarray(3 * vertex, 3 * vertex + 3));
         const basis = dragBasis(viewer.camera(0), start, rects?.[0]?.[3] ?? canvasRef?.height ?? 800);
         if (!basis) { post({ kind: "status", text: "dragging needs the orbit camera" }); return; }
