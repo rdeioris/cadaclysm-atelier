@@ -2,7 +2,7 @@
 // Pure (no DOM, no kernel), so Node tests it. atelier.js draws the fields and posts the ops.
 import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY } from "./fabrics.js";
-import { SLOTS, slotFields } from "./arrange.js";
+import { SLOTS, HOOD_SLOTS, slotFields } from "./arrange.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 
@@ -26,7 +26,11 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
     if (!n) return [];
     if (selection.kind === "pattern") {
         const fabrics = nodes.filter((x) => x.kind === "garment.fabric").map((f) => ({ value: f.id, label: f.label ?? f.id }));
-        const slots = [{ value: "none", label: "none (floor)" }, ...Object.entries(SLOTS).map(([value, s]) => ({ value, label: s.label }))];
+        const placed = nodes.filter((x) => x.kind === "garment.pattern" && x.id !== n.id && x.frame && x.frame !== "xy");
+        const slots = [{ value: "none", label: "none (floor)" },
+            ...Object.entries(SLOTS).map(([value, s]) => ({ value, label: s.label })),
+            ...(avatar?.landmarks?.head ? Object.entries(HOOD_SLOTS).map(([value, s]) => ({ value, label: s.label })) : []),
+            ...placed.map((x) => ({ value: `on:${x.id}`, label: `On ${x.label ?? x.id}` }))];
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
             { key: "fabric", label: "Fabric", unit: "", type: "select", value: n.fabric ?? "", options: fabrics },
@@ -100,7 +104,7 @@ function typedAnchor(seam, end, after, drawings) {
     return anchor;
 }
 
-// ctx: {avatarBounds, drawings} for the slot field and a typed seam end.
+// ctx: {avatarBounds, landmarks, drawings} for the slot field and a typed seam end.
 export function opsFor(selection, nodes, key, value, ctx = {}) {
     const id = selection.id;
     if (selection.kind === "pattern") {
@@ -109,7 +113,8 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
             const d = ctx.drawings?.get(id);
             if (value !== "none" && !ctx.avatarBounds) throw new Error("no avatar to place the piece around");
             if (value !== "none" && !d) throw new Error("the pattern has no outline to place");
-            return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds, d?.bounds));
+            const host = value.startsWith("on:") ? find(nodes, value.slice(3)) : null;
+            return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds, d?.bounds, { landmarks: ctx.landmarks ?? null, host }));
         }
         if (key === "remove") return model.removePattern(nodes, id);
         return model.setPattern(nodes, id, { [key]: value });

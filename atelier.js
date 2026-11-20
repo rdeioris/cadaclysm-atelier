@@ -12,7 +12,7 @@ import { makeTool, SNAPPING, typedPoint, typedValues, readout } from "./tools.js
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
-import { SLOTS, slotFields, fabricColours, isSelected, survivingSelection } from "./arrange.js";
+import { SLOTS, slotFields, onHosts, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
 import { ENGINE_TEXT, ENGINE_TITLE } from "./gpu-drape.js";
 
@@ -170,7 +170,7 @@ function commitField(f, raw) {
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
     try {
-        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, drawings });
+        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
         status(f.type === "action" ? f.label : `${f.label}: set`);
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
@@ -370,19 +370,27 @@ function command(name) {
     else if (name === "maximise3d") maximise("max3d");
 }
 
-// Arrange: each piece not yet placed goes to the next free slot around the avatar.
+// Arrange: pieces sewn to placed pieces go on them first (their frame and wrap: a band on a
+// front, a cuff on a sleeve), then each piece still unplaced goes to the next free named slot.
 function arrange() {
     if (!avatar) { status("no avatar to arrange around"); return; }
     const byId = model.byId(nodes);
     const patterns = byId.get("garment")?.patterns ?? [];
+    const ops = [], fresh = new Map();          // id -> the fields set in this batch
+    for (const { id, host } of onHosts(nodes)) {
+        const d = drawings.get(id);
+        const h = { ...byId.get(host), ...(fresh.get(host) ?? {}) };
+        if (!d || !h.frame || h.frame === "xy") continue;      // a host with no outline stayed on the floor
+        const f = slotFields(byId.get(id), `on:${host}`, avatar.bounds, d.bounds, { landmarks: avatar.landmarks, host: h });
+        fresh.set(id, f);
+        ops.push(...model.setPattern(nodes, id, f));
+    }
     const taken = new Set(patterns.map((id) => byId.get(id)?.meta?.atelier?.slot).filter(Boolean));
     const free = Object.keys(SLOTS).filter((s) => !taken.has(s));
-    const ops = [];
     for (const id of patterns) {
         const n = byId.get(id), d = drawings.get(id);
-        if (n.meta?.atelier?.slot || !d || !free.length) continue;
-        const slot = free.shift();
-        ops.push(...model.setPattern(nodes, id, slotFields(n, slot, avatar.bounds, d.bounds)));
+        if (n.meta?.atelier?.slot || fresh.has(id) || !d || !free.length) continue;
+        ops.push(...model.setPattern(nodes, id, slotFields(n, free.shift(), avatar.bounds, d.bounds, { landmarks: avatar.landmarks })));
     }
     if (ops.length) change("ops", { ops, message: "arrange" });
     else status(patterns.length ? "every piece is arranged" : "no pieces to arrange");

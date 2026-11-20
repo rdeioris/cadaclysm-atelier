@@ -60,6 +60,71 @@ export function slotFrame(slot, avatarBounds, patternBounds) {
     };
 }
 
+// ---- landmarks: assets/forms.json (tools/dressform.py), on the avatar when it has them ----
+
+// The bounds the slot fractions scale with: the body's, the head left out (a head lifts the
+// bounds' top 150 mm, which would lift every slot with it).
+export function bodyBounds(bounds, lm) {
+    if (!lm?.body_top) return bounds;
+    return [bounds[0], bounds[1], bounds[2], bounds[3], Math.min(bounds[4], lm.body_top), bounds[5]];
+}
+
+// Beside the head, one a side, facing out: a hood half drawn with its face edge at 2D x min
+// (the left half) or x max (its mirror, the right half) and its neck edge at 2D y min.
+export const HOOD_SLOTS = {
+    hood_left:  { label: "Hood left",  side: 1 },
+    hood_right: { label: "Hood right", side: -1 },
+};
+const HOOD_GAP = 40;     // mm between the head's side and the hood
+const HOOD_FRONT = 30;   // mm the face edge stands in front of the face
+
+export function hoodFrame(side, head, hpsY, pb) {
+    const x = side > 0 ? [0, 0, -1] : [0, 0, 1], y = [0, 1, 0];
+    const corner = [side * (head.half[0] + HOOD_GAP), hpsY, head.centre[2] + head.half[2] + HOOD_FRONT];
+    const fx = side > 0 ? pb[0] : pb[2];
+    return { origin: [0, 1, 2].map((i) => corner[i] - fx * x[i] - pb[1] * y[i]), x, y };
+}
+
+// A sleeve on a form's arm, wrapped as the T-shirt sample's are: its cap's top 40 mm past the
+// shoulder joint, the wrap 15 mm out from the joint's ball. limbFields puts pattern y = 0 at the
+// hem; a drawn piece's hem is at its bounds' y min.
+export function armFields(arm, pb) {
+    const f = limbFields(arm.shoulder, arm.dir, arm.radius + 15, pb[3] - pb[1] + 40, pb);
+    f.frame.origin = f.frame.origin.map((v, i) => v - pb[1] * f.frame.y[i]);
+    return f;
+}
+
+// A piece on another piece: its frame, moved out along its normal 8 mm a layer.
+export const LAYER_GAP = 8;
+export function onFrame(frame, dLayer) {
+    if (!dLayer) return frame;
+    const n = cross(frame.x, frame.y);
+    return { origin: frame.origin.map((v, i) => v + LAYER_GAP * dLayer * n[i]), x: [...frame.x], y: [...frame.y] };
+}
+
+// Arrange's first pass: each unplaced piece sewn to a placed piece goes on it, again and again
+// until nothing changes (a band on a lower front on a front). -> [{id, host}] in placing order.
+export function onHosts(nodes) {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const g = byId.get("garment");
+    const ids = g?.patterns ?? [];
+    const seams = (g?.seams ?? []).map((s) => byId.get(s)).filter(Boolean);
+    const placed = new Set(ids.filter((id) => byId.get(id)?.meta?.atelier?.slot));
+    const out = [];
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const id of ids) {
+            if (placed.has(id)) continue;
+            const s = seams.find((s) => (s.a === id && placed.has(s.b)) || (s.b === id && placed.has(s.a)));
+            if (!s) continue;
+            out.push({ id, host: s.a === id ? s.b : s.a });
+            placed.add(id);
+            changed = true;
+        }
+    }
+    return out;
+}
+
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 
 // A frame as the extrude call takes it: origin, x, y, z (z = x cross y), twelve doubles.
@@ -157,14 +222,31 @@ export function fabricColours(nodes) {
 }
 export const ACCENT = "#ffb347";
 
-// The `set` fields that put a pattern in `slot` (frame and meta.atelier.slot), or back on the
-// floor for a null/"none" slot (frame "xy", the slot dropped). Shared by Arrange and the property editor.
-export function slotFields(node, slot, avatarBounds, patternBounds) {
+// The `set` fields that put a pattern in `slot` (frame, wrap and meta.atelier.slot), or back on
+// the floor for a null/"none" slot. `ctx.landmarks` (the avatar's, or null) makes the body
+// slots hang from the shoulder line and the arm slots wrap; `ctx.host` is the piece an
+// "on:<id>" slot puts it on. Shared by Arrange and the property editor.
+export function slotFields(node, slot, avatarBounds, patternBounds, ctx = {}) {
     const atelier = { ...(node.meta?.atelier ?? {}) };
+    const meta = () => ({ ...(node.meta ?? {}), atelier });
     if (!slot || slot === "none") {
         delete atelier.slot;
-        return { frame: "xy", wrap: null, meta: { ...(node.meta ?? {}), atelier } };
+        return { frame: "xy", wrap: null, meta: meta() };
     }
     atelier.slot = slot;
-    return { frame: slotFrame(slot, avatarBounds, patternBounds), wrap: null, meta: { ...(node.meta ?? {}), atelier } };
+    const lm = ctx.landmarks ?? null;
+    if (slot.startsWith("on:")) {
+        const host = ctx.host;
+        if (!host?.frame || host.frame === "xy") throw new Error("place the piece it goes on first");
+        return { frame: onFrame(host.frame, (node.layer ?? 0) - (host.layer ?? 0)), wrap: host.wrap ?? null, meta: meta() };
+    }
+    if (HOOD_SLOTS[slot]) {
+        if (!lm?.head) throw new Error("this avatar has no head: the hood slots need one (Form: f-M with head)");
+        return { frame: hoodFrame(HOOD_SLOTS[slot].side, lm.head, lm.hps_y, patternBounds), wrap: null, meta: meta() };
+    }
+    const arm = lm?.arms && { left_arm: "left", right_arm: "right" }[slot];
+    if (arm) return { ...armFields(lm.arms.find((a) => a.side === arm), patternBounds), meta: meta() };
+    const frame = slotFrame(slot, bodyBounds(avatarBounds, lm), patternBounds);
+    if (lm?.hps_y && (slot === "front" || slot === "back")) frame.origin[1] = lm.hps_y - patternBounds[3] * frame.y[1];
+    return { frame, wrap: null, meta: meta() };
 }

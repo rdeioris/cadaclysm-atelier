@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, onHosts, slotFields } from "../arrange.js";
 import { seamColour } from "../sewing.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
@@ -102,3 +102,74 @@ console.log("arrange: ok");
     // nine floats a vertex: only the positions count
     assert.deepEqual(sceneBox([1, 2, 3, 9, 9, 9, 9, 9, 9, -1, 0, 5, 0, 0, 0, 0, 0, 0], [10, 0, 0]), [9, 0, 3, 11, 2, 5]);
 }
+// ---- landmarks (assets/forms.json shape) ----
+// f-M's own figures from assets/forms.json: its arms' `dir` are unit vectors (unrounded, as
+// tools/dressform.py writes them), and the head is Task 1's follow-up head (chin 1520, crown 1745).
+const LM = {
+    body_top: 1531, hps_y: 1425,
+    arms: [{ side: "left", shoulder: [182, 1352, -8], dir: [0.6669996117546515, -0.7407781162009287, 0.07974522228289], radius: 50 },
+        { side: "right", shoulder: [-182, 1352, -8], dir: [-0.6669996117546515, -0.7407781162009287, 0.07974522228289], radius: 50 }],
+    head: { centre: [0, 1630, 4], half: [75, 112.5, 95], top: 1745, chin_y: 1520 },
+};
+const at = (f, p) => [0, 1, 2].map((i) => f.origin[i] + p[0] * f.x[i] + p[1] * f.y[i]);
+const near = (p, q, tol = 1e-6) => p.every((v, i) => Math.abs(v - q[i]) < tol);
+{
+    const headed = [-666.85, 0, -156, 666.85, 1745, 144];
+    assert.deepEqual(bodyBounds(headed, LM), [-666.85, 0, -156, 666.85, 1531, 144], "the head does not count");
+    assert.equal(bodyBounds(headed, null), headed);
+    // front and back hang from the shoulder line: the piece's top at hps_y
+    const pb = [-280, 220, 280, 580];
+    const front = slotFields({ meta: {} }, "front", headed, pb, { landmarks: LM }).frame;
+    assert.ok(Math.abs(at(front, [0, 580])[1] - 1425) < 1e-9, "front top on the shoulder line");
+    const back = slotFields({ meta: {} }, "back", headed, pb, { landmarks: LM }).frame;
+    assert.ok(Math.abs(at(back, [0, 580])[1] - 1425) < 1e-9, "back top on the shoulder line");
+    // hood left: face edge (2D x min) forward at the neck, beside the head, facing +x
+    const hb = [0, 0, 250, 340];
+    const hl = hoodFrame(1, LM.head, LM.hps_y, hb);
+    assert.ok(near(at(hl, [0, 0]), [75 + 40, 1425, 4 + 95 + 30]), `hood left corner ${at(hl, [0, 0])}`);
+    assert.ok(at(hl, [250, 0])[2] < at(hl, [0, 0])[2], "2D x runs back");
+    const n = [hl.x[1] * hl.y[2] - hl.x[2] * hl.y[1], hl.x[2] * hl.y[0] - hl.x[0] * hl.y[2], hl.x[0] * hl.y[1] - hl.x[1] * hl.y[0]];
+    assert.ok(n[0] > 0.99, "faces out (+x)");
+    // hood right (the mirrored half): its face edge is 2D x max, forward, on -x
+    const hr = hoodFrame(-1, LM.head, LM.hps_y, [400, 0, 650, 340]);
+    assert.ok(near(at(hr, [650, 0]), [-(75 + 40), 1425, 129]));
+    assert.ok(at(hr, [400, 0])[2] < 129);
+    assert.throws(() => slotFields({ meta: {} }, "hood_left", headed, hb, { landmarks: { ...LM, head: undefined } }), /no head/);
+    assert.deepEqual(Object.keys(HOOD_SLOTS), ["hood_left", "hood_right"]);
+    // a sleeve on an arm is wrapped: its hem (2D y min) 40 mm past its length down the arm
+    // (the arm's dir is a true unit vector, so `along` is exact to 1e-6)
+    const sb = [-198.25, -180, 198.25, 280];
+    const f = armFields(LM.arms[0], sb);
+    assert.equal(f.wrap.radius, 65);
+    assert.deepEqual(f.wrap.origin, LM.arms[0].shoulder);
+    const hem = at(f.frame, [0, -180]);
+    const along = [0, 1, 2].reduce((s, i) => s + (hem[i] - LM.arms[0].shoulder[i]) * LM.arms[0].dir[i], 0);
+    assert.ok(Math.abs(along - (460 + 40)) < 1e-6, `hem ${along} mm down the arm`);
+    const viaSlot = slotFields({ meta: {} }, "left_arm", headed, sb, { landmarks: LM });
+    assert.deepEqual(viaSlot.wrap, f.wrap);
+    assert.equal(slotFields({ meta: {} }, "left_arm", headed, sb, {}).wrap, null, "no landmarks: the old flat slot");
+    // on a piece: the host's frame and wrap, 8 mm out a layer
+    const host = { id: "p1", layer: 0, frame: front, wrap: null };
+    const on = slotFields({ layer: 1, meta: {} }, "on:p1", headed, [-180, 5, 180, 215], { host });
+    assert.equal(on.meta.atelier.slot, "on:p1");
+    const nrm = [0, 0, 1];
+    assert.ok(near(on.frame.origin, front.origin.map((v, i) => v + 8 * nrm[i])), "8 mm out");
+    assert.deepEqual(on.frame.x, front.x);
+    assert.deepEqual(onFrame(front, 0), front);
+    assert.ok(near(onFrame(front, 2).origin, front.origin.map((v, i) => v + 16 * nrm[i])), "16 mm out two layers");
+    const wrapped = slotFields({ layer: 0, meta: {} }, "on:p2", headed, [0, -90, 220, -20], { host: { id: "p2", layer: 0, ...f } });
+    assert.deepEqual(wrapped.wrap, f.wrap, "a cuff on a sleeve wraps with it");
+    assert.throws(() => slotFields({ meta: {} }, "on:p9", headed, pb, { host: { id: "p9", frame: "xy" } }), /first/);
+}
+// Arrange's first pass: unplaced pieces sewn to placed ones go on them, in chains
+{
+    const pat = (id, slot) => ({ id, kind: "garment.pattern", meta: slot ? { atelier: { slot } } : {} });
+    const seam = (id, a, b) => ({ id, kind: "garment.seam", a, b });
+    const nodes = [
+        pat("front", "front"), pat("lower"), pat("band"), pat("pocket"), pat("loose"),
+        seam("s1", "lower", "front"), seam("s2", "band", "lower"), seam("s3", "pocket", "lower"),
+        { id: "garment", kind: "garment", patterns: ["front", "lower", "band", "pocket", "loose"], seams: ["s1", "s2", "s3"] },
+    ];
+    assert.deepEqual(onHosts(nodes), [{ id: "lower", host: "front" }, { id: "band", host: "lower" }, { id: "pocket", host: "lower" }]);
+}
+console.log("ok - arrange: landmarks, hood slots, arm wrap, on a piece");

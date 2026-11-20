@@ -80,4 +80,21 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
     const none = fieldsFor({ kind: "avatar", id: "avatar" }, [], new Map(), { name: "x", bounds: [0, 0, 0, 1, 1, 1] });
     assert.equal(none.find((f) => f.key === "form"), undefined, "no forms list: no Form field");
 }
+// the slot options: the hood slots on a form with a head, "On <piece>" for each placed piece;
+// an on:<id> slot takes the host's frame, out a layer
+{
+    const withP2 = [...placed, { id: "p2", kind: "garment.pattern", label: "Pocket", layer: 1 }];
+    const opts = (avatar) => fieldsFor({ kind: "pattern", id: "p2" }, withP2, drawings, avatar).find((f) => f.key === "slot").options.map((o) => o.value);
+    const box = [-200, 0, -150, 200, 1700, 150];
+    assert.ok(!opts({ name: "f-M", bounds: box, landmarks: { hps_y: 1425 } }).includes("hood_left"), "no head: no hood slots");
+    const o = opts({ name: "f-M-head", bounds: box, landmarks: { hps_y: 1425, head: { centre: [0, 1630, 4], half: [75, 112.5, 95] } } });
+    assert.ok(o.includes("hood_left") && o.includes("hood_right") && o.includes("on:p1") && !o.includes("on:p2"), o.join());
+    const own = fieldsFor({ kind: "pattern", id: "p1" }, withP2, drawings, null).find((f) => f.key === "slot").options.map((o) => o.value);
+    assert.ok(!own.includes("on:p1"), "not on itself");
+    const d2 = new Map([...drawings, ["p2", { bounds: [10, 10, 40, 30] }]]);
+    const on = opsFor({ kind: "pattern", id: "p2" }, withP2, "slot", "on:p1", { avatarBounds: box, drawings: d2 });
+    const host = slotOps[0].fields.frame;
+    assert.deepEqual(on[0].fields.frame.origin, [host.origin[0], host.origin[1], host.origin[2] + 8]);
+    assert.equal(on[0].fields.meta.atelier.slot, "on:p1");
+}
 console.log("props: ok");

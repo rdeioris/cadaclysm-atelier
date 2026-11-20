@@ -66,6 +66,10 @@ The tools, with their keys where they have one:
 - **Fillet** rounds a corner: click it, then drag or type the radius.
 - **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M).
 
+**Slots**: Front, Back, the sides and arms; Hood left / Hood right beside the head of a form
+that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).
+**Arrange** puts pieces sewn to placed pieces on them, then fills the free slots.
+
 ## Live drape
 
 **Simulate** in the 3D strip meshes the garment and runs the kernel's cloth solver on it: the
@@ -104,8 +108,9 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
 - A settled shirt still has a few particles jittering at 2-10 m/s (the health line's max speed).
 - Before Simulate the 3D window draws each piece flat at its frame: a sleeve wrapped round an
   arm shows as a flat slab along the arm until the cloth is built.
-- Arrange's arm slots stand the sleeves flat beside the arms, as before. Sleeves there sew too
-  slowly: the shirt starts to drape before they close. The sample wraps its sleeves instead.
+- On a form with landmarks (assets/forms.json) the arm slots wrap a sleeve round the arm and the
+  front and back hang from the shoulder line; on any other STEP avatar the slots are the old
+  fractions of its bounds.
 - DXF import brings in outlines, allowances, grain lines and notches. Internal lines and holes
   are dropped (the kernel has no getter for them yet; DXF export writes holes), and so are the
   3D slots: imported pieces lie on the floor until arranged.
