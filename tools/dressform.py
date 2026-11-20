@@ -200,10 +200,12 @@ def neck_cap(gr):
 
 
 # The head over the neck: (dy above the neck's top section, half-width a, half-depth b, z
-# centre) for the female M, from inside the neck to the crown. The chin sections sit forward.
+# centre) for the female M, from inside the neck to the crown. The chin section (index 2) sits
+# forward; the widest, at eye level (index 4), is 150 mm wide and 190 mm deep; the chin is at
+# 1520 and the crown at 1745 (225 mm chin to crown).
 HEAD = [
-    (-12, 46, 46, -4), (30, 50, 54, 0), (52, 60, 78, 16), (85, 70, 92, 12),
-    (125, 78, 98, 4), (160, 72, 92, -2), (185, 52, 68, -6), (198, 18, 22, -8),
+    (-12, 46, 46, -4), (22, 52, 58, 0), (40, 62, 82, 16), (85, 72, 94, 12),
+    (150, 75, 95, 4), (205, 70, 90, -2), (245, 50, 66, -6), (265, 17, 22, -8),
 ]
 
 
@@ -217,7 +219,8 @@ def head(gr):
     """An egg-shaped loft with a chin, its first section inside the neck so it joins."""
     y0 = gr.sections[-1][0]
     hy, k = head_scale(gr)
-    secs = [(Profile.ellipse((0, 0), a * k, b * k), up_frame(0, y0 + dy * hy, zc * k)) for dy, a, b, zc in HEAD]
+    secs = [(Profile.ellipse((0, 0), a * k, b * k), up_frame(0, y0 + dy * hy, zc * k))
+            for dy, a, b, zc in HEAD]
     return Solid.loft_through(secs)
 
 
@@ -237,7 +240,8 @@ def landmarks(gr, name, label, with_head):
     arms = []
     for s, side in ((1, "left"), (-1, "right")):
         d = unit([s * math.sin(math.radians(42)), -math.cos(math.radians(42)), 0.08])
-        arms.append({"side": side, "shoulder": r3([s * sh_x, gr.y(1352.0), -8.0]), "dir": [float(c) for c in d],"radius": round(50 * t, 4)})
+        arms.append({"side": side, "shoulder": r3([s * sh_x, gr.y(1352.0), -8.0]),
+                     "dir": [float(c) for c in d], "radius": round(50 * t, 4)})
     y0 = gr.sections[-1][0]
     out = {"name": name, "label": label, "file": name + ".stp", "body_top": round(y0 + 51, 4),
            "hps_y": round(gr.sections[11][0], 4), "arms": arms}
@@ -245,7 +249,8 @@ def landmarks(gr, name, label, with_head):
         hy, k = head_scale(gr)
         top, chin = y0 + HEAD[-1][0] * hy, y0 + HEAD[2][0] * hy
         out["head"] = {"centre": [0.0, round(y0 + HEAD[4][0] * hy, 4), round(HEAD[4][3] * k, 4)],
-                       "half": [round(HEAD[4][1] * k, 4), round((top - chin) / 2, 4), round(HEAD[4][2] * k, 4)],
+                       "half": [round(HEAD[4][1] * k, 4), round((top - chin) / 2, 4),
+                                round(HEAD[4][2] * k, 4)],
                        "top": round(top, 4), "chin_y": round(chin, 4)}
     return out
 

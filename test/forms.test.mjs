@@ -22,9 +22,11 @@ assert.equal(plain.head, undefined, "f-M has no head");
 // the head: the bounds' top, about the chart's height, centred on x, between neck and crown
 const h = headed.head;
 assert.ok(Math.abs(hb[4] - h.top) < 2, `f-M-head top ${hb[4]} vs head.top ${h.top}`);
-assert.ok(Math.abs(h.top - 1680) < 15, `crown at ${h.top}, the chart says 1680`);
+// a real head on the neck's top (1480): chin 1520, crown 1745 -- 225 mm chin to crown, 150 wide, 190 deep
+assert.ok(Math.abs(h.top - 1745) < 2, `crown at ${h.top}`);
+assert.ok(Math.abs(h.top - h.chin_y - 225) < 3, `chin to crown ${h.top - h.chin_y}`);
 assert.ok(Math.abs(h.centre[0]) < 1e-9 && h.chin_y > plain.hps_y && h.chin_y < h.centre[1]);
-assert.ok(h.half[0] > 60 && h.half[0] < 95 && h.half[2] > h.half[0], `head half-axes ${h.half}`);
+assert.ok(Math.abs(2 * h.half[0] - 150) < 6 && Math.abs(2 * h.half[2] - 190) < 6, `head width ${2 * h.half[0]}, depth ${2 * h.half[2]}`);
 // the same arms and stand: x and z bounds as f-M's
 for (const i of [0, 2, 3, 5]) assert.ok(Math.abs(pb[i] - hb[i]) < 1, `bound ${i}: ${pb[i]} vs ${hb[i]}`);
 // the arms the T-shirt sample wraps its sleeves round (tools/make-sample.mjs)
