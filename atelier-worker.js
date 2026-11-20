@@ -62,6 +62,9 @@ const sim = {
     status: null, phase: "", health: null,
     rate: new RateMeter(),
     meshGen: 0,                          // bumped by every new mesh (a build, a re-mesh)
+    film: false,                         // ?film=1: Simulate builds paused, the driver steps it
+    lastMs: null,                        // the last reported frame's step time
+    stops: 0,                            // how many times the cloth has said it stopped
 };
 let dragging = null;                     // { vertex, start, x, y, basis } while a cloth drag is on
 
@@ -227,10 +230,12 @@ function garmentNow() {
 
 function simPost() {
     const r = sim.rate;
+    // a film's cloth stands still between steps but is shown as running, as in a live run
+    const running = sim.running || (sim.film && sim.live && !sim.stale && !sim.building);
     post({
-        kind: "sim", live: sim.live, running: sim.running, building: sim.building, stale: sim.stale,
+        kind: "sim", live: sim.live, running, building: sim.building, stale: sim.stale,
         health: sim.health, phase: sim.phase, fps: r.fps, ms: r.ms, pins: sim.pins ? sim.pins.length / 3 : 0, meshGen: sim.meshGen,
-        engine: clothEngine,
+        engine: clothEngine, frame: sim.status ? sim.status[0] : null, stepMs: sim.lastMs, stops: sim.stops,
     });
 }
 
@@ -282,7 +287,7 @@ function onTopology(t) {
 
 function onFrame(f) {
     sim.positions = f.positions ?? sim.positions; sim.pins = f.pins; sim.status = f.status; sim.phase = f.phase;
-    if (f.health) { sim.health = f.health; sim.rate.add(performance.now(), f.ms); }
+    if (f.health) { sim.health = f.health; sim.lastMs = f.ms; sim.rate.add(performance.now(), f.ms); }
     if (f.positions) for (const m of sim.meshes) viewer.setMeshPositions(m.item, gather(f.positions, m.verts, m.buf), null);
     showPins();
     simPost();
@@ -297,7 +302,7 @@ function onCloth({ data: m }) {
             case "pinned": post({ kind: "status", text: m.on ? "pinned" : "unpinned" }); break;
             case "state":
                 sim.running = m.running; sim.stale = m.stale ?? sim.stale;
-                if (!m.running) sim.rate.clear();
+                if (!m.running) { sim.rate.clear(); sim.stops++; }
                 if (!m.live) { sim.live = false; sim.building = false; sim.stale = null; removeCloth(); }
                 if (m.error) { sim.building = false; post({ kind: "error", text: `simulation: ${m.error}` }); }
                 if (m.reason) post({ kind: "status", text: m.reason });
@@ -307,16 +312,18 @@ function onCloth({ data: m }) {
     } catch (e) { post({ kind: "error", text: `simulation: ${e.message ?? e}` }); }
 }
 
-function simCommand(action) {
+function simCommand(action, data = {}) {
     if (!clothPort) throw new Error("the cloth worker is not connected");
     if (action === "reset") { clothPort.postMessage({ kind: "reset" }); return; }
+    if (action === "step") { if (sim.live) clothPort.postMessage({ kind: "run", frames: Math.max(1, data.frames | 0) }); return; }
+    if (action === "run") { if (sim.live) clothPort.postMessage({ kind: "run" }); return; }
     if (action !== "toggle") return;
     // running: pause (stale or not); stopped: rebuild a missing or stale cloth, else run on
     if (sim.live && sim.running) clothPort.postMessage({ kind: "pause" });
     else if (!sim.live || sim.stale) {
         if (sim.building) return;
         sim.building = true; sim.rate.clear();
-        clothPort.postMessage({ kind: "build", ...garmentNow(), run: true });
+        clothPort.postMessage({ kind: "build", ...garmentNow(), run: !sim.film });
         simPost();
     } else clothPort.postMessage({ kind: "run" });
 }
@@ -344,7 +351,7 @@ async function tool3d(data) {
         if (!basis) { post({ kind: "status", text: "dragging needs the orbit camera" }); return; }
         dragging = { vertex, start, x: data.x, y: data.y, basis };
         clothPort.postMessage({ kind: "drag", vertex, target: start });
-        post({ kind: "status", text: sim.running ? "dragging the cloth" : "paused: the drag acts when the cloth runs" });
+        post({ kind: "status", text: sim.running || sim.film ? "dragging the cloth" : "paused: the drag acts when the cloth runs" });
     } else if (data.phase === "move" && dragging) {
         const d = dragging;
         clothPort.postMessage({ kind: "drag", vertex: d.vertex, target: dragTarget(d.start, d.basis, data.x - d.x, data.y - d.y) });
@@ -403,6 +410,7 @@ self.onmessage = async ({ data }) => {
         if (data.kind === "clothPort") { if (clothEngine === "cpu") { clothPort = data.port; clothPort.onmessage = onCloth; } return; }
         if (data.kind === "canvas") {
             canvasRef = data.canvas;
+            sim.film = !!data.film;
             try {
                 viewer = await createViewer(data.canvas);
                 atelier = new Atelier(await ready);
@@ -468,6 +476,7 @@ self.onmessage = async ({ data }) => {
             case "transformAll": answer(data, () => Object.fromEntries(data.ids.map((id) => [id, atelier.transformed(id, data.matrix)]))); break;
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
+            case "viewStats": answer(data, () => viewer.stats()); break;
             // an opened garment is framed with the avatar: its pieces may stand beyond the form
             case "open": atelier.load(data.text); changed(data.seq); if (rects) frame3d(); break;
             case "new": atelier.reset(data.ops); changed(data.seq); break;
@@ -499,7 +508,7 @@ self.onmessage = async ({ data }) => {
                 break;
             }
             case "resize": viewer.resize?.(data.width, data.height, data.dpr); break;
-            case "sim": simCommand(data.action); break;
+            case "sim": simCommand(data.action, data); break;
             case "tool3d": await tool3d(data); break;
             case "rects": setRects(data.rects); break;
             case "pointer2d": pointers2d.event(data); break;

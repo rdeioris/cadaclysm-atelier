@@ -136,9 +136,22 @@ assert.equal(statusOf(of("frame").find((x) => x.phase === "draping").status).fra
 await host.postMessage({ kind: "pause" });
 assert.equal(last("state").running, false);
 await new Promise((r) => setTimeout(r, 20));
-const frozen = of("frame").length;
+let frozen = of("frame").length;
 await new Promise((r) => setTimeout(r, 20));
 assert.equal(of("frame").length, frozen, "no frames while paused");
+// a film step: run 3 frames, then the host stops on its own and says so
+{
+    const f0 = host.frames, n0 = of("frame").length;
+    await host.postMessage({ kind: "run", frames: 3 });
+    await until("the step's stop", () => !host.running && !host.looping);
+    assert.equal(host.frames - f0, 3, "three frames stepped");
+    assert.equal(of("frame").length - n0, 3, "three frames reported");
+    assert.equal(last("state").running, false, "stopped, and said so");
+    await host.postMessage({ kind: "run", frames: 1 });
+    await until("one more", () => !host.running && !host.looping);
+    assert.equal(host.frames - f0, 4);
+    frozen = of("frame").length;
+}
 
 // pin and unpin through the View; the pin drawn where it was read
 await host.postMessage({ kind: "pin", vertex: 7 });

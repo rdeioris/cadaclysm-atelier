@@ -41,6 +41,19 @@ const worker = new Worker(new URL("./atelier-worker.js", import.meta.url), { typ
 // steps the cloth and streams frames to the View's worker over a channel of their own; the page
 // only starts and stops it (through the View's worker). On the GPU path the View's worker steps it.
 const cpuCloth = new URLSearchParams(location.search).get("cloth") === "cpu";
+// ?film=1: hooks for the tutorial video's driver (scripts/atelier-hoodie in the cadaclysm repo).
+// Simulate builds the cloth paused; the driver steps it one frame at a time and captures each.
+const filmMode = new URLSearchParams(location.search).has("film");
+let filmSaved = null;          // the resolver garment() waits on
+if (filmMode) window.atelierFilm = {
+    log: [],                   // [cloth frame, page ms, step ms] for every frame reported
+    stops: 0,                  // rises each time the cloth says it has stopped: a step's last frame is then on screen
+    fpsText: null,             // the footer's text, kept when set (the driver sets the measured one)
+    viewStats: () => request("viewStats"),    // View::stats: framesDrawn, lastFrameMs, lastGpuMs, ...
+    step(n = 1) { post({ kind: "sim", action: "step", frames: n }); },
+    run() { post({ kind: "sim", action: "run" }); },
+    garment() { return new Promise((resolve) => { filmSaved = resolve; post({ kind: "save" }); }); },
+};
 function startClothWorker() {
     const clothWorker = new Worker(new URL("./cloth-worker.js", import.meta.url), { type: "module" });
     const ch = new MessageChannel();
@@ -391,7 +404,7 @@ const dprNow = () => devicePixelRatio || 1;
     cv.width = Math.max(1, Math.round(cv.clientWidth * dprNow()));
     cv.height = Math.max(1, Math.round(cv.clientHeight * dprNow()));
     const off = cv.transferControlToOffscreen();
-    post({ kind: "canvas", canvas: off, cpuCloth }, [off]);
+    post({ kind: "canvas", canvas: off, cpuCloth, film: filmMode }, [off]);
 }
 // The two windows' rects from the strips over them (layout.js), sent to the worker's View.
 function postRects() {
@@ -645,6 +658,12 @@ function onSim(m) {
     $("fps").textContent = m.running && m.fps > 0 ? `${m.fps.toFixed(1)} fps · ${Math.round(m.ms)} ms/step` : m.live ? "paused" : "—";
     document.body.dataset.sim = m.running ? "running" : m.live ? "paused" : "off";
     document.body.dataset.meshGen = String(m.meshGen);
+    if (filmMode) {
+        const film = window.atelierFilm;
+        film.stops = m.stops ?? film.stops;
+        if (film.fpsText) $("fps").textContent = film.fpsText;       // the step's own state message must not blank it
+        if (m.frame != null && m.stepMs != null && (!film.log.length || film.log.at(-1)[0] !== m.frame)) film.log.push([m.frame, performance.now(), m.stepMs]);
+    }
 }
 
 
@@ -816,7 +835,9 @@ worker.onmessage = ({ data: m }) => {
         case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
-        case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
+        case "saved":
+            if (filmSaved) { const r = filmSaved; filmSaved = null; r(m.text); break; }
+            download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "dxf": download("garment.dxf", m.text, "application/dxf"); status(`saved garment.dxf: ${(m.text.length / 1024).toFixed(1)} KB`); break;
         case "error":
             if (m.reqId == null) fitNext = false;

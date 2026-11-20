@@ -105,6 +105,7 @@ export class GpuDrapeHost {
         this.pending = null;          // the newest garment update not yet applied: {text, ops}
         this.applying = null;         // the update under way (a promise)
         this.looping = false;
+        this.budget = Infinity;    // frames a film step may still submit
         this.frames = 0;              // frames stepped since the build
         this.counts = [0, 0];         // vertices, triangles
         this.health = null;           // the last clothHealth answer
@@ -182,8 +183,15 @@ export class GpuDrapeHost {
                     if (this.pending) {
                         if (inflight) { const f = inflight; inflight = null; await this.finish(f); }
                         await this.applyPending();
+                    } else if (this.budget <= 0) {
+                        // a film step's frames are all submitted: report the last, then stop
+                        if (inflight) { const f = inflight; inflight = null; await this.finish(f); }
+                        this.running = false;
+                        this.state();
+                        break;
                     } else {
                         const f = this.submit();
+                        this.budget--;
                         const prev = inflight;
                         inflight = f;
                         if (prev) await this.finish(prev);
@@ -232,6 +240,7 @@ export class GpuDrapeHost {
                     this.frames = 0; this.health = null;
                     d.show(this.colour);
                     this.topology();
+                    this.budget = Infinity;
                     this.running = !!data.run;
                     this.state();
                     this.loop();
@@ -240,7 +249,7 @@ export class GpuDrapeHost {
                 case "update":
                     if (this.drape?.id) { this.pending = { text: data.text, ops: data.ops }; if (!this.running) await this.applyPending(); }
                     break;
-                case "run": this.running = !!this.drape?.id; this.state(); this.loop(); break;
+                case "run": this.running = !!this.drape?.id; this.budget = data.frames > 0 ? data.frames : Infinity; this.state(); this.loop(); break;
                 case "pause": this.running = false; this.state(); break;
                 case "reset": this.running = false; this.pending = null; this.drape?.freeCloth(); this.health = null; this.state(); break;
                 case "pin": {

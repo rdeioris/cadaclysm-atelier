@@ -702,6 +702,27 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok("fps measured, paused, reset");
             }
+            // ?film=1: Simulate builds paused, step(3) steps exactly three frames, garment() reads the document
+            await send("Page.navigate", { url: clothWanted === "cpu" ? `${base}/?film=1&cloth=cpu` : `${base}/?film=1` });
+            await until("the worker's ready (film)", () => evaluate(`document.body?.dataset.ready === "1"`), 90000);
+            await until("the avatar (film)", async () => (await count("avatar", "avatar")) === 1, 60000);
+            await sample();
+            await evaluate(`document.getElementById("sim-toggle").click()`);
+            await until("the film cloth built", () => evaluate(`(document.getElementById("health").textContent || "").includes("frame 0") && window.atelierFilm.stops > 0`), 60000);   // the build's own stop counted
+            const stops0 = await evaluate(`window.atelierFilm.stops`);
+            await evaluate(`window.atelierFilm.step(3)`);
+            await until("the step's stop", async () => (await evaluate(`window.atelierFilm.stops`)) > stops0, 60000);
+            if ((await frameNo()) !== 3) throw new Error(`the film step ended at frame ${await frameNo()}, not 3`);
+            const view = await evaluate(`window.atelierFilm.viewStats()`);
+            if (!(view.framesDrawn > 0)) throw new Error("viewStats() reports no frames drawn");
+            const doc = await evaluate(`window.atelierFilm.garment()`);
+            if (!doc.includes("garment.pattern")) throw new Error("garment() returned no document");
+            if ((await evaluate(`window.atelierFilm.log.length`)) < 3) throw new Error("the film log is short");
+            failIfErrors();
+            ok("film hook: paused build, step(3) stops at frame 3, garment(), log, viewStats");
+            await send("Page.navigate", { url: clothWanted === "cpu" ? `${base}/?cloth=cpu` : `${base}/` });
+            await until("the worker's ready again", () => evaluate(`document.body?.dataset.ready === "1"`), 90000);
+            await until("the avatar again", async () => (await count("avatar", "avatar")) === 1, 60000);
             // ---- the 2D tools, on a new garment ----
             await evaluate(`document.getElementById("menu-new").click()`);
             await until("an empty garment", async () => (await patternCount()) === 0, 30000);

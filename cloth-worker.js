@@ -21,6 +21,7 @@ let drape = null;
 let running = false;
 let pending = null;          // the newest garment update not yet applied: {text, ops}
 let looping = false;
+let budget = Infinity;        // frames a film step may still take
 const text = (e) => String(e && e.message ? e.message : e);
 const send = (msg, transfer) => port.postMessage(msg, transfer ?? []);
 
@@ -57,6 +58,7 @@ function loop() {
         const slow = ms > MAX_STEP_MS;
         if (health.stop || slow) running = false;
         frame(health, ms);
+        if (running && --budget <= 0) { running = false; state(); }
         if (health.stop) state({ reason: `paused, the cloth blew up: ${health.text}` });
         else if (slow) state({ reason: `paused: one step took ${(ms / 1000).toFixed(1)} s (a tangled cloth); Reset and arrange the pieces nearer the avatar` });
     } catch (e) {
@@ -75,6 +77,7 @@ async function onPort({ data }) {
             case "build": {
                 drape ??= new Drape(kernel);
                 pending = null;
+                budget = Infinity;
                 drape.build(data.text, data.ops);
                 topology();
                 running = !!data.run;
@@ -83,7 +86,7 @@ async function onPort({ data }) {
                 break;
             }
             case "update": if (drape?.live) { pending = { text: data.text, ops: data.ops }; if (!running) applyPending(); } break;
-            case "run": running = !!drape?.live; state(); schedule(); break;
+            case "run": running = !!drape?.live; budget = data.frames > 0 ? data.frames : Infinity; state(); schedule(); break;
             case "pause": running = false; state(); break;
             case "reset": running = false; pending = null; drape?.freeCloth(); state(); break;
             case "pin": {
