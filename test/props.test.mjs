@@ -68,4 +68,16 @@ const pre = opsFor(fSel, nodes, "preset", "denim");
 assert.equal(pre[0].fields.density, presetParams("denim").density);
 assert.deepEqual(opsFor(fSel, nodes, "thickness", 0.7), [{ op: "set", id: "f_cotton_jersey", fields: { thickness: 0.7 } }]);
 assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front", { drawings }), /no avatar/);
+// the avatar's Form select: the forms forms.json lists, the current one chosen
+{
+    const forms = [{ name: "f-M", label: "f-M" }, { name: "f-M-head", label: "f-M with head" }];
+    const fields = fieldsFor({ kind: "avatar", id: "avatar" }, [], new Map(), { name: "f-M", bounds: [0, 0, 0, 1, 1, 1], landmarks: null, forms });
+    const form = fields.find((f) => f.key === "form");
+    assert.ok(form, "a Form field");
+    assert.equal(form.type, "select");
+    assert.equal(form.value, "f-M");
+    assert.deepEqual(form.options, [{ value: "f-M", label: "f-M" }, { value: "f-M-head", label: "f-M with head" }]);
+    const none = fieldsFor({ kind: "avatar", id: "avatar" }, [], new Map(), { name: "x", bounds: [0, 0, 0, 1, 1, 1] });
+    assert.equal(none.find((f) => f.key === "form"), undefined, "no forms list: no Form field");
+}
 console.log("props: ok");

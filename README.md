@@ -16,6 +16,10 @@ kernel and checks that every seam's two sides match within 2 %. Its front and ba
 about 50 mm clear of the form and its sleeves are wrapped round the form's arms, so the cloth
 sews it shut before it drapes.
 
+**Forms.** The Avatar's Form select offers the dress forms in `assets/forms.json`: f-M and
+f-M with head (`tools/dressform.py --head`). The file also carries each form's landmarks (body
+top, shoulder line, arms, head), which the slots place pieces by.
+
 ## The package
 
 `npm run setup` puts the cadaclysm web package's `pkg/` folder (the kernel and the View as
@@ -116,6 +120,7 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
 - The sample's sleeve caps have zero ease: each cap half is exactly as long as its armhole.
 - Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
 - Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
+- Forms with a head: only f-M so far.
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both
   directions, so warp and weft (and the biases) often carry the same number.

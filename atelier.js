@@ -25,7 +25,8 @@ const DEFAULT_FABRIC = "cotton_jersey";
 let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
 let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id, ids?}: ids a box selection
 let pointSel = [];            // the selected piece's box-selected point indices (the Edit tool)
-let avatar = null;            // {name, bounds}
+let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
+let forms = [];               // the dress forms in assets/forms.json, as the worker read them
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
@@ -162,6 +163,7 @@ const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? Strin
 const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
 function commitField(f, raw) {
     if (!selection) return;
+    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name) { status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
     const value = f.type === "text" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
@@ -806,8 +808,9 @@ worker.onmessage = ({ data: m }) => {
             document.body.dataset.ready = "1";
             break;
         case "doc": onDoc(m); break;
+        case "forms": forms = m.forms ?? []; if (avatar) avatar.forms = forms; break;
         case "avatar":
-            avatar = { name: m.name, bounds: m.bounds };
+            avatar = { name: m.name, bounds: m.bounds, landmarks: m.landmarks ?? null, forms };
             renderBrowser();
             if (selection?.kind === "avatar") renderProps();
             break;

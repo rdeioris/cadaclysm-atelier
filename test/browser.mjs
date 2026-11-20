@@ -438,6 +438,16 @@ async function check(cdp, base) {
             failIfErrors();
             ok("STL avatar refused, f-M kept");
 
+            // the Form select: f-M with head loads, its landmarks carry a head; back to f-M
+            await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
+            await until("the Form select", () => evaluate(`!!${field("form")}`), 30000);
+            await setField("form", "f-M-head");
+            await until("f-M-head loaded", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M-head"`), 60000);
+            await setField("form", "f-M");
+            await until("f-M back", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M"`), 60000);
+            failIfErrors();
+            ok("Form select: f-M with head, then f-M");
+
             // 5. the T-shirt sample: four pieces, ten seams, no issues
             const sample = async () => {
                 await evaluate(`document.getElementById("menu-sample").click()`);

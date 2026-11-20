@@ -12,8 +12,12 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
     if (selection.kind === "avatar") {
         if (!avatar) return [];
         const size = [0, 1, 2].map((i) => (avatar.bounds[i + 3] - avatar.bounds[i]).toFixed(0)).join(" × ");
+        const forms = avatar.forms?.length
+            ? [{ key: "form", label: "Form", unit: "", type: "select", value: avatar.name, options: avatar.forms.map((f) => ({ value: f.name, label: f.label ?? f.name })) }]
+            : [];
         return [
             { key: "name", label: "Name", unit: "", type: "readonly", value: avatar.name },
+            ...forms,
             { key: "bounds", label: "Size", unit: "mm", type: "readonly", value: size },
             { key: "load", label: "Load STEP", unit: "", type: "action", value: null },
         ];

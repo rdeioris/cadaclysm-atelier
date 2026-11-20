@@ -37,6 +37,7 @@ started.catch(() => {});
 let viewer = null;
 let atelier = null;
 let avatar = null;                       // { scene, id, bounds, name }
+let forms = [];                          // assets/forms.json: the dress forms and their landmarks
 let drawn = [];                          // View item ids of the slabs and seam lines
 let selection = null;
 const items = new ItemMap();
@@ -363,7 +364,9 @@ function changed(seq) {
     if (sim.live && clothPort) clothPort.postMessage({ kind: "update", ...garmentNow() });
 }
 
-async function loadAvatar(bytes, name) {
+// `form` is the forms.json entry (its landmarks) for a dress form from assets; a user's STEP
+// passes none, so a file that happens to be called f-M does not inherit f-M's landmarks.
+async function loadAvatar(bytes, name, form = null) {
     const v = viewer;
     // read and show first: a bad file keeps the avatar already there, and frees what it made
     const scene = open(new Uint8Array(bytes), "step", undefined, "native");
@@ -380,7 +383,7 @@ async function loadAvatar(bytes, name) {
         if (sim.live) { sim.stale = "the avatar changed"; simPost(); }
     } catch (e) { post({ kind: "error", text: `avatar collider: ${e.message ?? e}` }); }
     if (rects) frame3d();
-    post({ kind: "avatar", name, bounds: b });
+    post({ kind: "avatar", name, bounds: b, landmarks: form });
     if (atelier) refresh3d();
 }
 
@@ -410,8 +413,13 @@ self.onmessage = async ({ data }) => {
                 startedResolve();
             } catch (e) { startedReject(e); throw e; }
             try {
+                const r = await fetch(new URL("./assets/forms.json", import.meta.url));
+                if (r.ok) forms = (await r.json()).forms ?? [];
+            } catch { forms = []; }        // no forms list: the avatar loads with no landmarks
+            post({ kind: "forms", forms });
+            try {
                 const r = await fetch(new URL("./assets/f-M.stp", import.meta.url));
-                if (r.ok) await loadAvatar(await r.arrayBuffer(), "f-M");
+                if (r.ok) await loadAvatar(await r.arrayBuffer(), "f-M", forms.find((f) => f.name === "f-M") ?? null);
             } catch (e) { post({ kind: "error", text: `avatar: ${e.message ?? e}` }); }
             post({ kind: "ready", backend: viewer.backend, version: version(), license: licenseInfo(), clothEngine });
             changed();
@@ -465,6 +473,14 @@ self.onmessage = async ({ data }) => {
             case "importDxf": atelier.apply(atelier.fromDxf(data.text, data.fabric), "import"); changed(data.seq); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
             case "avatar": await loadAvatar(data.bytes, data.name); break;
+            case "avatarAsset": {
+                const form = forms.find((f) => f.name === data.name);
+                if (!form) throw new Error(`no form ${data.name}`);
+                const r = await fetch(new URL(`./assets/${form.file}`, import.meta.url));
+                if (!r.ok) throw new Error(`${form.file}: ${r.status}`);
+                await loadAvatar(await r.arrayBuffer(), form.name, form);
+                break;
+            }
             case "select": selection = data.selection ?? null; pointSel = []; paintSelection(); refresh2d(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
