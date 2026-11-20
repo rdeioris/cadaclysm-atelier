@@ -133,7 +133,31 @@ export class Atelier {
     redo() { this.f("document_redo")(this.d); this.evaluate(); }
     save() { return this.f("document_save")(this.d); }
     swapDocument(d) { this.dropGarment(); this.f("document_free")(this.d); this.d = d; this.open = null; }
-    load(text) { this.swapDocument(this.f("document_load")(text)); this.f("document_clear_history")(this.d); this.evaluate(); }
+    // An opened document's seams without the app's anchor (an older or imported one) are anchored
+    // to their sides as they are now, before the history is cleared: part of the base, no undo step.
+    load(text) {
+        this.swapDocument(this.f("document_load")(text));
+        this.evaluate();
+        const ops = this.missingAnchors();
+        if (ops.length) { try { this.f("document_apply")(this.d, batch(ops), null); } catch { /* left unanchored, as before */ } finally { this.evaluate(); } }
+        this.f("document_clear_history")(this.d);
+    }
+    // The ops anchoring every seam end that has no anchor (sewing.js anchorOf on its piece's sides);
+    // an end whose piece does not evaluate is left without.
+    missingAnchors() {
+        const ops = [];
+        for (const n of this.nodes()) {
+            if (n.kind !== "garment.seam") continue;
+            const anchor = { ...(n.meta?.atelier ?? {}) };
+            let added = false;
+            for (const end of ["a", "b"]) {
+                if (anchor[end]) continue;
+                try { anchor[end] = anchorOf(this.sidesOf(n[end]), n[`${end}_from`], n[`${end}_to`]); added = true; } catch { /* its piece failed */ }
+            }
+            if (added) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
+        }
+        return ops;
+    }
     reset(ops) {
         this.swapDocument(this.f("document_new")("mm"));
         this.evaluate();
