@@ -93,19 +93,31 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
 {
     const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", label: "Front", outline: "p1_outline", fabric: "f_x", layer: 0 }];
     let asked = null;
-    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async (k, p) => { asked = [k, p]; return m.rectPath(-100, 0, 100, 50); } }));
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async (k, p) => { asked = [k, p]; return { path: m.rectPath(-100, 0, 100, 50), internal: [], notches: [] }; } }));
     t.down([0, 0], null, {}); t.up([0, 0], null, {});
     t.down([0, 50], null, {});
     const r = await t.up([0, 50], null, {});
     assert.deepEqual(asked, ["mirror", { id: "p1", axis: [0, 0, 0, 50] }]);
     assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.label, "Front (mirror)");
+    assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.internal, undefined, "no internal lines: none set");
+}
+// mirror: the kernel's internal lines and notches go on the new piece
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", label: "Front", outline: "p1_outline", fabric: "f_x", layer: 0 }];
+    const internal = [{ kind: "line", path: { start: [-20, 10], segments: [{ type: "line", to: [-60, 40] }] } }], notches = [{ at: 70, kind: "slit", depth: 6 }];
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => ({ path: m.rectPath(-100, 0, 100, 50), internal, notches }) }));
+    t.down([0, 0], null, {}); t.up([0, 0], null, {});
+    t.down([0, 50], null, {});
+    const node = (await t.up([0, 50], null, {})).ops.find((o) => o.node?.kind === "garment.pattern").node;
+    assert.deepEqual(node.internal, internal);
+    assert.deepEqual(node.notches, notches);
 }
 // mirror: a taken label gets " 2", " 3"
 {
     const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
         { id: "p1", kind: "garment.pattern", label: "Front", outline: "p1_outline", fabric: "f_x", layer: 0 },
         { id: "p2", kind: "garment.pattern", label: "Front (mirror)" }, { id: "p3", kind: "garment.pattern", label: "Front (mirror) 2" }];
-    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => m.rectPath(-100, 0, 100, 50) }));
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => ({ path: m.rectPath(-100, 0, 100, 50) }) }));
     t.down([0, 0], null, {}); t.up([0, 0], null, {});
     t.down([0, 50], null, {});
     const r = await t.up([0, 50], null, {});
@@ -193,7 +205,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
         { id: "p1", kind: "garment.pattern", outline: "p1_outline", fabric: "f_x", layer: 0, allowance: [1, 2, 3, 4], grain: [1, 0] }];
     // Kernel-shaped reply for a mirror across x = 0: side i of the original is side i of the result.
     const reply = { start: [0, 0], segments: [{ type: "line", to: [-100, 0] }, { type: "line", to: [-100, 50] }, { type: "line", to: [0, 50] }, { type: "line", to: [0, 0] }] };
-    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => reply }));
+    const t = makeTool("mirror", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request: async () => ({ path: reply, internal: [], notches: [] }) }));
     t.down([0, 0], null, {}); t.up([0, 0], null, {});
     assert.deepEqual(t.up([0, 0.5], null, {}), {}); // zero-length axis ignored
     const r = await t.up([0, 50], null, {});
@@ -208,6 +220,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     a.apply(m.newDocumentOps({ slug: "x", label: "X", params: Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1])) }), "new");
     a.apply(m.addPattern(a.nodes(), { label: "F", path: m.rectPath(0, 0, 100, 50), fabric: "f_x" }).ops, "r");
     assert.deepEqual(await a.mirrored("p1", [0, 0, 0, 1]), reply);
+    assert.deepEqual(a.mirroredPiece("p1", [0, 0, 0, 1]), { path: reply, internal: [], notches: [] }, "the piece the worker answers");
 }
 // fix round 1: allowance takes one dot; internal double-click drops the duplicate point
 {

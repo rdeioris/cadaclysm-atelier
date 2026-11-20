@@ -514,10 +514,15 @@ const TOOLS = {
                 // is unchanged; the grain is the user's direction reflected across the axis.
                 const dx = axis[2] - axis[0], dy = axis[3] - axis[1], len = Math.hypot(dx, dy), ux = dx / len, uy = dy / len;
                 const grain = src.grain && (({ 0: gx, 1: gy }) => { const k = 2 * (gx * ux + gy * uy); return [k * ux - gx, k * uy - gy]; })(src.grain);
-                return Promise.resolve(ctx.request("mirror", { id, axis })).then((path) => ({
-                    ...newPattern(ctx, freeLabel(ctx.nodes, `${src.label ?? "Piece"} (mirror)`), path, { layer: src.layer ?? 0, allowance: src.allowance, grain }),
-                    overlay: { lines: [] },
-                }), () => ({})); // a failed kernel call: nothing added, the gesture is already reset
+                // The kernel answers the whole piece (kernel.js mirroredPiece): outline and holes,
+                // internal lines and notches, all mirrored across the axis.
+                return Promise.resolve(ctx.request("mirror", { id, axis })).then(({ path, internal = [], notches = [] }) => {
+                    const r = newPattern(ctx, freeLabel(ctx.nodes, `${src.label ?? "Piece"} (mirror)`), path, { layer: src.layer ?? 0, allowance: src.allowance, grain });
+                    const node = r.ops.find((o) => o.op === "add" && o.node?.kind === "garment.pattern").node;
+                    if (internal.length) node.internal = internal;
+                    if (notches.length) node.notches = notches;
+                    return { ...r, overlay: { lines: [] } };
+                }, () => ({})); // a failed kernel call: nothing added, the gesture is already reset
             },
             key(k) { if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; } return {}; },
             lastPoint() { return pts.length ? [...pts[0]] : null; },

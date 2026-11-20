@@ -65,6 +65,33 @@ assert.ok(m.pathPoints(mir).every(([x]) => x <= 1e-9));
     const off = a.mirrored("p1", [100, 0, 100, 50]);
     assert.deepEqual(key(m.pathPoints(off)), key(before.map(([x, y]) => [200 - x, y])), "x -> 200 - x across the line through (100, 0) and (100, 50)");
 }
+// a diagonal axis off the origin, y = x - 50 through (50, 0) and (80, 30): (x, y) -> (y + 50, x - 50);
+// the Mirror tool's piece carries the source's internal lines and notches, mirrored the same way
+{
+    const near = (p, q, what) => assert.ok(Math.hypot(p[0] - q[0], p[1] - q[1]) < 1e-6, `${what}: ${p} vs ${q}`);
+    const flip = ([x, y]) => [y + 50, x - 50];
+    const key = (pts) => [...new Set(pts.map(([x, y]) => `${Math.round(x * 1e6) / 1e6 + 0},${Math.round(y * 1e6) / 1e6 + 0}`))].sort();
+    const before = m.pathPoints(m.byId(a.nodes()).get("p1_outline").path);
+    assert.deepEqual(key(m.pathPoints(a.mirrored("p1", [50, 0, 80, 30]))), key(before.map(flip)), "(x, y) -> (y + 50, x - 50)");
+    const line = { start: [20, 10], segments: [{ type: "line", to: [60, 40] }] };
+    a.apply([...m.addInternal(a.nodes(), "p1", line), ...m.setPattern(a.nodes(), "p1", { notches: [{ at: 30, kind: "slit", depth: 6 }, { at: 170, kind: "slit", depth: 6 }] })], "marks");
+    const src = m.byId(a.nodes()).get("p1_outline").path;
+    const at = (path, s) => a.withPath({ start: path.start, segments: path.segments }, (p) => Array.from(a.f("profile_point_at_length")(p, s, 1e-9)).slice(0, 2));
+    const piece = a.mirroredPiece("p1", [50, 0, 80, 30]);
+    assert.deepEqual(key(m.pathPoints(piece.path)), key(before.map(flip)), "the piece's outline");
+    assert.equal(piece.internal.length, 1, "the internal line comes along");
+    assert.equal(piece.internal[0].kind, "line");
+    const ml = piece.internal[0].path;
+    near(ml.start, flip([20, 10]), "the internal line's start");
+    near(ml.segments.at(-1).to, flip([60, 40]), "the internal line's end");
+    assert.equal(piece.notches.length, 2, "both notches come along");
+    piece.notches.forEach((nt, i) => {
+        assert.equal(nt.kind, "slit"); assert.equal(nt.depth, 6);
+        near(at(piece.path, nt.at), flip(at(src, [30, 170][i])), `notch ${i + 1} at the reflected point`);
+    });
+    a.undo();
+    assert.throws(() => a.mirrored("p1", [30, 40, 30, 40]), /zero vector/, "a zero-length axis is refused");
+}
 
 // DXF out and back in: two more patterns
 const dxf = a.toDxf();

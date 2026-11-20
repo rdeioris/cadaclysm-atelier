@@ -429,6 +429,28 @@ export class Atelier {
     // The axis is two points on the line, [x0, y0, x1, y1], as the Mirror tool sends it (tools.js);
     // profile_mirror takes a point and a direction.
     mirrored(id, [x0, y0, x1, y1]) { return this.mapped(id, (p) => this.f("profile_mirror")(p, x0, y0, x1 - x0, y1 - y0)); }
+    // The Mirror tool's new piece, in one call: the outline (holes kept) as mirrored(), the source's
+    // internal lines and shapes through the same profile_mirror, and its notches re-placed at the
+    // reflected points on the mirrored outline. All from the committed piece during a preview.
+    // -> {path, internal, notches}
+    mirroredPiece(id, axis) {
+        const f = this.f, [x0, y0, x1, y1] = axis, dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
+        const byId = m.byId(this.open ? this.open.nodes : this.nodes()), node = byId.get(id), src = byId.get(`${id}_outline`)?.path;
+        if (!node || !src) throw new Error(`no pattern ${id}`);
+        const path = this.mirrored(id, axis);
+        const mirror = (q) => f("profile_mirror")(q, x0, y0, dx, dy);
+        const internal = (node.internal ?? []).map((l) => {
+            const p = this.withPath(l.path, (q) => this.pathOf(mirror(q)));
+            return { ...l, path: { start: p.start, segments: p.segments } };
+        });
+        const ux = dx / len, uy = dy / len;
+        const reflect = ([x, y]) => { const k = 2 * ((x - x0) * ux + (y - y0) * uy); return [x0 + k * ux - (x - x0), y0 + k * uy - (y - y0)]; };
+        const notches = !node.notches?.length ? [] : this.withPath({ start: src.start, segments: src.segments }, (old) => this.withPath({ start: path.start, segments: path.segments }, (p) => {
+            const samples = this.samplesOf(p), sides = this.sideStarts(p, f("profile_length")(p, ACC)[0], path.segments.length);
+            return node.notches.map((nt) => { const at = f("profile_point_at_length")(old, nt.at, ACC); return { ...nt, at: arcAt(samples, sides, reflect([at[0], at[1]])).s }; });
+        }));
+        return { path, internal, notches };
+    }
 
     // The two pieces an open `cutter` (path JSON) cuts pattern `id` into, all from kernel calls
     // (spec §4): the outline's two pieces where the cutter crosses it (profile_pieces), each

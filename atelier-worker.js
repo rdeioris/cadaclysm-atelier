@@ -462,7 +462,7 @@ self.onmessage = async ({ data }) => {
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
             case "redo": atelier.redo(); changed(data.seq); break;
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
-            case "mirror": answer(data, () => atelier.mirrored(data.id, data.axis)); break;
+            case "mirror": answer(data, () => atelier.mirroredPiece(data.id, data.axis)); break;
             case "ellipse": answer(data, () => atelier.ellipsePath(data.cx, data.cy, data.rx, data.ry)); break;
             case "transformAll": answer(data, () => Object.fromEntries(data.ids.map((id) => [id, atelier.transformed(id, data.matrix)]))); break;
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
