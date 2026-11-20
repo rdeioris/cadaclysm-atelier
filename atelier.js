@@ -1,11 +1,13 @@
-// The Atelier page: the 3D window (a View in the worker), the 2D pattern window, the tool
-// strips, the object browser and the one selection they share. Every edit goes to the worker
-// as ops; the worker answers each change with `doc`, which replaces the page's copy of the
-// garment. No geometry here: the 2D window draws what the kernel sampled.
-import { forwardControls } from "./pkg/view.js";
+// The Atelier page: one canvas, the worker's View drawing both windows (viewport 0 the 3D
+// window, viewport 1 the 2D pattern window), the tool strips over them, the object browser and
+// the one selection they share. Every edit goes to the worker as ops; the worker answers each
+// change with `doc`, which replaces the page's copy of the garment. No geometry and no drawing
+// here: the pointer router below sends 2D events to the worker, which answers each with the
+// pattern point and the View's pick (`at2d`).
+import { listen } from "./pkg/view.js";
+import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams } from "./fabrics.js";
-import { Camera, hitTest, draw } from "./view2d.js";
 import { makeTool } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
@@ -13,7 +15,6 @@ import { SLOTS, slotFields, fabricColours } from "./arrange.js";
 import { fieldsFor, opsFor, validate } from "./props.js";
 
 const $ = (id) => document.getElementById(id);
-const HIT_PX = 6;            // screen pixels: how near a point/edge a click picks it
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
 const SPLIT_KEY = "atelier.split";
 const DEFAULT_FABRIC = "cotton_jersey";
@@ -23,7 +24,7 @@ let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
 let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id}
 let avatar = null;            // {name, bounds}
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
-let hover = null, overlay = null;
+let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
 let previewing = false, previewPattern = null;
 let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
@@ -236,7 +237,7 @@ function freshTool() {
         nodes, drawings, request,
         get fabric() { return currentFabric(); },
         get selection() { return selection; },
-        get pxToWorld() { return 1 / cam.scale; },
+        get pxToWorld() { return mmPerPx * dprNow(); },
     };
     tool = makeTool(toolName, ctx);
     toolStale = false;
@@ -244,6 +245,7 @@ function freshTool() {
 function setTool(name) {
     toolName = name;
     for (const b of document.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === name);
+    $("well").classList.toggle("tool2d", name !== "edit");
     cancelPreview();
     overlay = null;
     freshTool();
@@ -318,140 +320,161 @@ function arrange() {
     else status(patterns.length ? "every piece is arranged" : "no pieces to arrange");
 }
 
-// ---- the 2D window ------------------------------------------------------------------------
-const c2 = $("view2d"), g2 = c2.getContext("2d");
-const cam = new Camera(c2.clientWidth || 1, c2.clientHeight || 1);
-let fitted = false;
-function draw2d() {
-    const dpr = devicePixelRatio || 1;
-    g2.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(g2, cam, { drawings: drawingList, seams, selection, hover, nodes, overlay });
-}
-function resize2d() {
-    const w = c2.clientWidth, h = c2.clientHeight, dpr = devicePixelRatio || 1;
-    if (!w || !h) return;
-    c2.width = Math.round(w * dpr); c2.height = Math.round(h * dpr);
-    cam.resize(w, h);
-    if (!fitted) { fitted = true; fit2d(); } else draw2d();
-}
-function fit2d() {
-    let b = null;
-    for (const d of drawingList) {
-        if (!d.bounds) continue;
-        b = b ? [Math.min(b[0], d.bounds[0]), Math.min(b[1], d.bounds[1]), Math.max(b[2], d.bounds[2]), Math.max(b[3], d.bounds[3])] : [...d.bounds];
-    }
-    cam.fit(b ?? [-100, -100, 900, 900]);
-    draw2d();
-}
-new ResizeObserver(resize2d).observe(c2);
 
-const local = (e) => { const r = c2.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
-const selectedPattern = () => (selection?.kind === "pattern" ? selection.id : null);
-const hitAt = (world) => hitTest(drawingList, seams, world, HIT_PX, cam, nodes, selectedPattern());
-const mods = (e, extra = {}) => ({ shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, alt: e.altKey, ...extra });
-let space = false, pan = null, drag2d = false, lastUp = null;
-
-c2.addEventListener("pointerdown", (e) => {
-    c2.focus();
-    const p = local(e);
-    if (e.button === 1 || (e.button === 0 && space)) {
-        e.preventDefault();
-        pan = p; c2.setPointerCapture(e.pointerId); c2.classList.add("panning");
-        return;
-    }
-    if (e.button !== 0 || !tool) return;
-    c2.setPointerCapture(e.pointerId);
-    drag2d = true;
-    const w = cam.toWorld(p);
-    apply(tool.down(w, hitAt(w), mods(e)));
-});
-c2.addEventListener("pointermove", (e) => {
-    const p = local(e);
-    if (pan) { cam.pan(p[0] - pan[0], p[1] - pan[1]); pan = p; draw2d(); return; }
-    const w = cam.toWorld(p);
-    const h = hitAt(w);
-    if (!drag2d) {
-        const was = hover;
-        hover = h && h.id ? h : null;
-        if ((was?.id ?? null) !== (hover?.id ?? null)) draw2d();
-    }
-    if (tool) apply(tool.move(w, h, mods(e)));
-});
-c2.addEventListener("pointerup", (e) => {
-    const p = local(e);
-    if (pan) { pan = null; c2.classList.remove("panning"); return; }
-    if (e.button !== 0 || !drag2d) return;
-    drag2d = false;
-    // pointerup's own `detail` is 0 in Chrome: count the clicks here
-    const now = performance.now();
-    const detail = lastUp && now - lastUp.t < 400 && Math.hypot(p[0] - lastUp.p[0], p[1] - lastUp.p[1]) < CLICK_PX ? lastUp.detail + 1 : 1;
-    lastUp = { t: now, p, detail };
-    const w = cam.toWorld(p);
-    if (tool) apply(tool.up(w, hitAt(w), mods(e, { detail, dblclick: detail === 2 })));
-});
-// The pointer taken away mid-drag: the preview is dropped and the gesture starts over.
-function dragLost() {
-    pan = null; c2.classList.remove("panning");
-    if (!drag2d) return;
-    drag2d = false;
-    queue = queue.then(() => { cancelPreview(); overlay = null; freshTool(); draw2d(); }).catch(toolFailed);
-}
-c2.addEventListener("pointercancel", dragLost);
-c2.addEventListener("lostpointercapture", dragLost);
-c2.addEventListener("pointerleave", () => { if (hover && !drag2d) { hover = null; draw2d(); } });
-c2.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
-    cam.zoomAt(local(e), Math.exp(-e.deltaY * unit * 0.0015));
-    draw2d();
-}, { passive: false });
-c2.addEventListener("auxclick", (e) => e.preventDefault());
-c2.addEventListener("contextmenu", (e) => e.preventDefault());
-
-// ---- the 3D window: the canvas is the worker's View --------------------------------------
-const c3 = $("view3d");
+// ---- the windows: one canvas, the worker's View ---------------------------------------------
+const cv = $("view");
+let rects = [[0, 0, 0, 0], [0, 0, 0, 0]];
+let mmPerPx = 1;            // pattern mm a device pixel spans in the 2D window (each at2d says)
+let lastWorld = null;       // the pattern point under the pointer, last answered
+const dprNow = () => devicePixelRatio || 1;
 {
-    const dpr = devicePixelRatio || 1;
-    c3.width = Math.max(1, Math.round(c3.clientWidth * dpr));
-    c3.height = Math.max(1, Math.round(c3.clientHeight * dpr));
-    const off = c3.transferControlToOffscreen();
+    cv.width = Math.max(1, Math.round(cv.clientWidth * dprNow()));
+    cv.height = Math.max(1, Math.round(cv.clientHeight * dprNow()));
+    const off = cv.transferControlToOffscreen();
     post({ kind: "canvas", canvas: off }, [off]);
-    forwardControls(c3, worker);
 }
-// The 3D tools (Pin, Drag): with one on, a left press on the cloth is the tool's. A capture
-// listener on the well takes it before forwardControls' own on the canvas, so the camera does
-// not orbit; right and middle drag and the wheel still move it.
+// The two windows' rects from the strips over them (layout.js), sent to the worker's View.
+function postRects() {
+    const dpr = dprNow(), c = cv.getBoundingClientRect();
+    const box = (id) => { const r = $(id).getBoundingClientRect(); return { left: r.left, width: $("split").classList.contains(id === "tools3d" ? "max2d" : "max3d") ? 0 : r.width }; };
+    rects = viewportRects({ left: c.left, width: c.width, height: c.height }, [box("tools3d"), box("tools2d")], dpr);
+    post({ kind: "rects", rects });
+    cv.dataset.rect3d = rects[0].map((v) => v / dpr).join(",");
+    cv.dataset.rect2d = rects[1].map((v) => v / dpr).join(",");
+}
+new ResizeObserver(() => {
+    if (cv.clientWidth > 0 && cv.clientHeight > 0) post({ kind: "resize", width: cv.clientWidth, height: cv.clientHeight, dpr: dprNow() });
+    postRects();
+}).observe(cv);
+
+// The tool's rubber band, points and read-out: drawn by the worker's View (no overlay canvas).
+function draw2d() { post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], text: null }); }
+function fit2d() { post({ kind: "fit2d" }); }
+
+// The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the
+// router below claims it), so the camera does not orbit; right and middle drag and the wheel
+// still move it.
 let tool3d = null;
 function setTool3d(name) {
     tool3d = tool3d === name ? null : name;
     for (const b of document.querySelectorAll("[data-tool3d]")) b.classList.toggle("on", b.dataset.tool3d === tool3d);
-    $("pane3d").classList.toggle("tool3d", !!tool3d);
+    $("well").classList.toggle("tool3d", !!tool3d);
 }
 for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("click", () => setTool3d(b.dataset.tool3d));
-{
-    const well = c3.parentElement;
-    let held = null;
-    const at = (e) => { const r = c3.getBoundingClientRect(), dpr = devicePixelRatio || 1; return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr }; };
-    well.addEventListener("pointerdown", (e) => {
-        if (!tool3d || e.button !== 0) return;
-        e.stopPropagation(); e.preventDefault();
-        held = e.pointerId;
-        well.setPointerCapture(e.pointerId);
-        post({ kind: "tool3d", tool: tool3d, phase: "down", ...at(e) });
-    }, true);
-    well.addEventListener("pointermove", (e) => {
-        if (held !== e.pointerId) return;
-        e.stopPropagation();
-        post({ kind: "tool3d", tool: tool3d, phase: "move", ...at(e) });
-    }, true);
-    const up = (e) => {
-        if (held !== e.pointerId) return;
-        e.stopPropagation();
-        held = null;
-        post({ kind: "tool3d", tool: tool3d, phase: "up", ...at(e) });
-    };
-    well.addEventListener("pointerup", up, true);
-    well.addEventListener("pointercancel", up, true);
+
+// ---- the pointer router (plan ruling 5) ---------------------------------------------------
+// Every canvas event comes here first. A left press in the 2D window with a tool on (and Space
+// up) is the tool's: its moves and release go to the worker as `pointer2d`, answered by `at2d`
+// with the pattern point and the View's pick. A left press in the 3D window with Pin or Drag on
+// is that tool's. Everything else is the View's camera input; a hover over the 2D window is
+// also sent as `pointer2d` (the worker hovers the piece under it).
+let space = false, shiftHeld = false, drag2d = false, lastUp = null;
+const claims = new Map();                 // pointerId -> "2d" | "3d"
+const pending2d = new Map();              // seq -> mods of a 2D event in flight
+let seq2d = 0, moveBusy = false, moveNext = null, down3d = null;
+const at2dPx = (ev) => [ev.x - rects[1][0], ev.y - rects[1][1]];
+const mods2d = (ev, extra = {}) => ({ shift: shiftHeld, ctrl: false, alt: false, px: at2dPx(ev), ...extra });
+function send2d(phase, ev, mods) {
+    const seq = ++seq2d;
+    pending2d.set(seq, mods);
+    post({ kind: "pointer2d", seq, phase, x: ev.x, y: ev.y, snap: false });
+}
+// one move or hover in flight at a time: the newest waits, older ones are dropped
+function move2d(ev) { moveNext = ev; if (!moveBusy) flushMove(); }
+function flushMove() {
+    const ev = moveNext;
+    moveNext = null;
+    if (!ev) return;
+    moveBusy = true;
+    send2d(drag2d ? "move" : "hover", ev, mods2d(ev));
+}
+// The pointer taken away mid-drag: the preview is dropped and the gesture starts over.
+function dragLost() {
+    if (!drag2d) return;
+    drag2d = false;
+    queue = queue.then(() => { cancelPreview(); overlay = null; freshTool(); draw2d(); }).catch(toolFailed);
+}
+listen(cv, (ev) => {
+    if (ev.kind === "key") return;                      // the app's keys are the app's
+    if (ev.kind === "down") {
+        const vp = viewportAt(rects, [ev.x, ev.y]);
+        cv.focus();
+        if (vp === 1 && ev.button === 0 && !space && tool) {
+            claims.set(ev.pointerId, "2d"); drag2d = true; moveNext = null;
+            send2d("down", ev, mods2d(ev));
+            return;
+        }
+        if (vp === 0 && ev.button === 0 && tool3d) {
+            claims.set(ev.pointerId, "3d");
+            post({ kind: "tool3d", tool: tool3d, phase: "down", x: ev.x, y: ev.y });
+            return;
+        }
+        if (vp === 1 && ev.button === 1) ev = { ...ev, button: 0 };          // middle-drag pans the 2D window
+        if (vp === 0 && ev.button === 0) down3d = [ev.x, ev.y];
+    }
+    const claim = ev.pointerId !== undefined ? claims.get(ev.pointerId) : undefined;
+    if (claim === "2d") {
+        if (ev.kind === "move") { move2d(ev); return; }
+        claims.delete(ev.pointerId);
+        moveNext = null;
+        if (ev.kind === "cancel") { dragLost(); return; }
+        drag2d = false;
+        // count the clicks here: a double click is two ups close in time and place
+        const now = performance.now(), css = [ev.x / dprNow(), ev.y / dprNow()];
+        const detail = lastUp && now - lastUp.t < 400 && Math.hypot(css[0] - lastUp.p[0], css[1] - lastUp.p[1]) < CLICK_PX ? lastUp.detail + 1 : 1;
+        lastUp = { t: now, p: css, detail };
+        send2d("up", ev, mods2d(ev, { detail, dblclick: detail === 2 }));
+        return;
+    }
+    if (claim === "3d") {
+        if (ev.kind !== "move") claims.delete(ev.pointerId);
+        post({ kind: "tool3d", tool: tool3d, phase: ev.kind === "cancel" ? "up" : ev.kind, x: ev.x, y: ev.y });
+        return;
+    }
+    if (ev.kind === "move" && viewportAt(rects, [ev.x, ev.y]) === 1) move2d(ev);
+    if (ev.kind === "up" && down3d) {                                    // a click without a drag picks in 3D
+        if (Math.hypot(ev.x - down3d[0], ev.y - down3d[1]) < CLICK_PX * dprNow()) post({ kind: "pick3d", x: ev.x, y: ev.y, seq: selSeq });
+        down3d = null;
+    }
+    post({ cadaclysm: "input", event: ev });
+}, () => post({ cadaclysm: "clearKeys" }));
+
+// Resolves once every 2D event sent so far has been answered and its tool result queued: a
+// save waits on it, so it holds the drag that was let go just before it (the events go to the
+// worker and back now, where M4a's tool heard them at once). Later events do not hold it up.
+const waits2d = [];
+function after2d() {
+    const upto = seq2d;
+    return new Promise((resolve) => { waits2d.push({ upto, resolve }); settle2d(); });
+}
+function settle2d() {
+    for (let i = waits2d.length - 1; i >= 0; i--) {
+        const w = waits2d[i];
+        if (![...pending2d.keys()].some((s) => s <= w.upto)) { waits2d.splice(i, 1); w.resolve(); }
+    }
+}
+
+// The worker's answer to a 2D event: the tool hears it with the pattern point and the hit.
+function onAt2d(m) {
+    try { at2dAnswer(m); } finally { settle2d(); }
+}
+function at2dAnswer(m) {
+    const mods = pending2d.get(m.seq) ?? {};
+    pending2d.delete(m.seq);
+    if (m.mmPerPx > 0 && Number.isFinite(m.mmPerPx)) mmPerPx = m.mmPerPx;
+    if (m.phase === "move" || m.phase === "hover") { moveBusy = false; queueMicrotask(flushMove); }
+    document.body.dataset.hit = m.hit?.kind ?? "";
+    document.body.dataset.snap = m.snap?.kind ?? "";
+    document.body.dataset.snapAngle = m.snap?.lockedAngle == null ? "" : String(Math.round(m.snap.lockedAngle));
+    // no point (the window hidden since, or the worker failed): a release still ends the
+    // gesture, at the last point answered, so no preview is left open
+    if (!m.world) { if (m.phase === "up" && tool && lastWorld) apply(tool.up(lastWorld, m.hit, mods)); return; }
+    lastWorld = m.world;
+    document.body.dataset.world = m.world.map((v) => v.toFixed(3)).join(",");
+    if (!tool) return;
+    if (m.phase === "down") apply(tool.down(m.world, m.hit, mods));
+    else if (m.phase === "up") apply(tool.up(m.world, m.hit, mods));
+    else apply(tool.move(m.world, m.hit, mods));
 }
 
 // The simulation's state from the View's worker: the buttons, the health line, the rate.
@@ -476,21 +499,13 @@ function onSim(m) {
     document.body.dataset.meshGen = String(m.meshGen);
 }
 
-// A click without a drag picks.
-let down3d = null;
-c3.addEventListener("pointerdown", (e) => { if (e.button === 0) down3d = [e.offsetX, e.offsetY]; });
-c3.addEventListener("pointerup", (e) => {
-    if (e.button !== 0 || !down3d) return;
-    const moved = Math.hypot(e.offsetX - down3d[0], e.offsetY - down3d[1]);
-    down3d = null;
-    if (moved < CLICK_PX) { const dpr = devicePixelRatio || 1; post({ kind: "pick3d", x: e.offsetX * dpr, y: e.offsetY * dpr, seq: selSeq }); }
-});
 
 // ---- layout: the divider, F2 / F3 ---------------------------------------------------------
 const split = $("split");
 function setShare(pct) {
     const s = Math.min(85, Math.max(15, pct));
     split.style.setProperty("--share", String(s));
+    requestAnimationFrame(postRects);
     return s;
 }
 try { const v = Number(localStorage.getItem(SPLIT_KEY)); if (v) setShare(v); } catch { /* no storage: the default split */ }
@@ -498,6 +513,7 @@ function maximise(cls) {
     const on = !split.classList.contains(cls);
     split.classList.remove("max2d", "max3d");
     if (on) split.classList.add(cls);
+    requestAnimationFrame(postRects);
 }
 {
     const div = $("divider");
@@ -513,12 +529,6 @@ function maximise(cls) {
     div.addEventListener("pointerup", end);
     div.addEventListener("pointercancel", end);
 }
-// The 3D canvas follows through forwardControls' own resize; the worker's `resize` is sent too
-// so the View's drawing size changes in the same frame as the layout.
-new ResizeObserver(() => {
-    const w = c3.clientWidth, h = c3.clientHeight;
-    if (w > 0 && h > 0) post({ kind: "resize", width: w, height: h, dpr: devicePixelRatio || 1 });
-}).observe(c3);
 
 // ---- keys ---------------------------------------------------------------------------------
 document.addEventListener("keydown", (e) => {
@@ -526,7 +536,6 @@ document.addEventListener("keydown", (e) => {
     if (sc && (sc.command === "save" || sc.command === "open")) { e.preventDefault(); command(sc.command); return; }
     if (e.target.closest?.("input, textarea, select, [contenteditable]")) return;
     if (sc?.command && (e.ctrlKey || e.metaKey || e.key === "F2" || e.key === "F3")) { e.preventDefault(); command(sc.command); return; }
-    if (e.target === c3) return;     // the 3D window's keys are the View's
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === " ") { space = true; e.preventDefault(); return; }
     if (e.key === "Escape") {
@@ -580,8 +589,8 @@ const menu = {
         status("opened the sample: a T-shirt");
     },
     open() { pickFile(".json,application/json", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; setSelection(null); change("open", { text }); }); },
-    // after the tool results still queued (a drag's last step may be in flight): they are saved too
-    save() { queue = queue.then(() => { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); }).catch(toolFailed); },
+    // after the 2D events in flight and the tool results still queued (a drag's last step): they are saved too
+    save() { after2d().then(() => { queue = queue.then(() => { document.activeElement?.blur(); cancelPreview(); post({ kind: "save" }); }).catch(toolFailed); }); },
     importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text, fabric: currentFabric() }); }); },
     exportDxf() { document.activeElement?.blur(); post({ kind: "exportDxf" }); },
     avatar() {
@@ -628,6 +637,8 @@ worker.onmessage = ({ data: m }) => {
             break;
         case "status": status(m.text); break;
         case "sim": onSim(m); break;
+        case "at2d": onAt2d(m); break;
+        case "scene2d": document.body.dataset.items2d = String(m.items); break;
         case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved": download("garment.json", m.text, "application/json"); status(`saved garment.json: ${(m.text.length / 1024).toFixed(1)} KB`); break;

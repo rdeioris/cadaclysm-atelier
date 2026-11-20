@@ -24,42 +24,37 @@
     <input type="file" id="file-in" hidden>
 </header>
 <main id="split">
-    <section class="pane" id="pane3d">
-        <div class="strip" id="tools3d">
-            <span class="tag">3D</span>
-            <button data-command="simulate" id="sim-toggle" title="Run the cloth: sew, then drape on the avatar (Pause stops it)">Simulate</button>
-            <button data-command="reset" id="sim-reset" disabled title="Drop the cloth: back to the flat pieces">Reset</button>
-            <span class="sep"></span>
-            <button data-tool3d="pin" title="Pin: click the cloth to pin or unpin a point">Pin</button>
-            <button data-tool3d="drag" title="Drag: pull the cloth with the mouse while it runs">Drag</button>
-            <span class="sep"></span>
-            <button data-command="arrange" title="Place the pieces around the avatar">Arrange</button>
-            <span id="health" title="the solver's status: frame, phase, welded seam pairs, mesh size, fastest particle"></span>
-        </div>
-        <div class="well"><canvas id="view3d" tabindex="0"></canvas></div>
-    </section>
+    <div class="strip" id="tools3d">
+        <span class="tag">3D</span>
+        <button data-command="simulate" id="sim-toggle" title="Run the cloth: sew, then drape on the avatar (Pause stops it)">Simulate</button>
+        <button data-command="reset" id="sim-reset" disabled title="Drop the cloth: back to the flat pieces">Reset</button>
+        <span class="sep"></span>
+        <button data-tool3d="pin" title="Pin: click the cloth to pin or unpin a point">Pin</button>
+        <button data-tool3d="drag" title="Drag: pull the cloth with the mouse while it runs">Drag</button>
+        <span class="sep"></span>
+        <button data-command="arrange" title="Place the pieces around the avatar">Arrange</button>
+        <span id="health" title="the solver's status: frame, phase, welded seam pairs, mesh size, fastest particle"></span>
+    </div>
     <div id="divider" title="Drag to resize; F2 / F3 maximise 2D / 3D"></div>
-    <section class="pane" id="pane2d">
-        <div class="strip" id="tools2d">
-            <span class="tag">2D</span>
-            <button data-tool="edit" title="Edit points and edges (Z)">Edit</button>
-            <button data-tool="transform" title="Move pieces (A)">Move</button>
-            <button data-tool="rectangle" title="Rectangle (S)">Rect</button>
-            <button data-tool="polygon" title="Polygon: click points, drag for curves, click the first to close (H)">Polygon</button>
-            <button data-tool="internal" title="Internal line on the selected piece (G); Enter or double click ends">Internal</button>
-            <button data-tool="notch" title="Notch: click an edge">Notch</button>
-            <button data-tool="dart" title="Dart: two edge points, then the apex">Dart</button>
-            <button data-tool="mirror" title="Mirror the selected piece across a two-click axis">Mirror</button>
-            <button data-tool="allowance" title="Seam allowance: click an edge, type mm, Enter">Allowance</button>
-            <button data-tool="grain" title="Grain line of the selected piece: drag">Grain</button>
-            <span class="sep"></span>
-            <button data-tool="segment" title="Segment sewing: pick two sides (N)">Sew sides</button>
-            <button data-tool="free" title="Free sewing: two clicks on each piece (M)">Sew free</button>
-            <span class="sep"></span>
-            <button data-command="fit" title="Fit the pieces (F)">Fit</button>
-        </div>
-        <div class="well"><canvas id="view2d" tabindex="0"></canvas></div>
-    </section>
+    <div class="strip" id="tools2d">
+        <span class="tag">2D</span>
+        <button data-tool="edit" title="Edit points and edges (Z)">Edit</button>
+        <button data-tool="transform" title="Move pieces (A)">Move</button>
+        <button data-tool="rectangle" title="Rectangle (S)">Rect</button>
+        <button data-tool="polygon" title="Polygon: click points, drag for curves, click the first to close (H)">Polygon</button>
+        <button data-tool="internal" title="Internal line on the selected piece (G); Enter or double click ends">Internal</button>
+        <button data-tool="notch" title="Notch: click an edge">Notch</button>
+        <button data-tool="dart" title="Dart: two edge points, then the apex">Dart</button>
+        <button data-tool="mirror" title="Mirror the selected piece across a two-click axis">Mirror</button>
+        <button data-tool="allowance" title="Seam allowance: click an edge, type mm, Enter">Allowance</button>
+        <button data-tool="grain" title="Grain line of the selected piece: drag">Grain</button>
+        <span class="sep"></span>
+        <button data-tool="segment" title="Segment sewing: pick two sides (N)">Sew sides</button>
+        <button data-tool="free" title="Free sewing: two clicks on each piece (M)">Sew free</button>
+        <span class="sep"></span>
+        <button data-command="fit" title="Fit the pieces (F)">Fit</button>
+    </div>
+    <div class="well" id="well"><canvas id="view" tabindex="0"></canvas></div>
     <aside id="dock">
         <div id="browser">
             <h2>Fabrics</h2><ul id="browser-fabrics"></ul>

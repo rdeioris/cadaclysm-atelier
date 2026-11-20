@@ -173,6 +173,9 @@ async function check(cdp, base) {
     };
     const frames = () => evaluate("new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))");
     const count = (list, kind) => evaluate(`document.querySelectorAll("#browser-${list} li[data-kind=${kind}]").length`);
+    // a window's box in client CSS px: the canvas's box plus the viewport's rect the page publishes
+    const windowBox = (which) => evaluate(`(() => { const c = document.getElementById("view"); const r = c.getBoundingClientRect();
+        const [x, y, w, h] = c.dataset.${which}.split(",").map(Number); return [r.left + x, r.top + y, w, h]; })()`);
     const patternCount = () => count("patterns", "pattern");
     const seamCount = () => count("seams", "seam");
     const field = (key) => `document.querySelector('#props [data-key="${key}"]')`;
@@ -218,9 +221,18 @@ async function check(cdp, base) {
             failIfErrors();
             ok("ready: one fabric, the f-M avatar, Simulate on");
 
+            // 1b. the 2D window is the View's: items on it, and a hover over the empty window hits nothing
+            await until("the 2D window ready", async () => (await evaluate(`document.getElementById("view").dataset.rect2d ?? ""`)).split(",").length === 4, 30000);
+            const [ex0, ey0, ew0, eh0] = await windowBox("rect2d");
+            await mouse("mouseMoved", ex0 + ew0 / 2, ey0 + eh0 / 2, { buttons: 0 });
+            await until("a hover over the empty window answered", async () => (await evaluate(`document.body.dataset.world ?? ""`)).includes(","), 30000);
+            if ((await evaluate(`document.body.dataset.hit ?? ""`)) !== "") throw new Error("a hover over the empty window hit something");
+            failIfErrors();
+            ok("one canvas: 3D and 2D viewports");
+
             // 2. a rectangle: the tool's button, then a drag on the 2D window
             await evaluate(`document.querySelector('#tools2d [data-tool=rectangle]').click()`);
-            const [x, y, w, h] = await evaluate(`(() => { const r = document.getElementById("view2d").getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+            const [x, y, w, h] = await windowBox("rect2d");
             const at = (fx, fy) => [x + w * fx, y + h * fy];
             const a = at(0.15, 0.3), b = at(0.4, 0.7);
             await drag(a, b);
@@ -403,6 +415,12 @@ async function check(cdp, base) {
             };
             await sample();
             ok("sample: 4 patterns, 10 seams, no issues");
+            await until("the sample drawn in 2D", async () => Number(await evaluate(`document.body.dataset.items2d ?? 0`)) >= 4 * 6, 30000);
+            const [sx, sy, sw, sh] = await windowBox("rect2d");
+            const world0 = await evaluate(`document.body.dataset.world ?? ""`);
+            await mouse("mouseMoved", sx + sw / 2 + 7, sy + sh / 2, { buttons: 0 });
+            await until("a hover answered", async () => { const w = await evaluate(`document.body.dataset.world ?? ""`); return w.includes(",") && w !== world0; }, 30000);
+            ok("sample on the View: pieces, seams, labels; hover answered");
             if (process.env.ATELIER_SHOT_SAMPLE) {
                 await frames(); // the View's first frames of the sample: a picture, not an assertion
                 const { data } = await send("Page.captureScreenshot", { format: "png" });
@@ -441,7 +459,7 @@ async function check(cdp, base) {
             ok(`simulating: ${await health()}; ${fpsText}`);
 
             // pin: the Pin tool, a click on the cloth at the 3D window's centre
-            const [cx, cy, cw, ch] = await evaluate(`(() => { const r = document.getElementById("view3d").getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+            const [cx, cy, cw, ch] = await windowBox("rect3d");
             const at3 = (fx, fy) => [cx + cw * fx, cy + ch * fy];
             const tryOnCloth = async (what, act, done) => {
                 for (const [fx, fy] of [[0.5, 0.45], [0.5, 0.55], [0.48, 0.4], [0.52, 0.6], [0.5, 0.35]]) {
@@ -471,7 +489,7 @@ async function check(cdp, base) {
             // shape change); a grain edit on it: re-meshed, still running, not stale
             await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
             await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
-            const [x2, y2, w2, h2] = await evaluate(`(() => { const r = document.getElementById("view2d").getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()`);
+            const [x2, y2, w2, h2] = await windowBox("rect2d");
             const gen = () => evaluate(`Number(document.body.dataset.meshGen)`);
             const g0 = await gen();
             const size = () => evaluate(`/size [^<]*/.exec(document.getElementById("props").textContent)?.[0]`);
