@@ -135,6 +135,7 @@ async function check(cdp, base) {
     const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
     const sessions = new Set([sessionId]);
+    const workerSessions = new Map();     // worker url -> its CDP session (the stall below)
     const label = (s) => (s === sessionId ? "page" : "worker");
     cdp.on((m) => {
         if (!sessions.has(m.sessionId)) return;
@@ -148,6 +149,7 @@ async function check(cdp, base) {
         } else if (m.method === "Target.attachedToTarget") {
             const s = m.params.sessionId;
             sessions.add(s);
+            workerSessions.set(m.params.targetInfo?.url ?? "", s);
             cdp.send("Runtime.enable", {}, s).catch(() => {});
             cdp.send("Log.enable", {}, s).catch(() => {});
             cdp.send("Runtime.runIfWaitingForDebugger", {}, s).catch(() => {});
@@ -988,21 +990,22 @@ async function check(cdp, base) {
                 const pxPerMm = 50 / (wB[0] - wA[0]);
                 const wAt = [wA[0] - 1 / pxPerMm, wA[1]];            // the world under P
                 const screenOf = ([x, y]) => [P[0] + (x - wAt[0]) * pxPerMm, P[1] - (y - wAt[1]) * pxPerMm];
-                // a cutter point: Enter goes to the tool at once while a click's release is a round trip to the
-                // worker, so each click waits for its point: the read-out (readoutMm, above) from the last point to
-                // the pointer is long on the hover there (after the first) and 0 once the point is placed
-                const cutPoint = async (p, first) => {
-                    await mouse("mouseMoved", p[0], p[1], { buttons: 0 });
-                    if (!first) await until("the hover's read-out", async () => (await readoutMm()) > 5, 10000);
-                    await mouse("mousePressed", p[0], p[1]); await mouse("mouseReleased", p[0], p[1]);
-                    await until("the cutter point", async () => (await readoutMm()) < 1, 10000);
-                };
-                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                // the atelier worker held busy for `ms` (not awaited: it answers when the stall ends), so a click's
+                // release is still on its way when the next key is pressed
+                const stallWorker = async (ms) => {
+                    const s = [...workerSessions].find(([url]) => url.includes("atelier-worker"))?.[1];
+                    if (!s) throw new Error(`no atelier worker session among ${[...workerSessions.keys()]}`);
+                    cdp.send("Runtime.evaluate", { expression: `{ const t = Date.now(); while (Date.now() - t < ${ms}); }` }, s).catch(() => {});
+                    await sleep(300);                   // the stall under way before the click
+                };                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
                 await until("the polygon selected", () => evaluate(`/size\\s*100\\s*×\\s*50/.test(document.getElementById("props").textContent)`), 30000);
                 const nC = await patternCount();
                 await evaluate(`document.querySelector('#tools2d [data-tool=cut]').click()`);
-                await cutPoint(screenOf([c0[0] + 50, c0[1] - 15]), true);
-                await cutPoint(screenOf([c0[0] + 50, c0[1] + 65]));
+                // the race: the second click's release held up in the worker, Enter pressed at once. Enter waits
+                // for the release, so the cutter has both points (else "a cutter needs two points")
+                await click(screenOf([c0[0] + 50, c0[1] - 15]));
+                await stallWorker(2500);
+                await click(screenOf([c0[0] + 50, c0[1] + 65]));
                 await key("Enter", "Enter", 13);
                 try { await until("two pieces from one", async () => (await patternCount()) === nC + 1, 30000); }
                 catch (e) { throw new Error(`${e.message}: ${await patternCount()} pieces (${nC}); status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }
@@ -1013,8 +1016,8 @@ async function check(cdp, base) {
                 await until("the left half selected", async () => /size\s*50\s*×\s*50/.test(await evaluate(`document.getElementById("props").textContent`)), 30000);
                 const sC = await seamCount();
                 await evaluate(`document.querySelector('#tools2d [data-tool=cut-sew]').click()`);
-                await cutPoint(screenOf([c0[0] - 15, c0[1] + 25]), true);
-                await cutPoint(screenOf([c0[0] + 60, c0[1] + 25]));
+                await click(screenOf([c0[0] - 15, c0[1] + 25]));
+                await click(screenOf([c0[0] + 60, c0[1] + 25]));
                 await key("Enter", "Enter", 13);
                 try { await until("cut and sewn", async () => (await patternCount()) === nC + 2 && (await seamCount()) === sC + 1, 30000); }
                 catch (e) { throw new Error(`${e.message}: ${await patternCount()} pieces (${nC} before the cut), ${await seamCount()} seams (${sC}); status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }
@@ -1022,8 +1025,8 @@ async function check(cdp, base) {
                 // a cutter that does not cross the piece: refused, the status says so, nothing changes
                 await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
                 await evaluate(`document.querySelector('#tools2d [data-tool=cut]').click()`);
-                await cutPoint(screenOf([c0[0] + 75, c0[1] - 40]), true);
-                await cutPoint(screenOf([c0[0] + 75, c0[1] - 25]));
+                await click(screenOf([c0[0] + 75, c0[1] - 40]));
+                await click(screenOf([c0[0] + 75, c0[1] - 25]));
                 await key("Enter", "Enter", 13);
                 try { await until("the refusal", async () => /cross/.test((await statusError()) ?? ""), 30000); }
                 catch (e) { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); }

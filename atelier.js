@@ -476,6 +476,11 @@ let ups2d = 0;                            // 2D releases sent, not yet answered:
 let pan2d = null;                         // the pointer panning the 2D window (the View's), while it does
 let in2d = false;                         // a hover was sent since the pointer last left the 2D window
 const gesture2d = () => drag2d || ups2d > 0;
+// A key for the tool waits while a click's release is on its way to the worker and back: the
+// click comes first (Enter right after a click ends the line with that click's point in it).
+const heldKeys = [];
+const afterUps = (fn) => { if (ups2d > 0) heldKeys.push(fn); else fn(); };
+function flushKeys() { while (ups2d === 0 && heldKeys.length) heldKeys.shift()(); }
 const claims = new Map();                 // pointerId -> "2d" | "3d"
 const pending2d = new Map();              // seq -> mods of a 2D event in flight
 let seq2d = 0, moveBusy = false, moveNext = null, down3d = null;
@@ -597,7 +602,7 @@ function onAt2d(m) {
 function at2dAnswer(m) {
     const mods = pending2d.get(m.seq) ?? {};
     pending2d.delete(m.seq);
-    if (m.phase === "up") ups2d = Math.max(0, ups2d - 1);
+    if (m.phase === "up") { ups2d = Math.max(0, ups2d - 1); queueMicrotask(flushKeys); }
     if (m.mmPerPx > 0 && Number.isFinite(m.mmPerPx)) mmPerPx = m.mmPerPx;
     if (m.phase === "move" || m.phase === "hover") { moveBusy = false; queueMicrotask(flushMove); }
     document.body.dataset.hit = m.hit?.kind ?? "";
@@ -678,8 +683,10 @@ document.addEventListener("keydown", (e) => {
     if (e.key === " ") { space = true; e.preventDefault(); return; }
     if (e.key === "Escape") {
         // the tool hears it first (a drag cancels), then back to edit
-        if (tool) apply(tool.key("Escape"));
-        queue = queue.then(() => { if (toolName !== "edit") setTool("edit"); overlay = null; draw2d(); }).catch(toolFailed);
+        afterUps(() => {
+            if (tool) apply(tool.key("Escape"));
+            queue = queue.then(() => { if (toolName !== "edit") setTool("edit"); overlay = null; draw2d(); }).catch(toolFailed);
+        });
         return;
     }
     // a digit with a last point to measure from: the typed length, not a shortcut
@@ -687,11 +694,12 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
     // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
     if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
-    if (tool) {
-        const r = tool.key(e.key);
-        if (r && Object.keys(r).length) { if (e.key === "Backspace" || e.key === "Enter") e.preventDefault(); apply(r); }
-    }
-    if (sc?.tool) setTool(sc.tool);
+    if (e.key === "Backspace" || e.key === "Enter") e.preventDefault();
+    const k = e.key;
+    afterUps(() => {
+        if (tool) { const r = tool.key(k); if (r && Object.keys(r).length) apply(r); }
+        if (sc?.tool) setTool(sc.tool);
+    });
 });
 document.addEventListener("keyup", (e) => {
     if (e.key === " ") space = false;
