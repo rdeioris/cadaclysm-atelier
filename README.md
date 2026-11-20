@@ -4,7 +4,7 @@ Atelier is a garment-design web app built on the cadaclysm kernel's web package:
 pattern pieces, join them with seams, and see the garment, in plain ES modules with no bundler.
 
     npm install
-    npm run setup -- --pkg <folder>     # or: npm run setup -- --zip <package.zip>
+    npm run setup -- --pkg <folder>     # the web package's pkg/ folder: see "The package"
     npm start                           # http://localhost:8141/
     npm test
     npm run test:browser                # the page end to end in headless Chrome or Edge
@@ -15,6 +15,51 @@ length 650 mm, sleeve length 200 mm). `node tools/make-sample.mjs` writes it thr
 kernel and checks that every seam's two sides match within 2 %. Its front and back stand
 about 50 mm clear of the form and its sleeves are wrapped round the form's arms, so the cloth
 sews it shut before it drapes.
+
+## The package
+
+`npm run setup` puts the cadaclysm web package's `pkg/` folder (the kernel and the View as
+WebAssembly, and their JavaScript) beside the app as `./pkg`. The 2D window needs the View's
+picking and snapping and the kernel's `document_clear_history`, and no release carries them
+before 0.16. Until then, build the web package from cadaclysm master (`build_pkg` in its
+`scripts/www-forge.py`, or the site build, which builds the same folder) and pass the folder:
+
+    npm run setup -- --pkg <folder>
+
+`--zip <package.zip>` takes a web package zip instead. Setup refuses a package that lacks what
+the app calls, and names what is missing. From 0.16, `npm run setup` alone fetches the release.
+
+## The 2D window
+
+One View draws both windows: the 3D window (viewport 0) and the 2D pattern window (viewport 1).
+In the 2D window the wheel zooms, a middle or right drag (or Space and a left drag) pans, and
+**F** or **Fit** frames the pieces. **F2** / **F3** maximise the 2D / 3D window.
+
+- **Snapping** while drawing: to ends, vertices, notches, midpoints, intersections, quadrants
+  and edges, with alignment guides through the points already placed; to the 10 mm grid with
+  **Grid** on. Holding **Shift** after a placed point locks the angle to 45 degree steps.
+- **Typed lengths**: while a shape has a last point, typing a number opens a length box at the
+  pointer; **Tab** goes to the angle (blank: toward the pointer), **Enter** places the point as
+  a click would, **Escape** closes the box and the shape goes on.
+- **Box select**: a drag on empty space in **Edit** selects points, in **Move** pieces. Left to
+  right is a window (only what lies wholly inside), right to left a crossing box (anything it
+  touches).
+
+The tools, with their keys where they have one:
+
+- **Rect** (S), **Polygon** (H) and **Ellipse** (E): an ellipse drags corner to corner, Shift
+  for a circle; a click without a drag asks for its size (so does a rectangle's).
+- **Internal** (G) draws an internal line on the selected piece (Enter or a double click ends
+  it); **Int □**, **Int ○** and **Int ⬠** draw an internal rectangle, ellipse or polygon.
+- **Hole □**, **Hole ○** and **Hole ⬠** cut a rectangular, elliptical or polygonal hole in a
+  piece; **To hole** turns an internal closed shape into a hole.
+- **Cut** splits a piece along an internal line, or along a cutter drawn across the selected
+  piece (Enter ends it): two pieces with the same fabric, grain, allowance and layer; seams,
+  notches and internal shapes go with the half they lie on (a seam split by the cut is dropped,
+  and the status names it). **Cut & sew** also sews the two new edges.
+- **Trace** copies an internal closed shape out as a new piece.
+- **Fillet** rounds a corner: click it, then drag or type the radius.
+- **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M).
 
 ## Live drape
 
@@ -45,9 +90,18 @@ cloth and brings the flat pieces back.
   arm shows as a flat slab along the arm until the cloth is built.
 - Arrange's arm slots stand the sleeves flat beside the arms, as before. Sleeves there sew too
   slowly: the shirt starts to drape before they close. The sample wraps its sleeves instead.
-- DXF import brings in outlines, allowances, grain lines and notches. Internal lines are
-  dropped (the kernel has no getter for them yet), and so are the 3D slots: imported pieces lie
-  on the floor until arranged.
+- DXF import brings in outlines, allowances, grain lines and notches. Internal lines and holes
+  are dropped (the kernel has no getter for them yet; DXF export writes holes), and so are the
+  3D slots: imported pieces lie on the floor until arranged.
+- Holes: a hole's points cannot be moved and its edges cannot be sewn yet. A hole smaller than
+  twice the allowance gets no cut line (the status bar says so); a hole's cut line uses the
+  piece's first allowance.
+- Fillet arcs are locked in Edit: to change a radius, undo and fillet again. Conic weights (an
+  ellipse's) are not editable.
+- Cut gives both pieces the first width of a per-side allowance. A cut that crosses a hole or
+  an internal line is refused: move or delete it first.
+- The 2D window draws seam lines 1 px wide (the View has no line width yet), and piece fills are
+  opaque and the length read-out a label until the View's regions and dimensions land.
 - The sample's sleeve caps have zero ease: each cap half is exactly as long as its armhole.
 - Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
 - Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
