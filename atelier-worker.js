@@ -422,7 +422,15 @@ self.onmessage = async ({ data }) => {
         }
         await started;
         switch (data.kind) {
-            case "ops": atelier.apply(data.ops, data.message); changed(data.seq); break;
+            // a hole added too small for its allowance is kept, with a word on the status line
+            case "ops": {
+                const cutless = atelier.cutlessHoles();
+                atelier.apply(data.ops, data.message);
+                changed(data.seq);
+                const warn = atelier.newCutlessHoles(cutless);
+                if (warn) post({ kind: "status", text: warn });
+                break;
+            }
             case "preview": atelier.preview(data.ops); changed(data.seq); break;
             // a committed edit re-anchors the seams of the pattern it changed, in the same commit
             case "endPreview": {

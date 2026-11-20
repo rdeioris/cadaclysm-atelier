@@ -105,6 +105,19 @@ export function addHole(nodes, id, path) {
     return setOutline(nodes, id, { ...outline, holes: [...(outline.holes ?? []), { start: path.start, segments: path.segments }] });
 }
 
+// An internal entry on piece `id`: a line, or a closed shape (the internal shape tools).
+export function addInternal(nodes, id, path, kind = "line") {
+    const p = byId(nodes).get(id);
+    return setPattern(nodes, id, { internal: [...(p.internal ?? []), { kind, path: { start: path.start, segments: path.segments } }] });
+}
+// Internal entry `index` of piece `id`, a closed shape, moved into the outline's holes: one batch.
+// null for an open or missing entry.
+export function convertToHole(nodes, id, index) {
+    const p = byId(nodes).get(id), entry = p?.internal?.[index];
+    if (!entry || !isClosedPath(entry.path)) return null;
+    return [...setPattern(nodes, id, { internal: p.internal.filter((_, i) => i !== index) }), ...addHole(nodes, id, entry.path)];
+}
+
 export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor }) {
     const id = nextId(nodes, "s");
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };

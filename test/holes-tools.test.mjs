@@ -61,5 +61,60 @@ none.down([300, 300], null, {});
 assert.match(none.up([300, 300], null, {}).status, /piece/);
 a.undo();
 assert.equal(a.drawing("p1").holes.length, 1, "one undo takes one hole back");
+// internal shapes on a piece, and Convert to Hole: one batch, one undo
+const it = makeTool("internal-rectangle", ctx({ selection: { kind: "pattern", id: "p1" } }));
+it.down([120, 20], null, {});
+a.apply(it.up([160, 40], null, {}).ops, "internal");
+assert.deepEqual(a.drawing("p1").internal.map((l) => l.closed), [true]);
+const th = makeTool("to-hole", ctx());
+const conv = th.down([120, 30], { kind: "internal", id: "p1", index: 0 }, {});
+a.apply(conv.ops, "to hole");
+assert.equal(a.drawing("p1").internal.length, 0);
+assert.equal(a.drawing("p1").holes.length, 2, "the converted shape is the second hole");
+a.undo();
+assert.equal(a.drawing("p1").internal.length, 1, "one undo takes the conversion back");
+assert.match(makeTool("to-hole", ctx()).down([0, 0], { kind: "pattern", id: "p1" }, {}).status, /click an internal/);
+{   // the ellipse and polygon internal shapes; an open internal line is no hole; a shape off every piece is refused
+    const ie = makeTool("internal-ellipse", ctx());
+    ie.down([80, 60], { kind: "pattern", id: "p1" }, {});
+    a.apply((await ie.up([100, 80], null, {})).ops, "internal");
+    const ip = makeTool("internal-polygon", ctx());
+    for (const p of [[20, 70], [40, 70], [30, 85]]) { ip.down(p, { kind: "pattern", id: "p1" }, {}); ip.up(p, null, {}); }
+    ip.down([20, 70], null, {});
+    a.apply(ip.up([20, 70], null, {}).ops, "internal");
+    assert.deepEqual(a.drawing("p1").internal.map((l) => l.closed), [true, true, true]);
+    a.apply(m.addInternal(a.nodes(), "p1", { start: [5, 5], segments: [{ type: "line", to: [15, 5] }] }), "line");
+    assert.match(makeTool("to-hole", ctx()).down([10, 5], { kind: "internal", id: "p1", index: 3 }, {}).status, /closed/);
+    const off = makeTool("internal-rectangle", ctx());
+    off.down([300, 300], null, {});
+    assert.match(off.up([320, 320], null, {}).status, /piece/);
+    a.undo(); a.undo(); a.undo();
+}
+{   // a converted shape gets the hole checks: one crossing a hole is refused and changes nothing
+    a.apply(m.addInternal(a.nodes(), "p1", m.rectPath(50, 40, 20, 20)), "internal");
+    const before = JSON.stringify(a.nodes());
+    const index = a.drawing("p1").internal.length - 1;
+    assert.throws(() => a.apply(makeTool("to-hole", ctx()).down([50, 50], { kind: "internal", id: "p1", index }, {}).ops, "to hole"), /cross/);
+    assert.equal(JSON.stringify(a.nodes()), before, "a refused conversion changes nothing");
+    a.undo();
+}
+{   // a hole narrower than twice the allowance has no cut line: a warning names it (the hole is still added)
+    let before = a.cutlessHoles();
+    assert.equal(a.newCutlessHoles(before), null, "no new hole, no warning");
+    const small = makeTool("hole-rectangle", ctx());
+    small.down([170, 60], { kind: "pattern", id: "p1" }, {});
+    a.apply(small.up([185, 75], null, {}).ops, "hole");
+    assert.equal(a.drawing("p1").holes.length, 2, "the small hole is added");
+    assert.equal(a.drawing("p1").holes[1].cut.length, 0, "with no cut line");
+    assert.equal(a.newCutlessHoles(before), "Front: hole 2 is too small for a 10 mm allowance: it has no cut line");
+    before = a.cutlessHoles();
+    a.apply(m.addInternal(a.nodes(), "p1", m.rectPath(80, 60, 12, 12)), "internal");
+    a.apply(makeTool("to-hole", ctx()).down([80, 65], { kind: "internal", id: "p1", index: 1 }, {}).ops, "to hole");
+    assert.equal(a.newCutlessHoles(before), "Front: hole 3 is too small for a 10 mm allowance: it has no cut line", "a converted one too");
+    before = a.cutlessHoles();
+    a.apply(m.addHole(a.nodes(), "p1", m.rectPath(100, 60, 25, 25)), "hole");
+    assert.equal(a.newCutlessHoles(before), null, "a hole wider than twice the allowance has its cut line");
+    a.undo(); a.undo(); a.undo(); a.undo();
+}
 a.free();
 console.log("holes-tools: ok");

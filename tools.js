@@ -5,7 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, addHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
+import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
 import { pointsOf } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -149,6 +149,12 @@ const holeAt = (ctx) => (path, hit) => {
     return id ? { ops: addHole(ctx.nodes, id, path), done: true } : { status: "start a hole on a piece, or select the piece first" };
 };
 
+// An internal closed shape on the piece under the first press, else on the selected one.
+const internalAt = (ctx) => (path, hit) => {
+    const id = targetOf(ctx, hit);
+    return id ? { ops: addInternal(ctx.nodes, id, path), done: true } : { status: "start the shape on a piece, or select the piece first" };
+};
+
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
     "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
@@ -160,6 +166,21 @@ const TOOLS = {
     "hole-rectangle": (ctx) => boxShape(ctx, "rectangle", holeAt(ctx)),
     "hole-ellipse": (ctx) => boxShape(ctx, "ellipse", holeAt(ctx)),
     "hole-polygon": (ctx) => polygonShape(ctx, holeAt(ctx)),
+    "internal-rectangle": (ctx) => boxShape(ctx, "rectangle", internalAt(ctx)),
+    "internal-ellipse": (ctx) => boxShape(ctx, "ellipse", internalAt(ctx)),
+    "internal-polygon": (ctx) => polygonShape(ctx, internalAt(ctx)),
+    // Convert to Hole: a click on an internal closed shape moves it into the outline's holes (one
+    // batch: one undo); the kernel's hole checks refuse it as they refuse a drawn hole.
+    "to-hole"(ctx) {
+        return {
+            down(w, h) {
+                if (h?.kind !== "internal") return { status: "click an internal closed shape" };
+                const ops = convertToHole(ctx.nodes, h.id, h.index);
+                return ops ? { ops, done: true } : { status: "only a closed internal shape becomes a hole" };
+            },
+            move() { return {}; }, up() { return {}; }, key() { return {}; },
+        };
+    },
 
     edit(ctx) {
         const { DRAG } = tols(ctx);

@@ -8,7 +8,8 @@
 // avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Then
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
 // of a piece while it runs (re-meshed), Pause, Reset. Then the 2D tools on a new garment, ending
-// with holes: a rectangle and an ellipse hole by dialog, one over the edge refused. Each step
+// with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
+// internal square by dialog converted to a hole. Each step
 // prints ok. Any console error or uncaught exception, in the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
@@ -817,6 +818,8 @@ async function check(cdp, base) {
             await byDialog("hole-rectangle", [hc[0] + 40 * pxPerMm, hc[1] - 30 * pxPerMm], 20, 20);
             await until("one hole", () => evaluate(`/1 hole/.test(document.getElementById("props").textContent)`), 30000);
             await noStatusError();
+            // 20 mm across, under twice the 10 mm allowance: no cut line, and a word on the status line (not an error)
+            await until("the small-hole warning", () => evaluate(`/hole 1 is too small for a 10 mm allowance: it has no cut line/.test(document.getElementById("status-text").textContent)`), 30000);
             {   // where it went, from the saved document: 40 x 30 mm in from the piece's first corner (a CSS px is about half a mm)
                 const outline = (await saveJson()).nodes.find((n) => n.kind === "profile.path").path;
                 const off = [0, 1].map((i) => outline.holes?.[0]?.start[i] - outline.start[i]);
@@ -838,6 +841,47 @@ async function check(cdp, base) {
             await until("still two holes", () => evaluate(`/2 holes/.test(document.getElementById("props").textContent)`), 30000);
             failIfErrors();
             ok("a hole over the edge refused with a status; still 2 holes");
+
+            // ---- internal shapes and Convert to Hole (Task 15) ----
+            {   // a 24 x 24 internal square by dialog, its lower-left corner 100 x 10 mm into the piece (clear of the
+                // 20 x 20 hole at 40..60 x 30..50 and the ellipse hole at 120..180 x 30..70), then To hole on its right
+                // edge (its left one lies on the grain line). The tool snaps, alignment too, so the click goes on a snap
+                // point: 100 x 10 is the grain line's lower end
+                const w1 = await worldOf([hc[0] + 1, hc[1]]), w2 = await worldOf([hc[0] + 51, hc[1]]);
+                const mm = 50 / (w2[0] - w1[0]);        // re-measured: a step above may have moved the camera
+                const inner = [hc[0] + 100 * mm, hc[1] - 10 * mm];
+                await saveJson();                       // the save's word replaces the refusal on the status line
+                await noStatusError();
+                const items0 = Number(await evaluate(`document.body.dataset.items2d ?? 0`));
+                await byDialog("internal-rectangle", inner, 24, 24);
+                await until("the internal shape drawn", async () => Number(await evaluate(`document.body.dataset.items2d ?? 0`)) > items0, 30000);   // the scene grew by its item
+                await noStatusError();
+                await evaluate(`document.querySelector('#tools2d [data-tool=to-hole]').click()`);
+                // the edge is a line a pixel or two wide: hover across it until the pick answers the internal shape
+                let edge = null;
+                const seen = [];
+                for (const dx of [0, -1, 1, -2, 2, -3, 3]) {
+                    const at = [inner[0] + 24 * mm + dx, inner[1] - 12 * mm];
+                    await evaluate(`document.body.dataset.hit = "__"`);
+                    await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
+                    await until("the hover answer", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
+                    const hit = await evaluate(`document.body.dataset.hit`);
+                    seen.push(`${dx}: ${hit}`);
+                    if (hit === "internal") { edge = at; break; }
+                }
+                if (!edge) throw new Error(`the internal edge never hovered (${seen.join(", ")})`);
+                await click(edge);
+                await until("three holes", () => evaluate(`/3 holes/.test(document.getElementById("props").textContent)`), 30000);
+                await noStatusError();
+                const doc = await saveJson();
+                const outline = doc.nodes.find((n) => n.kind === "profile.path").path;
+                const piece = doc.nodes.find((n) => n.kind === "garment.pattern");
+                const off = [0, 1].map((i) => outline.holes?.[2]?.start[i] - outline.start[i]);
+                if (!(Math.abs(off[0] - 100) < 1 && Math.abs(off[1] - 10) < 1)) throw new Error(`the converted hole is at ${off} mm from the corner, not 100, 10`);
+                if ((piece.internal ?? []).length) throw new Error(`the square is still an internal line: ${JSON.stringify(piece.internal)}`);
+                failIfErrors();
+                ok("internal square by dialog, converted to a hole: 3 holes");
+            }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
                 await sleep(1000);

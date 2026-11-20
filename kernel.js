@@ -297,6 +297,25 @@ export class Atelier {
             } finally { this.f("profile_list_free")(list); }
         });
     }
+    // The holes with no cut line: one narrower than twice its piece's allowance, which the
+    // offset closes up. -> [{key: "<piece>#<hole index>", message}]
+    cutlessHoles() {
+        const nodes = m.byId(this.nodes());
+        return this.drawState().list.flatMap((d) => {
+            const allowance = (nodes.get(d.id)?.allowance ?? [0])[0];
+            if (!(allowance > 0)) return [];
+            return d.holes.flatMap((h, i) => (h.cut.length ? [] : [{
+                key: `${d.id}#${i}`,
+                message: `${d.label}: hole ${i + 1} is too small for a ${allowance} mm allowance: it has no cut line`,
+            }]));
+        });
+    }
+    // The cutless holes now that were not in `before` (cutlessHoles()), as one warning; null when none.
+    newCutlessHoles(before) {
+        const old = new Set(before.map((h) => h.key));
+        const fresh = this.cutlessHoles().filter((h) => !old.has(h.key));
+        return fresh.length ? fresh.map((h) => h.message).join("; ") : null;
+    }
     // An internal line's path JSON flattened.
     openPoints(path) {
         return this.withPath(path, (p) => {

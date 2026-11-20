@@ -87,4 +87,16 @@ assert.deepEqual(m.addFabric(nodes, "x", "X", fabric.params).ops, []);
     const [op2] = m.addHole([{ ...nodes[0], path: op.fields.path }], "p1", m.rectPath(50, 10, 20, 20));
     assert.equal(op2.fields.path.holes.length, 2, "appended");
 }
+// an internal shape, and Convert to Hole: the shape leaves the internal lines for the outline's holes
+{
+    const nodes = [{ id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 200, 100) }, { id: "p1", kind: "garment.pattern", internal: [] }];
+    const [add] = m.addInternal(nodes, "p1", m.rectPath(10, 10, 20, 20));
+    assert.deepEqual(add.fields.internal, [{ kind: "line", path: { start: [10, 10], segments: m.rectPath(10, 10, 20, 20).segments } }]);
+    const withLine = [nodes[0], { ...nodes[1], internal: [...add.fields.internal, { kind: "line", path: { start: [0, 0], segments: [{ type: "line", to: [5, 5] }] } }] }];
+    const ops = m.convertToHole(withLine, "p1", 0);
+    assert.deepEqual(ops[0].fields.internal.length, 1, "the shape leaves the internal lines");
+    assert.equal(ops[1].fields.path.holes.length, 1, "and becomes a hole");
+    assert.equal(m.convertToHole(withLine, "p1", 1), null, "an open line is no hole");
+    assert.equal(m.convertToHole(withLine, "p1", 5), null, "nor a missing one");
+}
 console.log("model: ok");
