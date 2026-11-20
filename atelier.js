@@ -27,6 +27,7 @@ let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id, 
 let pointSel = [];            // the selected piece's box-selected point indices (the Edit tool)
 let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
 let forms = [];               // the dress forms in assets/forms.json, as the worker read them
+let formLoading = null;       // the form the Form select asked for, until it lands or fails
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
@@ -163,7 +164,8 @@ const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? Strin
 const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
 function commitField(f, raw) {
     if (!selection) return;
-    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name) { status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
+    // a user's STEP called like a form has no landmarks: choosing that form loads the real one
+    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
     const value = f.type === "text" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
@@ -811,6 +813,8 @@ worker.onmessage = ({ data: m }) => {
         case "forms": forms = m.forms ?? []; if (avatar) avatar.forms = forms; break;
         case "avatar":
             avatar = { name: m.name, bounds: m.bounds, landmarks: m.landmarks ?? null, forms };
+            document.body.dataset.avatarHead = avatar.landmarks?.head ? "1" : "0";     // the browser test reads it
+            if (formLoading === m.name) { formLoading = null; status(`${m.name} loaded`); }
             renderBrowser();
             if (selection?.kind === "avatar") renderProps();
             break;
@@ -826,6 +830,8 @@ worker.onmessage = ({ data: m }) => {
             if (m.reqId == null) fitNext = false;
             if (m.reqId != null && waiting.has(m.reqId)) { waiting.get(m.reqId).reject(new Error(m.text)); waiting.delete(m.reqId); }
             else status(m.text, true);
+            // a form that failed to load: the select goes back to the avatar there is
+            if (m.reqId == null && formLoading) { formLoading = null; if (selection?.kind === "avatar") renderProps(); }
             break;
     }
 };

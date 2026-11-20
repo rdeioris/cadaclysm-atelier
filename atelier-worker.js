@@ -38,6 +38,7 @@ let viewer = null;
 let atelier = null;
 let avatar = null;                       // { scene, id, bounds, name }
 let forms = [];                          // assets/forms.json: the dress forms and their landmarks
+let formAsk = 0;                         // bumped by every Form pick: a pick overtaken while it fetched is dropped
 let drawn = [];                          // View item ids of the slabs and seam lines
 let selection = null;
 const items = new ItemMap();
@@ -474,11 +475,14 @@ self.onmessage = async ({ data }) => {
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
             case "avatar": await loadAvatar(data.bytes, data.name); break;
             case "avatarAsset": {
+                const ask = ++formAsk;
                 const form = forms.find((f) => f.name === data.name);
                 if (!form) throw new Error(`no form ${data.name}`);
                 const r = await fetch(new URL(`./assets/${form.file}`, import.meta.url));
                 if (!r.ok) throw new Error(`${form.file}: ${r.status}`);
-                await loadAvatar(await r.arrayBuffer(), form.name, form);
+                const bytes = await r.arrayBuffer();
+                if (ask !== formAsk) break;            // a later pick is loading: the last one chosen wins
+                await loadAvatar(bytes, form.name, form);
                 break;
             }
             case "select": selection = data.selection ?? null; pointSel = []; paintSelection(); refresh2d(); break;

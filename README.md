@@ -18,7 +18,8 @@ sews it shut before it drapes.
 
 **Forms.** The Avatar's Form select offers the dress forms in `assets/forms.json`: f-M and
 f-M with head (`tools/dressform.py --head`). The file also carries each form's landmarks (body
-top, shoulder line, arms, head), which the slots place pieces by.
+top, shoulder line, arms, head), which the slots place pieces by. The form is the session's,
+not the garment's: Save does not write it, and Open keeps the avatar that is loaded.
 
 ## The package
 

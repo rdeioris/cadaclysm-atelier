@@ -443,8 +443,10 @@ async function check(cdp, base) {
             await until("the Form select", () => evaluate(`!!${field("form")}`), 30000);
             await setField("form", "f-M-head");
             await until("f-M-head loaded", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M-head"`), 60000);
+            if ((await evaluate(`document.body.dataset.avatarHead`)) !== "1") throw new Error("f-M-head's landmarks carry no head");
             await setField("form", "f-M");
             await until("f-M back", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M"`), 60000);
+            if ((await evaluate(`document.body.dataset.avatarHead`)) !== "0") throw new Error("f-M's landmarks carry a head");
             failIfErrors();
             ok("Form select: f-M with head, then f-M");
 
