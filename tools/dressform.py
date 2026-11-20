@@ -12,7 +12,8 @@ thigh cut. Bigger waists grow more in depth than in width (the belly).
 
     CADACLYSM_BS_PY=<folder holding cadaclysm_blacksmith.py> \
     CADACLYSM_BLACKSMITH_LIBRARY=.../cadaclysm_blacksmith.dll \
-    python tools/dressform.py out_dir --style {form,arms} --body {female,male} --size {XS,S,M,L,XL}
+    python tools/dressform.py out_dir --style {form,arms} --body {female,male} --size {XS,S,M,L,XL} \
+        [--head] [--name STEM] [--label TEXT] [--forms forms.json] [--forms-only]
 """
 import argparse
 import math
@@ -198,6 +199,70 @@ def neck_cap(gr):
     return cap.join(stem).join(knob)
 
 
+# The head over the neck: (dy above the neck's top section, half-width a, half-depth b, z
+# centre) for the female M, from inside the neck to the crown. The chin sections sit forward.
+HEAD = [
+    (-12, 46, 46, -4), (30, 50, 54, 0), (52, 60, 78, 16), (85, 70, 92, 12),
+    (125, 78, 98, 4), (160, 72, 92, -2), (185, 52, 68, -6), (198, 18, 22, -8),
+]
+
+
+def head_scale(gr):
+    """Heights follow the chart's height; widths the neck girth, gently."""
+    m = Grade(gr.body, "M")
+    return gr.h, math.sqrt(gr.f[NECK] / m.f[NECK])
+
+
+def head(gr):
+    """An egg-shaped loft with a chin, its first section inside the neck so it joins."""
+    y0 = gr.sections[-1][0]
+    hy, k = head_scale(gr)
+    secs = [(Profile.ellipse((0, 0), a * k, b * k), up_frame(0, y0 + dy * hy, zc * k)) for dy, a, b, zc in HEAD]
+    return Solid.loft_through(secs)
+
+
+def neck_ring(gr):
+    """The neck cap's disc alone: the head carries no stem or knob."""
+    y, a, _b, _zc = gr.sections[-1]
+    return Solid.extrude(Profile.circle(a + 4), up_frame(0, y - 1, -4), 9)
+
+
+def landmarks(gr, name, label, with_head):
+    """What the app places pieces by: the body's top (the knob's top, as f-M's bounds), the
+    shoulder line, each arm's shoulder joint, direction and ball radius, and the head."""
+    m = Grade(gr.body, "M")
+    t = math.sqrt(gr.f[BUST] / m.f[BUST])
+    sh_x = (182 if gr.body == "female" else 196) * gr.f[SHOULDER] / m.f[SHOULDER]
+    r3 = lambda v: [round(float(c), 4) for c in v]
+    arms = []
+    for s, side in ((1, "left"), (-1, "right")):
+        d = unit([s * math.sin(math.radians(42)), -math.cos(math.radians(42)), 0.08])
+        arms.append({"side": side, "shoulder": r3([s * sh_x, gr.y(1352.0), -8.0]), "dir": [float(c) for c in d],"radius": round(50 * t, 4)})
+    y0 = gr.sections[-1][0]
+    out = {"name": name, "label": label, "file": name + ".stp", "body_top": round(y0 + 51, 4),
+           "hps_y": round(gr.sections[11][0], 4), "arms": arms}
+    if with_head:
+        hy, k = head_scale(gr)
+        top, chin = y0 + HEAD[-1][0] * hy, y0 + HEAD[2][0] * hy
+        out["head"] = {"centre": [0.0, round(y0 + HEAD[4][0] * hy, 4), round(HEAD[4][3] * k, 4)],
+                       "half": [round(HEAD[4][1] * k, 4), round((top - chin) / 2, 4), round(HEAD[4][2] * k, 4)],
+                       "top": round(top, 4), "chin_y": round(chin, 4)}
+    return out
+
+
+def write_forms(path, entry):
+    """Merge one form into forms.json by name, the list kept sorted by name."""
+    import json
+    forms = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            forms = json.load(f)["forms"]
+    forms = sorted([f for f in forms if f["name"] != entry["name"]] + [entry], key=lambda f: f["name"])
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"forms": forms}, f, indent=1)
+        f.write("\n")
+
+
 def stand():
     pole = Solid.extrude(Profile.circle(13), up_frame(0, 10, -6), THIGH_CUT + 110)
     collar = Solid.extrude(Profile.circle(22), up_frame(0, THIGH_CUT - 42, -6), 44)
@@ -232,20 +297,38 @@ def main():
     ap.add_argument("--tolerance", type=float, default=0.4)
     ap.add_argument("--separate-arms", action="store_true",
                     help="keep each arm segment its own solid (kernels before the sphere-loft join fix)")
+    ap.add_argument("--head", action="store_true", help="a head on the neck (an egg loft with a chin)")
+    ap.add_argument("--name", help="the file stem (default <body>-<size>-<style>[-head])")
+    ap.add_argument("--label", help="the name the app shows (default the stem)")
+    ap.add_argument("--forms", help="merge this form's landmarks into this forms.json")
+    ap.add_argument("--forms-only", action="store_true", help="write the landmarks only: no STEP, no STL")
     o = ap.parse_args()
     gr = Grade(o.body, o.size)
+    name = o.name or f"{o.body[0]}-{o.size}-{o.style}" + ("-head" if o.head else "")
+    if o.forms:
+        write_forms(o.forms, landmarks(gr, name, o.label or name, o.head))
+        print(f"{o.forms}: {name}")
+    if o.forms_only:
+        return
     t0 = time.time()
     form = torso(gr)
     for s in (1, -1):
         form = form.join(thigh(s, gr))
-    form = form.join(neck_cap(gr))
     solids = [form]
+    if o.head:
+        form = form.join(neck_ring(gr))
+        try:
+            solids = [form.join(head(gr))]
+        except Exception as e:     # the kernel refused the loft-to-loft join: the head as its own solid
+            print(f"head not joined ({e}); written as its own solid")
+            solids = [form, head(gr)]
+    else:
+        solids = [form.join(neck_cap(gr))]
     if o.style == "arms":
         for s in (1, -1):
             parts = arm(s, gr)
             solids += parts if o.separate_arms else [joined(parts)]
     solids += stand()
-    name = f"{o.body[0]}-{o.size}-{o.style}"
     os.makedirs(o.out_dir, exist_ok=True)
     write_step(os.path.join(o.out_dir, name + ".stp"), solids)
     n = write_stl(os.path.join(o.out_dir, name + ".stl"), solids, o.tolerance)
