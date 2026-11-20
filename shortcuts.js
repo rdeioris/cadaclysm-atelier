@@ -8,6 +8,7 @@ export const SHORTCUTS = {
     H: { tool: "polygon" },
     G: { tool: "internal" },
     N: { tool: "segment" },
+    E: { tool: "ellipse" },
     M: { tool: "free" },
     "Ctrl+Z": { command: "undo" },
     "Ctrl+Y": { command: "redo" },

@@ -435,6 +435,7 @@ self.onmessage = async ({ data }) => {
             case "redo": atelier.redo(); changed(data.seq); break;
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
             case "mirror": answer(data, () => atelier.mirrored(data.id, data.axis)); break;
+            case "ellipse": answer(data, () => atelier.ellipsePath(data.cx, data.cy, data.rx, data.ry)); break;
             case "transformAll": answer(data, () => Object.fromEntries(data.ids.map((id) => [id, atelier.transformed(id, data.matrix)]))); break;
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
@@ -463,7 +464,13 @@ self.onmessage = async ({ data }) => {
             case "snapBase": viewer.setSnapBase(data.point ? [data.point[0], data.point[1], 0] : null, 45); break;
             // the pointer left the 2D window: no piece is hovered (after the events before it)
             case "leave2d": chain2d = chain2d.then(() => { if (hover2d !== null) { hover2d = null; refresh2d(); } }).catch(() => {}); break;
-            case "overlay2d": overlay2d?.set({ lines: data.lines ?? [], points: data.points ?? [], curves: null, text: data.text ?? null }); break;
+            // the ellipse being dragged is the kernel's, as Béziers
+            case "overlay2d": {
+                let curves = null;
+                if (data.ellipse) { try { curves = atelier.ellipseBeziers(...data.ellipse); } catch { /* a flat drag: no curve yet */ } }
+                overlay2d?.set({ lines: data.lines ?? [], points: data.points ?? [], curves, text: data.text ?? null });
+                break;
+            }
             case "pointSel": pointSel = data.indices ?? []; refresh2d(); break;
             case "fit2d": if (rects) fit2d(); break;
         }

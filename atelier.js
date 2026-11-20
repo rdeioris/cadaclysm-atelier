@@ -69,6 +69,18 @@ function status(text, error = false) {
     el.textContent = text;
     el.classList.toggle("error", error);
 }
+// The size a click-placed shape asks for: [width, height] in mm, or null when cancelled.
+function askSize(shape) {
+    const d = $("size-dialog");
+    $("size-title").textContent = `${shape === "ellipse" ? "Ellipse" : "Rectangle"}: width and height`;
+    d.returnValue = "";
+    d.showModal();
+    $("size-w").focus(); $("size-w").select();
+    return new Promise((resolve) => d.addEventListener("close", () => {
+        const w = Number($("size-w").value), h = Number($("size-h").value);
+        resolve(d.returnValue === "ok" && w > 0 && h > 0 ? [w, h] : null);
+    }, { once: true }));
+}
 function renderIssues() {
     const el = $("issues");
     el.replaceChildren();
@@ -306,7 +318,11 @@ function handle(r) {
         previewPattern = null;
     }
     if (r.cancel) cancelPreview();
-    if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length ? r.overlay : null;
+    if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse ? r.overlay : null;
+    // a tool's word: an error unless it says otherwise
+    if (r.status) status(r.status, r.error !== false);
+    // a click-placed shape asks for its size; the answer goes to the tool that asked, if still armed
+    if (r.ask?.kind === "size") { const t = tool; askSize(r.ask.shape).then((wh) => { if (wh && t === tool) apply(t.sized(...wh)); }); }
     if (r.select !== undefined) setSelection(r.select);
     if (r.pointSel) { pointSel = r.pointSel; post({ kind: "pointSel", indices: pointSel }); }
     if (r.done) setTool("edit");
@@ -376,7 +392,7 @@ new ResizeObserver(() => {
 }).observe(cv);
 
 // The tool's rubber band, points and read-out: drawn by the worker's View (no overlay canvas).
-function draw2d() { post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], text: null }); }
+function draw2d() { post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, text: null }); }
 function fit2d() { post({ kind: "fit2d" }); }
 
 // The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the

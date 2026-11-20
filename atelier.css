@@ -69,6 +69,8 @@ footer { padding: 4px 14px; color: var(--dim); font-size: 12px; background: var(
     border: 1px solid var(--line); border-radius: 4px; color: var(--text); min-width: 260px; max-width: 520px; z-index: 5; }
 #issues:hover ul { display: block; }
 #fps { font-variant-numeric: tabular-nums; }
+#size-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+#size-dialog input { width: 6em; }
 
 @media (max-width: 760px) {
     :root { --dock: 0px; }

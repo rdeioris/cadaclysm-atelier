@@ -331,6 +331,67 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.equal(up2.endPreview, true);
     assert.deepEqual(up2.preview.map((o) => m.pathPoints(o.fields.path)[0]), [[10, 0], [210, 0]]);
 }
+// the ellipse tool: a drag asks the kernel for the path; Shift a circle; a click asks for a size
+{
+    const asked = [];
+    const request = async (kind, p) => { asked.push([kind, p]); return m.rectPath(0, 0, 1, 1); };
+    const t = makeTool("ellipse", ctx({ request }));
+    t.down([0, 0], null, {});
+    assert.deepEqual(t.move([60, 20], null, {}).overlay.ellipse, [30, 10, 30, 10]);
+    assert.deepEqual(t.move([60, 20], null, { shift: true }).overlay.ellipse, [30, 10, 30, 30]);
+    // Shift is the circle here: no 45 degree snap base from the first corner (it would bend the drag)
+    assert.equal(t.lastPoint(), null);
+    const r = await t.up([60, 20], null, {});
+    assert.deepEqual(asked[0], ["ellipse", { cx: 30, cy: 10, rx: 30, ry: 10 }]);
+    assert.ok(r.ops.some((o) => o.node?.kind === "garment.pattern"));
+    const c = makeTool("ellipse", ctx({ request }));
+    c.down([5, 5], null, {});
+    assert.deepEqual(c.up([5, 5], null, {}), { ask: { kind: "size", shape: "ellipse" } });
+    await c.sized(40, 20);
+    assert.deepEqual(asked[1], ["ellipse", { cx: 5, cy: 5, rx: 20, ry: 10 }], "a dialog ellipse is centred on the click");
+    const bad = makeTool("ellipse", ctx());
+    bad.down([0, 0], null, {});
+    const failed = await bad.up([10, 10], null, {});
+    assert.match(failed.status, /^ellipse: no kernel/);
+    assert.equal(failed.ops, undefined);
+    const rc = makeTool("rectangle", ctx());
+    rc.down([5, 5], null, {});
+    assert.deepEqual(rc.up([5, 5], null, {}), { ask: { kind: "size", shape: "rectangle" } });
+    const placed = rc.sized(40, 20);
+    assert.deepEqual(m.pathPoints(placed.ops.find((o) => o.node?.kind === "profile.path").node.path), [[5, 5], [45, 5], [45, 25], [5, 25]], "a dialog rectangle's lower-left corner is the click");
+    assert.deepEqual(rc.sized(40, 20), {}, "one size per click");
+    assert.equal(SHORTCUTS.E.tool, "ellipse");
+}
+// the edit tool: a conic's control point moves; an arc's ends are locked (ruling 13)
+{
+    const conic = { start: [10, 0], segments: [{ type: "conic", control: [10, 10], to: [0, 10], weight: 0.7 }, { type: "line", to: [0, 0] }, { type: "line", to: [10, 0] }] };
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: conic }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const t = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t.down([10, 10], { kind: "handle", id: "p1", index: 0, which: "control" }, {});
+    assert.deepEqual(t.move([13, 13], null, {}).preview[0].fields.path.segments[0].control, [13, 13], "past the click tolerance (DRAG 3 at pxToWorld 1)");
+    const arc = { start: [0, 0], segments: [{ type: "line", to: [10, 0] }, { type: "arc", to: [0, 10], centre: [0, 0], ccw: true }, { type: "line", to: [0, 0] }] };
+    const an = [...base, { id: "p1_outline", kind: "profile.path", path: arc }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const e = makeTool("edit", ctx({ nodes: an, selection: { kind: "pattern", id: "p1" } }));
+    assert.match(e.down([10, 0], { kind: "point", id: "p1", index: 1 }, {}).status, /arc/);
+    assert.deepEqual(e.move([20, 0], null, {}), {}, "a refused press drags nothing");
+    const e2 = makeTool("edit", ctx({ nodes: an, selection: { kind: "pattern", id: "p1" } }));
+    assert.match(e2.down([5, 5], { kind: "edge", id: "p1", side: 1 }, {}).status, /arc/);
+    // a line ending on the arc moves that end too: refused; the free corner still moves
+    const e3 = makeTool("edit", ctx({ nodes: an, selection: { kind: "pattern", id: "p1" } }));
+    assert.match(e3.down([5, 0], { kind: "edge", id: "p1", side: 0 }, {}).status, /arc/);
+    const e4 = makeTool("edit", ctx({ nodes: an, selection: { kind: "pattern", id: "p1" } }));
+    assert.equal(e4.down([0, 0], { kind: "point", id: "p1", index: 0 }, {}).status, undefined);
+    assert.deepEqual(e4.move([-5, -5], null, {}).preview[0].fields.path.start, [-5, -5]);
+    // a click on a seamed arc still selects its seam; a drag on it moves nothing
+    const e5 = makeTool("edit", ctx({ nodes: an, selection: { kind: "pattern", id: "p1" } }));
+    e5.down([5, 5], { kind: "edge", id: "p1", side: 1, seam: "s1" }, {});
+    assert.deepEqual(e5.up([5, 5], null, {}), { select: { kind: "seam", id: "s1" } });
+    const e6 = makeTool("edit", ctx({ nodes: an, selection: { kind: "pattern", id: "p1" } }));
+    assert.deepEqual(e6.down([5, 5], { kind: "edge", id: "p1", side: 1, seam: "s1" }, {}), {}, "a press may be the seam's click");
+    assert.match(e6.move([20, 20], null, {}).status, /arc/, "the drag is refused");
+    assert.deepEqual(e6.move([25, 20], null, {}), {}, "once");
+    assert.deepEqual(e6.up([20, 20], null, {}), {}, "a drag on a locked seam edge selects nothing");
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

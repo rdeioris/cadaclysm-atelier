@@ -751,6 +751,19 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok("box select: Delete removes both in one undo; an undone member leaves the selection, the rest still moves");
+
+            // an ellipse by dialog: E, a click, 120 x 60
+            const patternsBefore = await patternCount();
+            await key("e", "KeyE", 69);
+            const [ex, ey, ew, eh] = await windowBox("rect2d");
+            await click([ex + ew * 0.85, ey + eh * 0.15]);
+            await fillSize(120, 60);
+            await until("the ellipse added", async () => (await patternCount()) === patternsBefore + 1, 30000);
+            await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+            await until("its size", () => evaluate(`/size\\s*120\\s*×\\s*60/.test(document.getElementById("props").textContent)`), 30000);
+            await noStatusError();
+            failIfErrors();
+            ok("ellipse by dialog: 120 x 60");
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

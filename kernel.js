@@ -216,6 +216,18 @@ export class Atelier {
     }
     // A profile handle for a path JSON (a copy that outlives the scratch document); the caller frees it.
     profileOf(path) { return this.withPath(path, (p) => this.f("profile_transform2d")(p, Float64Array.of(1, 0, 0, 0, 1, 0))); }
+    // An ellipse about (cx, cy), semi-axes rx along x and ry along y, from the kernel: four exact
+    // conic quarters counter-clockwise from (cx + rx, cy), as path JSON (spec §3).
+    ellipsePath(cx, cy, rx, ry) { return this.pathOf(this.f("profile_ellipse")(cx, cy, rx, ry)); }
+    // A profile handle as path JSON {start, segments}: `pathJson` leaves the handle to the caller,
+    // `pathOf` frees it (Tasks 13, 17, 18, 19 use these, not their own parse-and-free).
+    pathJson(p) { const { start, segments } = JSON.parse(this.f("document_profile_path")(p)); return { start, segments }; }
+    pathOf(q) { try { return this.pathJson(q); } finally { this.f("profile_free")(q); } }
+    // The same ellipse's exact Béziers, 16 doubles each (the overlay's rubber band).
+    ellipseBeziers(cx, cy, rx, ry) {
+        const p = this.f("profile_ellipse")(cx, cy, rx, ry);
+        try { return Float64Array.from(this.f("profile_beziers")(p, null)); } finally { this.f("profile_free")(p); }
+    }
     // A path's exact Béziers, 16 doubles each, z = 0 (holes left out: each is drawn on its own).
     beziersOf(path) { return this.withPath({ start: path.start, segments: path.segments }, (p) => Float64Array.from(this.f("profile_beziers")(p, null))); }
     // The piece's fill: its outline (holes cut out) as the kernel's planar face, triangulated.
@@ -308,10 +320,7 @@ export class Atelier {
     // A new outline path from fn(profile) on pattern `id`'s committed outline: during a preview,
     // the outline from before it, so a drag's request is never stacked on its own last frame.
     mapped(id, fn) {
-        const map = (p) => {
-            const q = fn(p);
-            try { return JSON.parse(this.f("document_profile_path")(q)); } finally { this.f("profile_free")(q); }
-        };
+        const map = (p) => this.pathOf(fn(p));
         if (!this.open) return this.withOutline(id, map);
         const path = m.byId(this.open.nodes).get(`${id}_outline`)?.path;
         if (!path) throw new Error(`no pattern ${id}`);
@@ -331,8 +340,7 @@ export class Atelier {
             const ops = [];
             for (const pid of this.f("garment_patterns")(r)) {
                 const o = this.f("garment_pattern_outline")(r, pid);
-                let path;
-                try { path = JSON.parse(this.f("document_profile_path")(o)); } finally { this.f("profile_free")(o); }
+                const path = this.pathOf(o);
                 const [gx, gy] = this.f("garment_pattern_info")(r, pid);
                 const allowance = Array.from(this.f("garment_pattern_allowance")(r, pid));
                 const raw = Array.from(this.f("garment_pattern_notches")(r, pid));

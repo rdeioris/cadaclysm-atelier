@@ -6,6 +6,7 @@
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
 import { addPattern, setOutline, setPattern, polyPath, freeLabel, pieceLabel } from "./model.js";
+import { pointsOf } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
 const DRAG_PX = 3; // screen pixels: less movement than this is a click, not a drag
@@ -55,71 +56,113 @@ function boxGesture(ctx, kind) {
     };
 }
 
+// A drag-a-box shape: rectangle or ellipse, made by place(path, firstHit). A click without a drag
+// asks the page for a size, and sized(w, h) places it at the click: a rectangle's lower-left
+// corner, an ellipse's centre (ruling 15). Shift while dragging an ellipse: a circle -- so the
+// ellipse gives no lastPoint (a 45 degree snap base from its corner would bend the drag); the
+// rectangle keeps the angle lock from its first corner (a square on the diagonal).
+export function boxShape(ctx, shape, place) {
+    const { DRAG } = tols(ctx);
+    let a = null, first = null, at = null;
+    const corners = (b, o = a) => [o, [b[0], o[1]], b, [o[0], b[1]], o];
+    const ellipseOf = (p, q, circle) => {
+        let rx = Math.abs(q[0] - p[0]) / 2, ry = Math.abs(q[1] - p[1]) / 2;
+        if (circle) rx = ry = Math.max(rx, ry);
+        return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, rx, ry];
+    };
+    const ellipse = (cx, cy, rx, ry, hit) => Promise.resolve(ctx.request("ellipse", { cx, cy, rx, ry }))
+        .then((path) => ({ ...place(path, hit), overlay: { lines: [] } }), (e) => ({ status: `ellipse: ${e?.message ?? e}`, overlay: { lines: [] } }));
+    return {
+        down(w, h) { a = w; first = h ?? null; at = null; return {}; },
+        move(w, h, mods) {
+            if (!a) return {};
+            return shape === "ellipse" ? { overlay: { ellipse: ellipseOf(a, w, mods?.shift) } } : { overlay: line(corners(w)) };
+        },
+        up(w, h, mods) {
+            if (!a) return {};
+            const from = a, hit = first;
+            a = null;
+            if (dist(w, from) < DRAG) { at = { w: from, hit }; return { ask: { kind: "size", shape } }; }
+            if (Math.abs(w[0] - from[0]) < TINY || Math.abs(w[1] - from[1]) < TINY) return { overlay: { lines: [] } };
+            if (shape === "rectangle") return { ...place(polyPath(corners(w, from).slice(0, 4)), hit), overlay: { lines: [] } };
+            return ellipse(...ellipseOf(from, w, mods?.shift), hit);
+        },
+        sized(width, height) {
+            if (!at || !(width > 0) || !(height > 0)) return {};
+            const { w, hit } = at;
+            at = null;
+            return shape === "rectangle" ? place(polyPath(corners([w[0] + width, w[1] + height], w).slice(0, 4)), hit) : ellipse(w[0], w[1], width / 2, height / 2, hit);
+        },
+        lastPoint() { return a && shape === "rectangle" ? [...a] : null; },
+        key(k) { if (k === "Escape") { a = null; at = null; return { overlay: { lines: [] }, done: true }; } return {}; },
+    };
+}
+
+// Click points, drag for a curve into the point, click the first point to close: place(path, firstHit).
+export function polygonShape(ctx, place) {
+    const { CLOSE, DRAG } = tols(ctx);
+    const pts = [], out = [], inn = []; // out[i]: handle leaving point i; inn[i]: handle entering it
+    let downAt = null, dragTo = null, first = null;
+    const overlay = (cursor) => line(cursor ? [...pts, cursor] : pts);
+    const close = () => {
+        const curves = pts.map((p, i) => {
+            const j = (i + 1) % pts.length;
+            return out[i] || inn[j] ? { c1: out[i] ?? p, c2: inn[j] ?? pts[j] } : null;
+        });
+        const r = place(polyPath(pts, curves), first);
+        pts.length = 0; out.length = 0; inn.length = 0; first = null;
+        return { ...r, overlay: { lines: [] } };
+    };
+    return {
+        down(w, h) { downAt = w; dragTo = null; if (!pts.length) first = h ?? null; return {}; },
+        move(w) {
+            if (!downAt) return { overlay: overlay(w) };
+            dragTo = w;
+            return { overlay: overlay(downAt) };
+        },
+        up(w) {
+            if (!downAt) return {};
+            const p = downAt; downAt = null;
+            const drag = dragTo && dist(w, p) >= DRAG ? w : null;
+            dragTo = null;
+            if (!drag && pts.length && dist(p, pts[0]) <= CLOSE) return pts.length >= 3 ? close() : {};
+            pts.push(p);
+            if (drag) { out[pts.length - 1] = [...drag]; inn[pts.length - 1] = [2 * p[0] - drag[0], 2 * p[1] - drag[1]]; }
+            return { overlay: overlay() };
+        },
+        lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
+        key(k) {
+            if (k === "Escape") { pts.length = 0; out.length = 0; inn.length = 0; first = null; return { overlay: { lines: [] }, done: true }; }
+            if (k === "Backspace") { pts.pop(); out.length = inn.length = pts.length; return { overlay: overlay() }; }
+            return {};
+        },
+    };
+}
+
+const newPiece = (ctx) => (path) => newPattern(ctx, pieceLabel(ctx.nodes), path);
+
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
     "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
 
 const TOOLS = {
-    rectangle(ctx) {
-        const { DRAG } = tols(ctx);
-        let a = null;
-        const corners = (b, o = a) => [o, [b[0], o[1]], b, [o[0], b[1]], o];
-        return {
-            down(w) { a = w; return {}; },
-            move(w) { return a ? { overlay: line(corners(w)) } : {}; },
-            up(w) {
-                if (!a) return {};
-                const from = a; a = null;
-                if (dist(w, from) < DRAG || Math.abs(w[0] - from[0]) < TINY || Math.abs(w[1] - from[1]) < TINY) return {}; // a plain click opens nothing
-                const pts = polyPath(corners(w, from).slice(0, 4));
-                return newPattern(ctx, pieceLabel(ctx.nodes), pts);
-            },
-            key(k) { if (k === "Escape") { a = null; return { overlay: { lines: [] }, done: true }; } return {}; },
-            lastPoint() { return a ? [...a] : null; },
-        };
-    },
-
-    polygon(ctx) {
-        const { CLOSE, DRAG } = tols(ctx);
-        const pts = [], out = [], inn = []; // out[i]: handle leaving point i; inn[i]: handle entering it
-        let downAt = null, dragTo = null;
-        const overlay = (cursor) => line(cursor ? [...pts, cursor] : pts);
-        const close = () => {
-            const curves = pts.map((p, i) => {
-                const j = (i + 1) % pts.length;
-                return out[i] || inn[j] ? { c1: out[i] ?? p, c2: inn[j] ?? pts[j] } : null;
-            });
-            return newPattern(ctx, pieceLabel(ctx.nodes), polyPath(pts, curves));
-        };
-        return {
-            down(w) { downAt = w; dragTo = null; return {}; },
-            move(w) {
-                if (!downAt) return { overlay: overlay(w) };
-                dragTo = w;
-                return { overlay: overlay(downAt) };
-            },
-            up(w) {
-                if (!downAt) return {};
-                const p = downAt; downAt = null;
-                const drag = dragTo && dist(w, p) >= DRAG ? w : null;
-                dragTo = null;
-                if (!drag && pts.length && dist(p, pts[0]) <= CLOSE) return pts.length >= 3 ? close() : {};
-                pts.push(p);
-                if (drag) { out[pts.length - 1] = [...drag]; inn[pts.length - 1] = [2 * p[0] - drag[0], 2 * p[1] - drag[1]]; }
-                return { overlay: overlay() };
-            },
-            key(k) {
-                if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; }
-                if (k === "Backspace") { pts.pop(); out.length = inn.length = pts.length; return { overlay: overlay() }; }
-                return {};
-            },
-            lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
-        };
-    },
+    rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
+    ellipse: (ctx) => boxShape(ctx, "ellipse", newPiece(ctx)),
+    polygon: (ctx) => polygonShape(ctx, newPiece(ctx)),
 
     edit(ctx) {
         const { DRAG } = tols(ctx);
-        let start = null, hit = null, path0 = null, id = null, sent = false;
+        let start = null, hit = null, path0 = null, id = null, sent = false, locked = false;
+        // An arc's (or NURBS span's) ends move with Fillet, not by hand (plan ruling 13): a press on
+        // one, or on an edge ending at one, drags nothing.
+        const LOCKED = "an arc's ends move with Fillet: undo it and fillet again";
+        const isLocked = (h) => {
+            const ends = pointsOf(ctx.nodes, h.id).locked;
+            if (h.kind === "point") return ends.includes(h.index);
+            if (h.kind !== "edge") return false;
+            const n = outlineOf(ctx, h.id)?.segments?.length ?? 0;
+            return n > 0 && (ends.includes(h.side) || ends.includes((h.side + 1) % n));
+        };
         const box = boxGesture(ctx, "points");
         let chosen = new Set();
         const preview = (w) => {
@@ -139,7 +182,9 @@ const TOOLS = {
                 if (h && (h.kind === "point" || h.kind === "handle" || h.kind === "edge")) {
                     id = h.id; path0 = outlineOf(ctx, id);
                     if (!path0) return {};
-                    start = w; hit = h; sent = false;
+                    start = w; hit = h; sent = false; locked = isLocked(h);
+                    // a seamed edge's press may be the click that selects its seam: refused on the drag
+                    if (locked && !h.seam) { hit = null; return { status: LOCKED }; }
                     // the box-selected points belong to the selected piece (read now: the app keeps one tool across them)
                     chosen = new Set(h.id === selectedId(ctx) ? ctx.pointSel ?? [] : []);
                 }
@@ -149,6 +194,7 @@ const TOOLS = {
             move(w) {
                 if (box.on) return box.move(w);
                 if (!hit || (!sent && dist(w, start) < DRAG)) return {};
+                if (locked) { if (sent) return {}; sent = true; return { status: LOCKED }; }
                 sent = true;
                 return preview(w);
             },
@@ -157,7 +203,7 @@ const TOOLS = {
                 if (box.on) return box.end(mods).then((r) => ({ pointSel: r?.indices ?? [], overlay: { lines: [] } }), () => ({ overlay: { lines: [] } }));
                 if (!hit) return {};
                 const h = hit; hit = null;
-                if (sent) return { endPreview: true };
+                if (sent) return locked ? {} : { endPreview: true };
                 return h.seam ? { select: { kind: "seam", id: h.seam } } : {};
             },
             key(k) {
