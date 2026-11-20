@@ -764,6 +764,30 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok("ellipse by dialog: 120 x 60");
+
+            // a rectangle by dialog, confirmed with Enter in a field (OK is the form's only submit button)
+            const rectsBefore = await patternCount();
+            await evaluate(`document.querySelector('#tools2d [data-tool=rectangle]').click()`);
+            await click([ex + ew * 0.85, ey + eh * 0.8]);
+            await until("the size dialog", () => evaluate(`document.getElementById("size-dialog").open`), 30000);
+            await evaluate(`(() => { document.getElementById("size-w").value = "80"; const h = document.getElementById("size-h"); h.value = "40"; h.focus(); })()`);
+            await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" });
+            await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+            await until("the rectangle added", async () => (await patternCount()) === rectsBefore + 1, 30000);
+            await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+            await until("its size", () => evaluate(`/size\\s*80\\s*×\\s*40/.test(document.getElementById("props").textContent)`), 30000);
+            // Cancel places nothing
+            await evaluate(`document.querySelector('#tools2d [data-tool=ellipse]').click()`);
+            await click([ex + ew * 0.15, ey + eh * 0.8]);
+            await until("the size dialog", () => evaluate(`document.getElementById("size-dialog").open`), 30000);
+            await evaluate(`document.getElementById("size-cancel").click()`);
+            await until("the dialog closed", () => evaluate(`!document.getElementById("size-dialog").open`), 30000);
+            await sleep(500);
+            if ((await patternCount()) !== rectsBefore + 1) throw new Error("Cancel placed a piece");
+            await key("Escape", "Escape", 27);
+            await noStatusError();
+            failIfErrors();
+            ok("rectangle by dialog: Enter confirms 80 x 40; Cancel places nothing");
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

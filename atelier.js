@@ -81,6 +81,8 @@ function askSize(shape) {
         resolve(d.returnValue === "ok" && w > 0 && h > 0 ? [w, h] : null);
     }, { once: true }));
 }
+// Cancel is not a submit button: Enter in a field submits OK, the form's only one
+$("size-cancel").addEventListener("click", () => $("size-dialog").close("cancel"));
 function renderIssues() {
     const el = $("issues");
     el.replaceChildren();
@@ -322,7 +324,14 @@ function handle(r) {
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);
     // a click-placed shape asks for its size; the answer goes to the tool that asked, if still armed
-    if (r.ask?.kind === "size") { const t = tool; askSize(r.ask.shape).then((wh) => { if (wh && t === tool) apply(t.sized(...wh)); }); }
+    if (r.ask?.kind === "size") {
+        const t = tool;
+        askSize(r.ask.shape).then((wh) => {
+            if (t !== tool) { if (wh) status("the document changed while the size was asked: click again", true); return; }
+            // a cancel clears what the click's jitter drew
+            apply(wh ? t.sized(...wh) : { overlay: { lines: [] } });
+        });
+    }
     if (r.select !== undefined) setSelection(r.select);
     if (r.pointSel) { pointSel = r.pointSel; post({ kind: "pointSel", indices: pointSel }); }
     if (r.done) setTool("edit");

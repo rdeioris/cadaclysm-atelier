@@ -467,7 +467,8 @@ self.onmessage = async ({ data }) => {
             // the ellipse being dragged is the kernel's, as Béziers
             case "overlay2d": {
                 let curves = null;
-                if (data.ellipse) { try { curves = atelier.ellipseBeziers(...data.ellipse); } catch { /* a flat drag: no curve yet */ } }
+                // a flat drag has no ellipse yet: no curve (any other kernel failure is reported)
+                if (data.ellipse && data.ellipse[2] > 0 && data.ellipse[3] > 0) curves = atelier.ellipseBeziers(...data.ellipse);
                 overlay2d?.set({ lines: data.lines ?? [], points: data.points ?? [], curves, text: data.text ?? null });
                 break;
             }

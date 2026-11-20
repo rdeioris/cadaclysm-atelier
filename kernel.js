@@ -219,9 +219,10 @@ export class Atelier {
     // An ellipse about (cx, cy), semi-axes rx along x and ry along y, from the kernel: four exact
     // conic quarters counter-clockwise from (cx + rx, cy), as path JSON (spec §3).
     ellipsePath(cx, cy, rx, ry) { return this.pathOf(this.f("profile_ellipse")(cx, cy, rx, ry)); }
-    // A profile handle as path JSON {start, segments}: `pathJson` leaves the handle to the caller,
+    // A profile handle as path JSON {start, segments, holes?}, all the kernel gives (a moved or
+    // mirrored piece keeps its holes): `pathJson` leaves the handle to the caller,
     // `pathOf` frees it (Tasks 13, 17, 18, 19 use these, not their own parse-and-free).
-    pathJson(p) { const { start, segments } = JSON.parse(this.f("document_profile_path")(p)); return { start, segments }; }
+    pathJson(p) { return JSON.parse(this.f("document_profile_path")(p)); }
     pathOf(q) { try { return this.pathJson(q); } finally { this.f("profile_free")(q); } }
     // The same ellipse's exact Béziers, 16 doubles each (the overlay's rubber band).
     ellipseBeziers(cx, cy, rx, ry) {

@@ -49,4 +49,16 @@ for (const v of [80, 120, 30, 70]) {
 }
 const back = solo.fromDxf(dxfHoled, "f_x").find((o) => o.node?.kind === "profile.path").node.path;
 assert.equal((back.holes ?? []).length, 0, "(d) the AAMA reader drops holes");
-console.log("holes-kernel: ok -- (a) no hole cut line from the kernel, (b) sides ignore holes, (c) AAMA writes holes, (d) reads none");
+// (d) the imported piece is the reader's outline as read: the file's rectangle, nothing added
+assert.deepEqual(m.pathPoints(back), m.pathPoints(outer), "(d) the imported outline is the written one");
+
+// (e) Move and Mirror keep a piece's holes: the hole goes with the outline (kernel.js pathOf)
+const ring = (p) => m.pathPoints(p).map(([x, y]) => [Math.round(x * 1e6) / 1e6, Math.round(y * 1e6) / 1e6]);
+const moved = solo.transformed("p1", [1, 0, 10, 0, 1, 5]);
+assert.equal((moved.holes ?? []).length, 1, "(e) a moved piece keeps its hole");
+assert.deepEqual(ring(moved.holes[0]), ring(hole).map(([x, y]) => [x + 10, y + 5]), "(e) the hole moved with the piece");
+const mirrored = solo.mirrored("p1", [0, 0, 0, 1]);          // across the y axis: x -> -x
+assert.equal((mirrored.holes ?? []).length, 1, "(e) a mirrored piece keeps its hole");
+const sorted = (pts) => [...pts].sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+assert.deepEqual(sorted(ring(mirrored.holes[0])), sorted(ring(hole).map(([x, y]) => [x === 0 ? 0 : -x, y])), "(e) the hole mirrored with the piece");
+console.log("holes-kernel: ok -- (a) no hole cut line from the kernel, (b) sides ignore holes, (c) AAMA writes holes, (d) reads none, (e) Move and Mirror keep holes");
