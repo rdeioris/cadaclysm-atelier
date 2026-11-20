@@ -90,13 +90,20 @@ assert.match(makeTool("to-hole", ctx()).down([0, 0], { kind: "pattern", id: "p1"
     assert.match(off.up([320, 320], null, {}).status, /piece/);
     a.undo(); a.undo(); a.undo();
 }
-{   // a converted shape gets the hole checks: one crossing a hole is refused and changes nothing
-    a.apply(m.addInternal(a.nodes(), "p1", m.rectPath(50, 40, 20, 20)), "internal");
-    const before = JSON.stringify(a.nodes());
-    const index = a.drawing("p1").internal.length - 1;
-    assert.throws(() => a.apply(makeTool("to-hole", ctx()).down([50, 50], { kind: "internal", id: "p1", index }, {}).ops, "to hole"), /cross/);
-    assert.equal(JSON.stringify(a.nodes()), before, "a refused conversion changes nothing");
-    a.undo();
+{   // a converted shape gets the hole checks: one crossing a hole, inside one, or touching the outline is
+    // refused and changes nothing
+    for (const [what, path, error] of [
+        ["crossing hole 1", m.rectPath(50, 40, 20, 20), /cross/],
+        ["inside hole 1", m.rectPath(30, 30, 10, 10), /lies inside hole/],
+        ["touching the outline", m.rectPath(100, 80, 20, 20 - 2e-5), /touches the outline/],
+    ]) {
+        a.apply(m.addInternal(a.nodes(), "p1", path), "internal");
+        const before = JSON.stringify(a.nodes());
+        const index = a.drawing("p1").internal.length - 1;
+        assert.throws(() => a.apply(makeTool("to-hole", ctx()).down([0, 0], { kind: "internal", id: "p1", index }, {}).ops, "to hole"), error, what);
+        assert.equal(JSON.stringify(a.nodes()), before, `a refused conversion ${what} changes nothing`);
+        a.undo();
+    }
 }
 {   // a hole narrower than twice the allowance has no cut line: a warning names it (the hole is still added)
     let before = a.cutlessHoles();

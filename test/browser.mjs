@@ -847,8 +847,10 @@ async function check(cdp, base) {
                 // 20 x 20 hole at 40..60 x 30..50 and the ellipse hole at 120..180 x 30..70), then To hole on its right
                 // edge (its left one lies on the grain line). The tool snaps, alignment too, so the click goes on a snap
                 // point: 100 x 10 is the grain line's lower end
+                // re-measured with Edit armed: a snapping tool would snap the hover by the piece's corner onto it
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
                 const w1 = await worldOf([hc[0] + 1, hc[1]]), w2 = await worldOf([hc[0] + 51, hc[1]]);
-                const mm = 50 / (w2[0] - w1[0]);        // re-measured: a step above may have moved the camera
+                const mm = 50 / (w2[0] - w1[0]);        // a step above may have moved the camera
                 const inner = [hc[0] + 100 * mm, hc[1] - 10 * mm];
                 await saveJson();                       // the save's word replaces the refusal on the status line
                 await noStatusError();
@@ -857,19 +859,12 @@ async function check(cdp, base) {
                 await until("the internal shape drawn", async () => Number(await evaluate(`document.body.dataset.items2d ?? 0`)) > items0, 30000);   // the scene grew by its item
                 await noStatusError();
                 await evaluate(`document.querySelector('#tools2d [data-tool=to-hole]').click()`);
-                // the edge is a line a pixel or two wide: hover across it until the pick answers the internal shape
-                let edge = null;
-                const seen = [];
-                for (const dx of [0, -1, 1, -2, 2, -3, 3]) {
-                    const at = [inner[0] + 24 * mm + dx, inner[1] - 12 * mm];
-                    await evaluate(`document.body.dataset.hit = "__"`);
-                    await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
-                    await until("the hover answer", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 10000);
-                    const hit = await evaluate(`document.body.dataset.hit`);
-                    seen.push(`${dx}: ${hit}`);
-                    if (hit === "internal") { edge = at; break; }
-                }
-                if (!edge) throw new Error(`the internal edge never hovered (${seen.join(", ")})`);
+                // one hover on the right edge, 124 mm in: the pick answers the internal shape over the piece's face
+                const edge = [inner[0] + 24 * mm, inner[1] - 12 * mm];
+                await evaluate(`document.body.dataset.hit = "__"`);
+                await mouse("mouseMoved", edge[0], edge[1], { buttons: 0 });
+                await until("the hover answer", async () => (await evaluate(`document.body.dataset.hit`)) !== "__", 30000);
+                { const hit = await evaluate(`document.body.dataset.hit + " at " + document.body.dataset.world`); if (!hit.startsWith("internal ")) throw new Error(`the internal edge's hover answered ${hit}`); }
                 await click(edge);
                 await until("three holes", () => evaluate(`/3 holes/.test(document.getElementById("props").textContent)`), 30000);
                 await noStatusError();
