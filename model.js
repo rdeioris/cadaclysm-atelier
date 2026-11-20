@@ -118,6 +118,13 @@ export function convertToHole(nodes, id, index) {
     return [...setPattern(nodes, id, { internal: p.internal.filter((_, i) => i !== index) }), ...addHole(nodes, id, entry.path)];
 }
 
+// A piece traced from internal shape `path` of piece `id` (spec §4: Trace): the source's fabric,
+// layer, first allowance and grain, labelled "‹label› trace" (suffixed when taken).
+export function tracePattern(nodes, id, path) {
+    const p = byId(nodes).get(id);
+    return addPattern(nodes, { label: freeLabel(nodes, `${p.label ?? "Piece"} trace`), path, fabric: p.fabric, layer: p.layer ?? 0, allowance: (p.allowance ?? [10])[0], grain: p.grain ?? [0, 1] });
+}
+
 // `nodes` with ops applied (add, set, remove): what a batch leaves, for the next builder's ids.
 export function withAdded(nodes, ops) {
     let out = nodes.slice();

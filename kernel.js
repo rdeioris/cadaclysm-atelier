@@ -510,6 +510,17 @@ export class Atelier {
         return { ...out, dropped: r.dropped };
     }
 
+    // Internal closed shape `index` of piece `id` as a new piece, moved by the kernel beside the
+    // piece (its width + 20 mm along x). The original keeps the shape. One batch: one undo.
+    traceOps(id, index) {
+        const nodes = this.nodes(), entry = m.byId(nodes).get(id)?.internal?.[index];
+        if (!entry || !m.isClosedPath(entry.path)) throw new Error("trace: click a closed internal shape");
+        const b = this.drawing(id).bounds, dx = b[2] - b[0] + 20;
+        const path = this.withPath({ start: entry.path.start, segments: entry.path.segments },
+            (p) => this.pathOf(this.f("profile_transform2d")(p, Float64Array.of(1, 0, dx, 0, 1, 0))));
+        return m.tracePattern(nodes, id, path).ops;
+    }
+
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }
     // The pieces of an AAMA DXF as ops adding them, in `fabric` (absent or unknown: the first fabric).
     fromDxf(dxf, fabric) {

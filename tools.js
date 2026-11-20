@@ -228,6 +228,17 @@ const TOOLS = {
     "internal-polygon": (ctx) => polygonShape(ctx, internalAt(ctx)),
     cut: (ctx) => cutTool(ctx, false),
     "cut-sew": (ctx) => cutTool(ctx, true),
+    // Trace: a click on an internal closed shape copies it out as a new piece beside the piece
+    // (the kernel moves it; the original keeps the shape): one batch, one undo.
+    trace(ctx) {
+        return {
+            down(w, h) {
+                if (h?.kind !== "internal") return { status: "click an internal closed shape" };
+                return isClosedPath(nodeOf(ctx, h.id)?.internal?.[h.index]?.path) ? { trace: { id: h.id, index: h.index }, done: true } : { status: "only a closed internal shape traces" };
+            },
+            move() { return {}; }, up() { return {}; }, key() { return {}; },
+        };
+    },
     // Convert to Hole: a click on an internal closed shape moves it into the outline's holes (one
     // batch: one undo); the kernel's hole checks refuse it as they refuse a drawn hole.
     "to-hole"(ctx) {

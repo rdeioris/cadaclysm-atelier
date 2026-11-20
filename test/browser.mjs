@@ -9,7 +9,7 @@
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
 // of a piece while it runs (re-meshed), Pause, Reset. Then the 2D tools on a new garment, ending
 // with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
-// internal square by dialog converted to a hole. Each step
+// internal square by dialog converted to a hole, and another traced out as a piece. Each step
 // prints ok. Any console error or uncaught exception, in the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
@@ -887,6 +887,49 @@ async function check(cdp, base) {
                 if ((piece.internal ?? []).length) throw new Error(`the square is still an internal line: ${JSON.stringify(piece.internal)}`);
                 failIfErrors();
                 ok("internal square by dialog, converted to a hole: 3 holes");
+            }
+
+            // ---- Trace (Task 18): an internal 30 x 30 square copied out as a piece beside the original ----
+            {   // its lower-left corner 65 x 55 mm into the piece: clear of the holes (40..60 x 30..50, 100..124 x
+                // 10..34, the ellipse 120..180 x 30..70) and the grain line (x 100). The hover goes where the kernel
+                // put it (the saved document), not where the click aimed: the placing tool snaps
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const w1 = await worldOf([hc[0] + 1, hc[1]]), w2 = await worldOf([hc[0] + 51, hc[1]]);
+                const mm = 50 / (w2[0] - w1[0]);
+                const screenOf = (p) => [hc[0] + 1 + (p[0] - w1[0]) * mm, hc[1] - (p[1] - w1[1]) * mm];
+                const items0 = Number(await evaluate(`document.body.dataset.items2d ?? 0`));
+                await byDialog("internal-rectangle", [hc[0] + 65 * mm, hc[1] - 55 * mm], 30, 30);
+                await until("the internal square drawn", async () => Number(await evaluate(`document.body.dataset.items2d ?? 0`)) > items0, 30000);
+                await noStatusError();
+                const before = await saveJson();
+                const src = before.nodes.find((n) => n.kind === "garment.pattern" && (n.internal ?? []).length);
+                if (!src) throw new Error("no piece holds the internal square");
+                const sq = src.internal.at(-1).path;
+                const xs = [sq.start, ...sq.segments.map((s) => s.to)].map((p) => p[0]), ys = [sq.start, ...sq.segments.map((s) => s.to)].map((p) => p[1]);
+                const [x0, y0, y1] = [Math.min(...xs), Math.min(...ys), Math.max(...ys)];
+                await evaluate(`document.querySelector('#tools2d [data-tool=trace]').click()`);
+                const edge = screenOf([x0, (y0 + y1) / 2]);       // the left edge's middle
+                await worldOf(edge);
+                {
+                    const hit = await evaluate(`document.body.dataset.hit + " at " + document.body.dataset.world`);
+                    if (!hit.startsWith("internal ")) throw new Error(`the internal edge's hover answered ${hit} (edge ${edge}, square ${x0}, ${y0}..${y1})`);
+                }
+                const nTr = await patternCount();
+                await click(edge);
+                await until("the traced piece", async () => (await patternCount()) === nTr + 1, 30000);
+                await noStatusError();
+                const after = await saveJson();
+                const traced = after.nodes.find((n) => n.kind === "garment.pattern" && n.label === `${src.label} trace`);
+                if (!traced) throw new Error(`no "${src.label} trace" piece: ${after.nodes.filter((n) => n.kind === "garment.pattern").map((n) => n.label)}`);
+                if (traced.fabric !== src.fabric) throw new Error(`the trace is in ${traced.fabric}, not ${src.fabric}`);
+                // beside the original: moved by the piece's width (200 mm) + 20 along x
+                const tp = after.nodes.find((n) => n.id === traced.outline).path;
+                const off = [0, 1].map((i) => tp.start[i] - sq.start[i]);
+                if (!(Math.abs(off[0] - 220) < 1e-6 && Math.abs(off[1]) < 1e-6)) throw new Error(`the trace is ${off} mm from the square, not 220, 0`);
+                const kept = after.nodes.find((n) => n.id === src.id);
+                if ((kept.internal ?? []).length !== src.internal.length) throw new Error("the original lost its internal square");
+                failIfErrors();
+                ok("trace: an internal square became a piece beside the original");
             }
 
             // ---- typed lengths (Task 16): a 100 x 50 polygon typed point by point, on a new garment ----

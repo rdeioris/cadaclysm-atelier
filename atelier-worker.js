@@ -399,7 +399,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -450,6 +450,8 @@ self.onmessage = async ({ data }) => {
                 post({ kind: "status", text: [data.sew ? "cut and sewn" : "cut", ...notes].join("; ") });
                 break;
             }
+            // a trace: one batch; a refusal changes nothing and says why (the error)
+            case "trace": atelier.apply(atelier.traceOps(data.id, data.index), "trace"); changed(data.seq); break;
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
             case "redo": atelier.redo(); changed(data.seq); break;
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
