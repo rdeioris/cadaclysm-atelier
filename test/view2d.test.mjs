@@ -26,7 +26,7 @@ const nodes = [{ id: "p1_outline", kind: "profile.path", path: { start: [0, 0], 
     { type: "line", to: [100, 0] }, { type: "bezier", c1: [110, 10], c2: [110, 40], to: [100, 50] }, { type: "line", to: [0, 50] }, { type: "line", to: [0, 0] }] } }];
 const pts = pointsOf(nodes, "p1");
 assert.deepEqual(pts.points, [[0, 0], [100, 0], [100, 50], [0, 50]]);
-assert.deepEqual(pts.handles, [{ index: 1, c1: [110, 10], c2: [110, 40] }]);
+assert.deepEqual(pts.handles, [{ index: 1, which: "c1", at: [110, 10], from: 1 }, { index: 1, which: "c2", at: [110, 40], from: 2 }]);
 
 const c2 = new Camera(800, 600); c2.fit([0, 0, 100, 50], 40);
 const tol = 8;

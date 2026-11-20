@@ -1,5 +1,5 @@
 // The edit paths against the real kernel: the Move tool's previews, refused (degenerate or
-// duplicate) changes, the undo floor of New / Open, an outline edit and its seam re-anchor as
+// duplicate) changes, a fresh history on New / Open, an outline edit and its seam re-anchor as
 // one undo step, seam picking with real seam data, and removing a piece.
 import assert from "node:assert/strict";
 import { loadKernel } from "./package.mjs";
@@ -7,7 +7,7 @@ import { Atelier } from "../kernel.js";
 import * as m from "../model.js";
 import { makeTool } from "../tools.js";
 import { opsFor } from "../props.js";
-import { Camera, hitTest } from "../view2d.js";
+import { hitOf, arcAt } from "../view2d.js";
 
 const k = await loadKernel();
 const params = Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1]));
@@ -162,12 +162,15 @@ const node = (a, id) => m.byId(a.nodes()).get(id);
     rect(a, "A", 0); rect(a, "B", 200);
     a.apply(m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: 100, a_to: 150, b_from: 250, b_to: 300, reversed: true, anchor: { a: [1, 0, 1], b: [3, 0, 1] } }).ops, "sew");
     const drawings = a.drawings(), seams = a.seams(), nodes = a.nodes();
-    const cam = new Camera(800, 600); cam.fit([0, 0, 300, 50], 40);
-    const h = hitTest(drawings, seams, [100, 25], 6, cam, nodes, null);
+    const byId = new Map(drawings.map((d) => [d.id, d]));
+    const sp = seams[0].points_a, mid = (sp.length >> 2) * 2;
+    assert.ok(arcAt(byId.get("p1").samples, byId.get("p1").sides, [sp[mid], sp[mid + 1]]).d < 0.01, "the seam's range points lie on the outline");
+    const at = (p) => ({ item: 1, node: 0, face: 0, point: [p[0], p[1], 0], segment: 0, distancePx: 0 });
+    const h = hitOf({ kind: "seam", id: "s1", pattern: "p1" }, at([100, 25]), byId);
     assert.equal(h.kind, "edge"); assert.equal(h.id, "p1"); assert.equal(h.seam, "s1");
-    const off = hitTest(drawings, seams, [50, 0], 6, cam, nodes, null);
+    const off = hitOf({ kind: "sew", id: "p1" }, at([50, 0]), byId);
     assert.equal(off.kind, "edge"); assert.equal(off.seam, undefined);
-    const ctx = { nodes, drawings: new Map(drawings.map((d) => [d.id, d])), selection: null, fabric: "f_x", request: null, pxToWorld: 1 / cam.scale };
+    const ctx = { nodes, drawings: byId, selection: null, fabric: "f_x", request: null, pxToWorld: 1 };
     const t = makeTool("edit", ctx);
     t.down([100, 25], h, {});
     assert.deepEqual(t.up([100, 25], h, {}), { select: { kind: "seam", id: "s1" } });
