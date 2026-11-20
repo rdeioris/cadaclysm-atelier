@@ -10,7 +10,7 @@
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
 import { seamColour } from "./sewing.js";
-import { pointsOf, notchNormals, ringArea } from "./view2d.js";
+import { pointsOf, notchNormals } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
@@ -41,9 +41,18 @@ const xyz = (pts, z = 0) => pts.flatMap((p) => [p[0], p[1], z]);
 // Beziers (x, y, z, w a control point) and a mesh's positions moved to depth z.
 function liftBeziers(b, z) { const out = Float64Array.from(b); for (let i = 2; i < out.length; i += 4) out[i] = z; return out; }
 function liftMesh(m, z) { const p = Float32Array.from(m.positions); for (let i = 2; i < p.length; i += 3) p[i] = z; return { positions: p, indices: m.indices }; }
-// The point halfway along a polyline (x, y pairs, along a piece's outline in path order) and
-// the unit normal there out of the piece.
-function midOut(pts, ccw) {
+function inRing(ring, [x, y]) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
+        const [xi, yi, xj, yj] = [ring[i], ring[i + 1], ring[j], ring[j + 1]];
+        if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+}
+// The point halfway along a polyline (x, y pairs, along a piece's outline `ring`) and the unit
+// normal there out of the piece: the side whose nearby point is not inside the ring (a seam's
+// range may run either way along the outline).
+function midOut(pts, ring) {
     const n = pts.length >> 1;
     let total = 0;
     for (let i = 0; i + 1 < n; i++) total += Math.hypot(pts[2 * i + 2] - pts[2 * i], pts[2 * i + 3] - pts[2 * i + 1]);
@@ -52,7 +61,9 @@ function midOut(pts, ccw) {
         const tx = pts[2 * i + 2] - pts[2 * i], ty = pts[2 * i + 3] - pts[2 * i + 1], l = Math.hypot(tx, ty);
         if (left <= l || i + 2 === n) {
             const t = l > 0 ? Math.min(left / l, 1) : 0, u = l || 1;
-            return { at: [pts[2 * i] + tx * t, pts[2 * i + 1] + ty * t], normal: ccw ? [ty / u, -tx / u] : [-ty / u, tx / u] };
+            const at = [pts[2 * i] + tx * t, pts[2 * i + 1] + ty * t], n = [ty / u, -tx / u];
+            const out = !ring || !inRing(ring, [at[0] + n[0] * 0.5, at[1] + n[1] * 0.5]);
+            return { at, normal: out ? n : [-n[0], -n[1]] };
         }
         left -= l;
     }
@@ -115,7 +126,7 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             // the number stands out from the seam's middle, along the normal out of piece a, over a
             // box of the background so it reads over any line
             const r = rank.get(s.a) ?? 0;
-            const { at, normal: [nx, ny] } = midOut(s.points_a, ringArea(byId.get(s.a)?.sew ?? s.points_a) >= 0);
+            const { at, normal: [nx, ny] } = midOut(s.points_a, byId.get(s.a)?.sew);
             const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(-SEAM_NO_PX * ny * 10) / 10 + 0];   // screen y runs down
             out.push({ key: `seam/${s.id}/no`, show: "text", text: String(i + 1), data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
                 offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${i + 1}@${at[0]},${at[1]}@${r}` });

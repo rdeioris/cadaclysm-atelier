@@ -71,6 +71,8 @@ assert.deepEqual(no.offset, [8, 0], "out of the piece: +x on its right side");
 assert.equal(no.box, "#1e2024"); assert.deepEqual(Array.from(no.data), [100, 25, 3], "at the seam's middle");
 const cwSeam = specs2d(state({ drawings: [drawing("p1", 0, { sew: [0, 0, 0, 50, 100, 50, 100, 0, 0, 0] }), drawing("p2", 200)], seams: [{ ...seams[0], points_a: [100, 50, 100, 0] }] }));
 assert.deepEqual(cwSeam.find((x) => x.key === "seam/s1/no").offset, [8, 0], "a clockwise piece: still out of it");
+const against = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 100, 0] }] }));
+assert.deepEqual(against.find((x) => x.key === "seam/s1/no").offset, [8, 0], "a seam range running against the outline: still out of it");
 // a notch tick: its glyph turned so the stroke runs along the outward normal (p1's notch is on its bottom side)
 const ticks = specs.find((x) => x.key === "p1/notches");
 const want = [Math.cos(-Math.PI / 2 + TICK_TURN), Math.sin(-Math.PI / 2 + TICK_TURN), 0];
