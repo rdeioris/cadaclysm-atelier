@@ -49,6 +49,13 @@ assert.deepEqual(pts.handles, [
     { index: 1, which: "c2", at: [110, 40], from: 2 },
     { index: 2, which: "control", at: [50, 80], from: 2, to: 3 }]);
 assert.deepEqual(pts.locked, [3, 0], "an arc's two ends");
+// a NURBS span has no `to`: its last control point is the next path point, and its ends are locked
+{
+    const nurbs = { start: [0, 0], segments: [{ type: "line", to: [100, 0] }, { type: "nurbs", degree: 2, points: [[120, 25], [100, 50]], weights: [1, 1, 1], knots: [0, 0, 0, 1, 1, 1] }, { type: "line", to: [0, 0] }] };
+    const np = pointsOf([{ id: "p2_outline", kind: "profile.path", path: nurbs }], "p2");
+    assert.deepEqual(np.points, [[0, 0], [100, 0], [100, 50]]);
+    assert.deepEqual(np.locked, [1, 2]);
+}
 
 // pick decoding
 const drawings = new Map([["p1", { id: "p1", samples, sides }]]);

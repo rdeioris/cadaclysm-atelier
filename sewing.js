@@ -144,3 +144,23 @@ export function reanchor(nodes, drawings, patternId) {
     }
     return { ops, removed };
 }
+
+// After a side is inserted at `at` in piece `id` (a fillet's arc): every seam anchor on that
+// piece naming side `at` or later names the next one.
+export function shiftAnchors(nodes, id, at) {
+    const ops = [];
+    for (const n of nodes) {
+        if (n.kind !== "garment.seam" || !n.meta?.atelier) continue;
+        const anchor = { ...n.meta.atelier };
+        let moved = false;
+        for (const end of ["a", "b"]) {
+            if (n[end] !== id || !anchor[end]) continue;
+            const [sf, tf, tt, st] = anchor[end];
+            const bump = (s) => (s >= at ? s + 1 : s);
+            anchor[end] = st === undefined ? [bump(sf), tf, tt] : [bump(sf), tf, tt, bump(st)];
+            moved ||= bump(sf) !== sf || (st !== undefined && bump(st) !== st);
+        }
+        if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
+    }
+    return ops;
+}

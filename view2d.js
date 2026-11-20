@@ -73,7 +73,7 @@ export function pointsOf(nodes, id) {
             out.handles.push({ index: i, which: "c2", at: [...seg.c2], from: next });
         } else if (seg.type === "conic") out.handles.push({ index: i, which: "control", at: [...seg.control], from: i, to: next });
         else if (seg.type === "arc" || seg.type === "nurbs") out.locked.push(i, next);
-        if (i < n - 1) out.points.push([...seg.to]);
+        if (i < n - 1) out.points.push([...(seg.to ?? seg.points.at(-1))]);
     });
     out.locked = [...new Set(out.locked)];
     return out;

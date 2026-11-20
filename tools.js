@@ -252,6 +252,40 @@ const TOOLS = {
         };
     },
 
+    // Fillet: click a corner of the selected piece (a first click selects the piece), then drag
+    // out the radius or type it (spec §4). The worker builds the batch (one undo) or refuses it.
+    fillet(ctx) {
+        const { DRAG } = tols(ctx);
+        let corner = null, pressed = null;
+        const done = (radius) => {
+            const c = corner;
+            corner = null;
+            return radius > 0 ? { fillet: { id: c.id, corner: c.index, radius }, overlay: { lines: [] } } : { status: "a radius above 0", overlay: { lines: [] } };
+        };
+        return {
+            down(w, h) {
+                if (h?.kind === "point") {
+                    const at = pointsOf(ctx.nodes, h.id).points[h.index];
+                    if (at) { corner = { id: h.id, index: h.index, at }; pressed = w; }
+                    return {};
+                }
+                if (h?.id && (h.kind === "pattern" || h.kind === "edge")) return { select: { kind: "pattern", id: h.id } };
+                return {};
+            },
+            move(w) { return corner ? { overlay: line([corner.at, w]) } : {}; },
+            up(w) {
+                if (!corner || !pressed) return {};
+                const from = pressed;
+                pressed = null;
+                if (dist(w, from) >= DRAG) return done(dist(w, corner.at));
+                return { status: "drag out the radius, or type it", error: false };
+            },
+            lastPoint() { return corner ? [...corner.at] : null; },
+            typed(_p, length) { return corner ? done(length) : {}; },
+            key(k) { if (k === "Escape") { corner = null; pressed = null; return { overlay: { lines: [] }, done: true }; } return {}; },
+        };
+    },
+
     edit(ctx) {
         const { DRAG } = tols(ctx);
         let start = null, hit = null, path0 = null, id = null, sent = false, locked = false;

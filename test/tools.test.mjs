@@ -426,6 +426,36 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.deepEqual(d.key("Enter").cut, { id: "p1", cutter: { start: [20, -10], segments: [{ type: "line", to: [20, 60] }] }, sew: true, consume: null });
     assert.match(makeTool("cut", ctx({ nodes })).key("Enter").status, /select/);
 }
+// fillet: a corner, then a dragged or typed radius
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const t = makeTool("fillet", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    assert.deepEqual(t.up([108, 6], null, {}).fillet, { id: "p1", corner: 1, radius: 10 }, "drag out the radius");
+    const u = makeTool("fillet", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    u.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    assert.equal(u.up([100, 0], null, {}).error, false);
+    assert.deepEqual(u.lastPoint(), [100, 0]);
+    assert.deepEqual(u.typed([112, 0], 12).fillet, { id: "p1", corner: 1, radius: 12 }, "or type it");
+    assert.equal(u.lastPoint(), null, "one radius per corner");
+    const w = makeTool("fillet", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    w.down([101, 1], { kind: "point", id: "p1", index: 1 }, {});
+    assert.deepEqual(w.up([108, 6], null, {}).fillet.radius, 10, "the radius runs from the corner, not from the press beside it");
+    const v = makeTool("fillet", ctx({ nodes }));
+    assert.deepEqual(v.down([50, 25], { kind: "pattern", id: "p1" }, {}).select, { kind: "pattern", id: "p1" }, "a first click selects the piece");
+}
+// the edit lock on a filleted outline: hit.side is a segment index (an arc is a side of its own),
+// so the side after the arc's far end is locked and the next one is free
+{
+    const filleted = { start: [0, 0], segments: [{ type: "line", to: [90, 0] }, { type: "arc", to: [100, 10], centre: [90, 10], ccw: true },
+        { type: "line", to: [100, 50] }, { type: "line", to: [0, 50] }, { type: "line", to: [0, 0] }] };
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: filleted }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const tool = () => makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    assert.match(tool().down([100, 30], { kind: "edge", id: "p1", side: 2 }, {}).status, /arc/, "the side leaving the arc");
+    const free = tool();
+    assert.equal(free.down([50, 50], { kind: "edge", id: "p1", side: 3 }, {}).status, undefined, "the top side is free");
+    assert.deepEqual(m.pathPoints(free.move([50, 60], null, {}).preview[0].fields.path).slice(3), [[100, 60], [0, 60]]);
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");

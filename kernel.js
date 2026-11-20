@@ -515,10 +515,48 @@ export class Atelier {
     traceOps(id, index) {
         const nodes = this.nodes(), entry = m.byId(nodes).get(id)?.internal?.[index];
         if (!entry || !m.isClosedPath(entry.path)) throw new Error("trace: click a closed internal shape");
-        const b = this.drawing(id).bounds, dx = b[2] - b[0] + 20;
+        const b = this.withOutline(id, (p) => this.f("profile_bounds")(p)), dx = b[2] - b[0] + 20;
         const path = this.withPath({ start: entry.path.start, segments: entry.path.segments },
             (p) => this.pathOf(this.f("profile_transform2d")(p, Float64Array.of(1, 0, dx, 0, 1, 0))));
         return m.tracePattern(nodes, id, path).ops;
+    }
+
+    // Pattern `id`'s outline with corner `corner` (path point index) rounded to `radius` by
+    // profile_fillet_corner on the two sides meeting there, the pieces read back through
+    // profile_from_pieces; its holes kept, its notches re-placed at the same points.
+    // -> {path, insertAt, notches}: the arc is side `insertAt`, and sides from it on move up one.
+    // Throws, changing nothing, for a free-form side, a radius that does not fit, or a side the
+    // kernel trims into more than one segment.
+    filletPath(id, corner, radius) {
+        const f = this.f, nodes = m.byId(this.nodes()), node = nodes.get(id), path = nodes.get(`${id}_outline`)?.path;
+        if (!node || !path) throw new Error(`no pattern ${id}`);
+        const segs = path.segments, n = segs.length, before = (corner - 1 + n) % n;
+        if (!Number.isInteger(corner) || corner < 0 || corner >= n) throw new Error(`fillet: no corner ${corner}`);
+        if (!(radius > 0)) throw new Error("fillet: a radius above 0");
+        if ([segs[before], segs[corner]].some((s) => s.type === "nurbs")) throw new Error("fillet: a free-form side's corner is not rounded this round");
+        const pts = m.pathPoints(path);
+        const json = this.withPath({ start: pts[before], segments: [segs[before]] }, (pa) =>
+            this.withPath({ start: pts[corner], segments: [segs[corner]] }, (pb) => f("profile_fillet_corner")(pa, pb, radius, 0)));
+        const r = JSON.parse(json);
+        if (r.a.length !== 1 || r.b.length !== 1) throw new Error("fillet: this corner's sides do not round as one segment each");
+        const mid = this.pathOf(f("profile_from_pieces")(JSON.stringify([...r.a, r.arc, ...r.b]), false, 0)).segments;
+        if (mid.length !== 3 || mid[1].type !== "arc") throw new Error("fillet: the corner did not come back as side, arc, side");
+        const [sa, arc, sb] = mid;
+        const filleted = corner === 0
+            ? { start: [...arc.to], segments: [sb, ...segs.slice(1, n - 1), sa, arc] }
+            : { start: [...path.start], segments: [...segs.slice(0, before), sa, arc, sb, ...segs.slice(corner + 1)] };
+        if (path.holes) filleted.holes = path.holes;
+        this.checkHoles(filleted);
+        const notches = this.withOutline(id, (old) => this.withPath(filleted, (p) => {
+            const samples = this.samplesOf(p), sides = this.sideStarts(p, f("profile_length")(p, ACC)[0], filleted.segments.length);
+            return (node.notches ?? []).map((nt) => { const at = f("profile_point_at_length")(old, nt.at, ACC); return { ...nt, at: arcAt(samples, sides, [at[0], at[1]]).s }; });
+        }));
+        return { path: filleted, insertAt: corner === 0 ? n : corner, notches };
+    }
+    // The fillet's ops (one batch; Atelier.commit(ops, "fillet", id) re-anchors the seams in it).
+    filletOps(id, corner, radius) {
+        const r = this.filletPath(id, corner, radius);
+        return m.filletOps(this.nodes(), id, r.path, r.insertAt, r.notches);
     }
 
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }

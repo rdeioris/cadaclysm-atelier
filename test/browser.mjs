@@ -9,8 +9,9 @@
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
 // of a piece while it runs (re-meshed), Pause, Reset. Then the 2D tools on a new garment, ending
 // with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
-// internal square by dialog converted to a hole, and another traced out as a piece. Each step
-// prints ok. Any console error or uncaught exception, in the page or its workers, fails.
+// internal square by dialog converted to a hole, another traced out as a piece, and a corner
+// filleted to a typed radius. Each step prints ok. Any console error or uncaught exception, in
+// the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
 //     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the drape
@@ -930,6 +931,45 @@ async function check(cdp, base) {
                 if ((kept.internal ?? []).length !== src.internal.length) throw new Error("the original lost its internal square");
                 failIfErrors();
                 ok("trace: an internal square became a piece beside the original");
+            }
+
+            // ---- Fillet (Task 19): the Task 14 piece's lower-right corner rounded to a typed 10 mm ----
+            {   // the corner and the fill from the saved document, through a mapping re-measured with Edit armed
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const w1 = await worldOf([hc[0] + 1, hc[1]]), w2 = await worldOf([hc[0] + 51, hc[1]]);
+                const mm = 50 / (w2[0] - w1[0]);
+                const screenOf = (p) => [hc[0] + 1 + (p[0] - w1[0]) * mm, hc[1] - (p[1] - w1[1]) * mm];
+                const before = await saveJson();
+                const src = before.nodes.find((n) => n.kind === "garment.pattern" && !/trace/.test(n.label));
+                const path0 = before.nodes.find((n) => n.id === src.outline).path;
+                if (path0.segments.length !== 4) throw new Error(`the piece has ${path0.segments.length} sides, not 4`);
+                const pts = [path0.start, ...path0.segments.slice(0, -1).map((g) => g.to)];
+                const x0 = Math.min(...pts.map((p) => p[0])), y0 = Math.min(...pts.map((p) => p[1]));
+                const lr = pts.reduce((b, p) => (p[0] - p[1] > b[0] - b[1] ? p : b));
+                // the fill 150 x 85 mm in: clear of the holes (to y 70), the internal square (to x 95) and the grain (x 100)
+                await click(screenOf([x0 + 150, y0 + 85]));
+                await until("the piece selected", () => evaluate(`!!document.querySelector('#browser li[data-kind=pattern][data-id="${src.id}"]')?.classList.contains("on")`), 30000);
+                await evaluate(`document.querySelector('#tools2d [data-tool=fillet]').click()`);
+                const cornerAt = screenOf(lr);
+                await worldOf(cornerAt);                // waits for the answer at the corner itself
+                {
+                    const hit = await evaluate(`document.body.dataset.hit`);
+                    if (hit !== "point") throw new Error(`the corner's hover answered ${hit}, not a point`);
+                }
+                await click(cornerAt);
+                await typeLen("10");
+                const after = await until("five sides", async () => {
+                    const d = await saveJson();
+                    return d.nodes.find((n) => n.id === src.outline).path.segments.length === 5 ? d : null;
+                }, 30000);
+                await noStatusError();
+                const path1 = after.nodes.find((n) => n.id === src.outline).path;
+                const arc = path1.segments.find((g) => g.type === "arc");
+                const r = Math.hypot(arc.to[0] - arc.centre[0], arc.to[1] - arc.centre[1]);
+                if (!(Math.abs(r - 10) < 1e-6)) throw new Error(`the arc's radius is ${r}, not 10`);
+                if ((path1.holes ?? []).length !== (path0.holes ?? []).length) throw new Error("the fillet lost the piece's holes");
+                failIfErrors();
+                ok("fillet: a typed 10 mm radius on a corner");
             }
 
             // ---- typed lengths (Task 16): a 100 x 50 polygon typed point by point, on a new garment ----

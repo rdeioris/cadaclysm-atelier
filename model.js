@@ -1,6 +1,8 @@
 // The garment as a blacksmith document: node builders and the op lists that edit it.
 // Pure: no kernel calls. Every function takes the current node list (document_nodes) and
 // returns ops for one batch, so one user action is one undo step.
+// (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
+import { shiftAnchors } from "./sewing.js";
 
 export const FABRIC_FIELDS = [
     "stretch_warp", "stretch_weft", "shear_left", "shear_right",
@@ -49,7 +51,9 @@ export function polyPath(points, curves = []) {
 
 export const rectPath = (x, y, w, h) => polyPath([[x, y], [x + w, y], [x + w, y + h], [x, y + h]]);
 
-export const pathPoints = (path) => [path.start, ...path.segments.slice(0, -1).map((s) => s.to)].map(pt);
+// A segment's end point: `to`, or a NURBS span's last control point.
+export const segmentEnd = (s) => s.to ?? s.points.at(-1);
+export const pathPoints = (path) => [path.start, ...path.segments.slice(0, -1).map(segmentEnd)].map(pt);
 
 function garmentOps(nodes, patterns, seams) {
     const g = byId(nodes).get("garment");
@@ -98,6 +102,17 @@ export function removePatterns(nodes, ids) {
 
 export const setOutline = (nodes, id, path) => [{ op: "set", id: `${id}_outline`, fields: { path } }];
 export const setPattern = (nodes, id, fields) => [{ op: "set", id, fields }];
+
+// A fillet's ops: the new outline, the allowance list with the arc's width (its neighbour's)
+// inserted, the notches re-placed, and the seam anchors past the arc moved up one; the commit's
+// re-anchor (reanchorId) then sets their arc lengths. One batch.
+export function filletOps(nodes, id, path, insertAt, notches) {
+    const p = byId(nodes).get(id), oldSides = path.segments.length - 1;
+    const allowance = p.allowance ?? [10];
+    const list = allowance.length === oldSides && oldSides > 1
+        ? [...allowance.slice(0, insertAt), allowance[Math.max(insertAt - 1, 0)], ...allowance.slice(insertAt)] : allowance;
+    return [...setOutline(nodes, id, path), ...setPattern(nodes, id, { allowance: list, ...(p.notches ? { notches } : {}) }), ...shiftAnchors(nodes, id, insertAt)];
+}
 
 // A hole added to piece `id`'s outline (path JSON, closed). Hole edges are not sewn this round.
 export function addHole(nodes, id, path) {

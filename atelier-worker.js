@@ -399,7 +399,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -452,6 +452,8 @@ self.onmessage = async ({ data }) => {
             }
             // a trace: one batch; a refusal changes nothing and says why (the error)
             case "trace": atelier.apply(atelier.traceOps(data.id, data.index), "trace"); changed(data.seq); break;
+            // a fillet: one batch with its seams re-anchored; a refusal changes nothing and says why
+            case "fillet": atelier.commit(atelier.filletOps(data.id, data.corner, data.radius), "fillet", data.id); changed(data.seq); break;
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
             case "redo": atelier.redo(); changed(data.seq); break;
             case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;

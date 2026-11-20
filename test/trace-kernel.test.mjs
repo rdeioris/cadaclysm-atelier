@@ -23,5 +23,15 @@ assert.equal(m.byId(a.nodes()).get("p1").internal.length, 2, "the original keeps
 assert.throws(() => a.traceOps("p1", 1), /closed/);
 assert.equal(a.undo(), true);
 assert.equal(a.nodes().filter((n) => n.kind === "garment.pattern").length, 1);
+// an internal ellipse traces as the kernel's four exact conic quarters, not a flattened ring
+{
+    const e = a.ellipsePath(100, 50, 30, 20);
+    a.apply(m.setPattern(a.nodes(), "p1", { internal: [{ kind: "line", path: { start: e.start, segments: e.segments } }] }), "ellipse");
+    a.apply(a.traceOps("p1", 0), "trace");
+    const t2 = a.nodes().filter((n) => n.kind === "garment.pattern").at(-1);
+    const tp = m.byId(a.nodes()).get(t2.outline).path;
+    assert.deepEqual(tp.segments.map((s) => s.type), ["conic", "conic", "conic", "conic"]);
+    assert.deepEqual(a.drawing(t2.id).bounds.map((v) => Math.round(v * 1e6) / 1e6), [290, 30, 350, 70], "beside the piece: 200 + 20 mm along x");
+}
 a.free();
 console.log("trace-kernel: ok");

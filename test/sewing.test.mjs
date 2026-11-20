@@ -57,6 +57,16 @@ const edge = (id, s) => ({ kind: "edge", id, s, side: sides.findIndex((v, i) => 
     assert.deepEqual(anchorOf(sides, 100, 150), [1, 0, 1], "a whole side: it ends on that side, not the next");
     assert.deepEqual(anchorOf(sides, 250 - 1e-9, 300), [3, 0, 1], "a start a hair off the side start is that side's");
 }
+{
+    const { shiftAnchors } = await import("../sewing.js");
+    const nodes = [{ id: "s1", kind: "garment.seam", a: "p1", b: "p2", meta: { atelier: { a: [1, 0, 1], b: [3, 0, 1] } } },
+        { id: "s2", kind: "garment.seam", a: "p1", b: "p2", meta: { atelier: { a: [0, 0.2, 0.4], b: [0, 0, 1] } } }];
+    const ops = shiftAnchors(nodes, "p1", 1);
+    assert.deepEqual(ops, [{ op: "set", id: "s1", fields: { meta: { atelier: { a: [2, 0, 1], b: [3, 0, 1] } } } }], "sides from the arc on move up one; side 0 stays");
+    // a range over the corner (side 0 to side 1) now runs over the arc too: its end side moves
+    const over = shiftAnchors([{ id: "s3", kind: "garment.seam", a: "p2", b: "p1", meta: { atelier: { a: [0, 0, 1], b: [0, 0.5, 0.5, 1] } } }], "p1", 1);
+    assert.deepEqual(over[0].fields.meta.atelier, { a: [0, 0, 1], b: [0, 0.5, 0.5, 2] });
+}
 assert.notEqual(seamColour(0), seamColour(1));
 assert.equal(seamColour(0), seamColour(12));
 console.log("sewing: ok");

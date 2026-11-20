@@ -326,6 +326,8 @@ function handle(r) {
     if (r.cut) change("cut", r.cut);
     // so does a trace
     if (r.trace) change("trace", r.trace);
+    // and a fillet
+    if (r.fillet) change("fillet", r.fillet);
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);
