@@ -8,7 +8,7 @@ import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams } from "./fabrics.js";
-import { makeTool, SNAPPING } from "./tools.js";
+import { makeTool, SNAPPING, typedPoint, readout } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { SLOTS, slotFields, fabricColours, isSelected, survivingSelection } from "./arrange.js";
@@ -269,6 +269,7 @@ function setTool(name) {
     $("well").classList.toggle("tool2d", name !== "edit");
     cancelPreview();
     overlay = null;
+    if (!typed.box.hidden) closeTyped();      // no last point to type from any more
     freshTool();
     draw2d();
     clearSnapBase(); postSnapping();
@@ -401,7 +402,44 @@ new ResizeObserver(() => {
 }).observe(cv);
 
 // The tool's rubber band, points and read-out: drawn by the worker's View (no overlay canvas).
-function draw2d() { post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, text: null }); }
+// The read-out is the length from the tool's last point to the pointer, at the pointer.
+function draw2d() {
+    const t = readout(tool?.lastPoint?.() ?? null, lastWorld);
+    document.body.dataset.readout = t ?? "";
+    post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, text: t ? { at: lastWorld, text: t } : null });
+}
+
+// Typed lengths: while a tool has a last point, a digit opens the box at the pointer; Tab goes to
+// the angle; Enter places the next point that far along the pointer's direction (or at the typed
+// angle) through the same down + up as a click; Escape closes the box and the shape goes on.
+// The box's keys stay in the box: none of them is an app shortcut.
+let pointerCss = [0, 0];          // the pointer over the canvas, CSS px from its top left
+cv.addEventListener("pointermove", (e) => { const r = cv.getBoundingClientRect(); pointerCss = [e.clientX - r.left, e.clientY - r.top]; });
+const typed = { box: $("typed"), len: $("typed-length"), ang: $("typed-angle") };
+function openTyped(first) {
+    typed.len.value = first; typed.ang.value = "";
+    typed.box.style.left = `${pointerCss[0] + 14}px`; typed.box.style.top = `${pointerCss[1] + 14}px`;
+    typed.box.hidden = false;
+    typed.len.focus();
+    typed.len.setSelectionRange(first.length, first.length);
+}
+function closeTyped() { typed.box.hidden = true; cv.focus(); }
+function commitTyped() {
+    const last = tool?.lastPoint?.();
+    const len = Number(typed.len.value), ang = typed.ang.value.trim() === "" ? null : Number(typed.ang.value);
+    if (!last) { closeTyped(); return; }
+    if (!(len > 0) || (ang !== null && !Number.isFinite(ang))) { status("type a length above 0 (and an angle in degrees)", true); return; }
+    const p = typedPoint(last, lastWorld, len, ang);
+    closeTyped();
+    if (tool.typed) apply(tool.typed(p, len));
+    else { apply(tool.down(p, null, {})); apply(tool.up(p, null, {})); }
+}
+for (const input of [typed.len, typed.ang]) input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); commitTyped(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeTyped(); }       // the shape goes on
+    else if (e.key === "Tab") { e.preventDefault(); (input === typed.len ? typed.ang : typed.len).focus(); }
+});
 function fit2d() { post({ kind: "fit2d" }); }
 
 // The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the
@@ -449,7 +487,7 @@ cv.addEventListener("pointerleave", leave2d);
 // crosshair in 3D while Pin or Drag is on.
 function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && tool3d ? "crosshair" : ""; }
 // Tab leaves the canvas (listen would keep it there; the app binds no Tab on the canvas)
-$("well").addEventListener("keydown", (e) => { if (e.key === "Tab") e.stopPropagation(); }, true);
+$("well").addEventListener("keydown", (e) => { if (e.key === "Tab" && !e.target.closest?.("#typed")) e.stopPropagation(); }, true);
 function flushMove() {
     const ev = moveNext;
     moveNext = null;
@@ -467,6 +505,7 @@ listen(cv, (ev) => {
     if (ev.kind === "key") return;                      // the app's keys are the app's
     if (ev.kind === "down") {
         const vp = viewportAt(rects, [ev.x, ev.y]);
+        if (!typed.box.hidden) typed.box.hidden = true;        // a press leaves the typed length unplaced
         cv.focus();
         if (vp === 1 && ev.button === 0 && !space && tool) {
             claims.set(ev.pointerId, "2d"); drag2d = true; moveNext = null;
@@ -631,6 +670,8 @@ document.addEventListener("keydown", (e) => {
         queue = queue.then(() => { if (toolName !== "edit") setTool("edit"); overlay = null; draw2d(); }).catch(toolFailed);
         return;
     }
+    // a digit with a last point to measure from: the typed length, not a shortcut
+    if (/^[0-9.]$/.test(e.key) && typed.box.hidden && tool?.lastPoint?.()) { e.preventDefault(); openTyped(e.key); return; }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
     // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
     if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }

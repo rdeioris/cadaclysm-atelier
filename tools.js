@@ -155,6 +155,20 @@ const internalAt = (ctx) => (path, hit) => {
     return id ? { ops: addInternal(ctx.nodes, id, path), done: true } : { status: "start the shape on a piece, or select the piece first" };
 };
 
+// The point a typed length places: `length` mm from `last`, at `angleDeg` (counter-clockwise
+// from +x) when typed, else toward the cursor (+x when the cursor sits on the last point).
+export function typedPoint(last, cursor, length, angleDeg = null) {
+    let dx = 1, dy = 0;
+    if (angleDeg !== null) { const a = (angleDeg * Math.PI) / 180; dx = Math.cos(a); dy = Math.sin(a); }
+    else if (cursor) {
+        const l = Math.hypot(cursor[0] - last[0], cursor[1] - last[1]);
+        if (l > 1e-12) { dx = (cursor[0] - last[0]) / l; dy = (cursor[1] - last[1]) / l; }
+    }
+    return [last[0] + dx * length, last[1] + dy * length];
+}
+// The length read-out while drawing (a label until the View's dimensions, spec section 1).
+export const readout = (last, cursor) => (last && cursor ? `${Math.hypot(cursor[0] - last[0], cursor[1] - last[1]).toFixed(1)} mm` : null);
+
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
     "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);

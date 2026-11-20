@@ -246,7 +246,7 @@ export class Overlay2d {
         if (this.text) { v.remove(this.text); this.text = null; }
         this.textAt = at; this.textNow = text?.text ?? null;
         if (at) {
-            this.text = v.showText(text.text, { at: [text.at[0], text.at[1], 0], size: 12, colour: ACCENT, align: "bottom-left", offset: [12, -12], onTop: true });
+            this.text = v.showText(text.text, { at: [text.at[0], text.at[1], 0], size: 12, colour: ACCENT, align: "bottom-left", offset: [12, 12], onTop: true });
             v.setItemLayer(this.text, this.layer);
         }
     }

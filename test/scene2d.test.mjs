@@ -132,6 +132,7 @@ assert.ok(v.calls.some((c) => c[0] === "setItemVisible" && c[2] === false), "no 
 v.calls.length = 0;
 o.set({ text: { text: "10 mm", at: [5, 5] } });
 assert.equal(v.calls.filter((c) => c[0] === "showText").length, 1);
+assert.deepEqual(v.calls.find((c) => c[0] === "showText")[2].offset, [12, 12], "above right of the pointer: the View's text offset y runs up");
 v.calls.length = 0;
 o.set({ text: { text: "12 mm", at: [5, 5] } });
 assert.deepEqual(v.calls.filter((c) => c[0].includes("Text") || c[0] === "remove").map((c) => c[0]), ["setText"]);

@@ -877,6 +877,51 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok("internal square by dialog, converted to a hole: 3 holes");
             }
+
+            // ---- typed lengths (Task 16): a 100 x 50 polygon typed point by point, on a new garment ----
+            {
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty garment", async () => (await patternCount()) === 0, 30000);
+                const [tx, ty, tw, th] = await windowBox("rect2d");
+                const P = [tx + tw * 0.5, ty + th * 0.9];
+                // re-measured with Edit armed (the steps above pressed Fit): the 100 x 50 piece must fit up and right of P
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const w1 = await worldOf([P[0] + 1, P[1]]), w2 = await worldOf([P[0] + 51, P[1]]);
+                const mm = 50 / (w2[0] - w1[0]);
+                if (!(P[0] + 100 * mm < tx + tw && P[1] - 50 * mm > ty)) throw new Error("the 100 x 50 polygon does not fit the 2D window");
+                // a digit with no last point is no typed length
+                await key("5", "Digit5", 53);
+                if (!(await evaluate(`document.getElementById("typed").hidden`))) throw new Error("a digit opened the typed box with no last point");
+                await evaluate(`document.querySelector('#tools2d [data-tool=polygon]').click()`);
+                const nT = await patternCount();
+                await click(P);
+                await worldOf([P[0] + 80, P[1]]);         // the direction: +x, answered before the digit
+                await until("the read-out", async () => /^\d+\.\d mm$/.test(await evaluate(`document.body.dataset.readout ?? ""`)), 10000);
+                await typeLen("100");
+                // the box's keys are the box's: E (Ellipse), F3 and Delete do nothing; Escape closes it and the shape goes on
+                await key("7", "Digit7", 55);
+                await until("the typed box", () => evaluate(`!document.getElementById("typed").hidden`), 10000);
+                await key("e", "KeyE", 69); await key("F3", "F3", 114); await key("Delete", "Delete", 46);
+                await key("Escape", "Escape", 27);
+                await until("the typed box closed", () => evaluate(`document.getElementById("typed").hidden`), 10000);
+                const armed = await evaluate(`document.querySelector('#tools2d [data-tool].on')?.dataset.tool`);
+                if (armed !== "polygon") throw new Error(`the box's keys reached the app: ${armed} armed`);
+                if (await evaluate(`document.getElementById("split").classList.contains("max3d")`)) throw new Error("F3 in the box maximised the 3D window");
+                await typeLen("50", 90);
+                await typeLen("100", 180);
+                await mouse("mouseMoved", P[0], P[1], { buttons: 0 });
+                await click(P);
+                await until("the typed polygon", async () => (await patternCount()) === nT + 1, 30000);
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                await until("its size", () => evaluate(`/size\\s*100\\s*×\\s*50/.test(document.getElementById("props").textContent)`), 30000);
+                // the box closed, the shortcuts are back: E arms the ellipse
+                await key("e", "KeyE", 69);
+                await until("E arms the ellipse", async () => (await evaluate(`document.querySelector('#tools2d [data-tool].on')?.dataset.tool`)) === "ellipse", 10000);
+                await key("Escape", "Escape", 27);
+                await noStatusError();
+                failIfErrors();
+                ok("typed lengths: 100, 50 at 90°, 100 at 180°, closed: 100 x 50; the box keeps its keys");
+            }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
                 await sleep(1000);

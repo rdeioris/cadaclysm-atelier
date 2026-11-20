@@ -392,6 +392,15 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.deepEqual(e6.move([25, 20], null, {}), {}, "once");
     assert.deepEqual(e6.up([20, 20], null, {}), {}, "a drag on a locked seam edge selects nothing");
 }
+{
+    const { typedPoint, readout } = await import("../tools.js");
+    assert.deepEqual(typedPoint([10, 10], [20, 10], 100), [110, 10], "along the current direction");
+    const up = typedPoint([0, 0], [5, 5], 50, 90);
+    assert.ok(Math.abs(up[0]) < 1e-9 && Math.abs(up[1] - 50) < 1e-9, "a typed angle wins");
+    assert.deepEqual(typedPoint([1, 2], [1, 2], 3), [4, 2], "no direction yet: along +x");
+    assert.equal(readout([0, 0], [30, 40]), "50.0 mm");
+    assert.equal(readout(null, [1, 1]), null);
+}
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
 console.log("tools: ok");
