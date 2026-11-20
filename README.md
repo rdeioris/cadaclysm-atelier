@@ -68,7 +68,8 @@ The tools, with their keys where they have one:
 
 **Slots**: Front, Back, the sides and arms; Hood left / Hood right beside the head of a form
 that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).
-**Arrange** puts pieces sewn to placed pieces on them, then fills the free slots.
+**Arrange** puts each unplaced piece in the next free named slot (the hood slots last); it
+never puts a piece on another one: that is the Slot select's pick.
 
 ## Live drape
 
@@ -124,6 +125,9 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
 - The 2D window draws seam lines 1 px wide (the View has no line width yet), and piece fills are
   opaque and the length read-out a label until the View's regions and dimensions land.
 - The sample's sleeve caps have zero ease: each cap half is exactly as long as its armhole.
+- A slot can name what is gone: "On <piece>" after that piece is removed, or a hood slot after
+  switching to a form with no head. The piece keeps its frame and the Slot select shows the
+  stale value until another slot is picked.
 - Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
 - Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
 - Forms with a head: only f-M so far.

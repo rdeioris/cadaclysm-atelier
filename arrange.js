@@ -80,7 +80,7 @@ const HOOD_FRONT = 30;   // mm the face edge stands in front of the face
 
 export function hoodFrame(side, head, hpsY, pb) {
     const x = side > 0 ? [0, 0, -1] : [0, 0, 1], y = [0, 1, 0];
-    const corner = [side * (head.half[0] + HOOD_GAP), hpsY, head.centre[2] + head.half[2] + HOOD_FRONT];
+    const corner = [head.centre[0] + side * (head.half[0] + HOOD_GAP), hpsY, head.centre[2] + head.half[2] + HOOD_FRONT];
     const fx = side > 0 ? pb[0] : pb[2];
     return { origin: [0, 1, 2].map((i) => corner[i] - fx * x[i] - pb[1] * y[i]), x, y };
 }
@@ -102,25 +102,22 @@ export function onFrame(frame, dLayer) {
     return { origin: frame.origin.map((v, i) => v + LAYER_GAP * dLayer * n[i]), x: [...frame.x], y: [...frame.y] };
 }
 
-// Arrange's first pass: each unplaced piece sewn to a placed piece goes on it, again and again
-// until nothing changes (a band on a lower front on a front). -> [{id, host}] in placing order.
-export function onHosts(nodes) {
+// Arrange: each piece not yet placed goes to the next free named slot -- the SLOTS in order,
+// then the hood slots on a form with a head. An "on:<id>" slot is only ever the user's pick:
+// a piece sewn to a placed one is not put on it (a back sewn to a front is not a pocket).
+// avatar: {bounds, landmarks}; drawings: id -> {bounds}. -> [{id, fields}] in pattern order.
+export function arrangeSlots(nodes, drawings, avatar) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    const g = byId.get("garment");
-    const ids = g?.patterns ?? [];
-    const seams = (g?.seams ?? []).map((s) => byId.get(s)).filter(Boolean);
-    const placed = new Set(ids.filter((id) => byId.get(id)?.meta?.atelier?.slot));
+    const patterns = byId.get("garment")?.patterns ?? [];
+    const lm = avatar.landmarks ?? null;
+    const names = [...Object.keys(SLOTS), ...(lm?.head ? Object.keys(HOOD_SLOTS) : [])];
+    const taken = new Set(patterns.map((id) => byId.get(id)?.meta?.atelier?.slot).filter(Boolean));
+    const free = names.filter((s) => !taken.has(s));
     const out = [];
-    for (let changed = true; changed;) {
-        changed = false;
-        for (const id of ids) {
-            if (placed.has(id)) continue;
-            const s = seams.find((s) => (s.a === id && placed.has(s.b)) || (s.b === id && placed.has(s.a)));
-            if (!s) continue;
-            out.push({ id, host: s.a === id ? s.b : s.a });
-            placed.add(id);
-            changed = true;
-        }
+    for (const id of patterns) {
+        const n = byId.get(id), d = drawings.get(id);
+        if (!n || n.meta?.atelier?.slot || !d || !free.length) continue;
+        out.push({ id, fields: slotFields(n, free.shift(), avatar.bounds, d.bounds, { landmarks: lm }) });
     }
     return out;
 }
@@ -236,16 +233,25 @@ export function slotFields(node, slot, avatarBounds, patternBounds, ctx = {}) {
     atelier.slot = slot;
     const lm = ctx.landmarks ?? null;
     if (slot.startsWith("on:")) {
-        const host = ctx.host;
-        if (!host?.frame || host.frame === "xy") throw new Error("place the piece it goes on first");
-        return { frame: onFrame(host.frame, (node.layer ?? 0) - (host.layer ?? 0)), wrap: host.wrap ?? null, meta: meta() };
+        const hostId = slot.slice(3), host = ctx.host;
+        if (node.id !== undefined && hostId === node.id) throw new Error("a piece cannot go on itself");
+        if (!host) throw new Error(`no piece ${hostId}`);
+        if (!host.frame || host.frame === "xy") throw new Error("place the piece it goes on first");
+        // a wrapped host: the wrap grows with the layer, so the piece keeps its length round the limb
+        const dLayer = (node.layer ?? 0) - (host.layer ?? 0);
+        const wrap = host.wrap ? { ...host.wrap, radius: host.wrap.radius + LAYER_GAP * dLayer } : null;
+        return { frame: onFrame(host.frame, dLayer), wrap, meta: meta() };
     }
     if (HOOD_SLOTS[slot]) {
         if (!lm?.head) throw new Error("this avatar has no head: the hood slots need one (Form: f-M with head)");
         return { frame: hoodFrame(HOOD_SLOTS[slot].side, lm.head, lm.hps_y, patternBounds), wrap: null, meta: meta() };
     }
     const arm = lm?.arms && { left_arm: "left", right_arm: "right" }[slot];
-    if (arm) return { ...armFields(lm.arms.find((a) => a.side === arm), patternBounds), meta: meta() };
+    if (arm) {
+        const a = lm.arms.find((a) => a.side === arm);
+        if (!a) throw new Error(`this form has no ${arm} arm in its landmarks`);
+        return { ...armFields(a, patternBounds), meta: meta() };
+    }
     const frame = slotFrame(slot, bodyBounds(avatarBounds, lm), patternBounds);
     if (lm?.hps_y && (slot === "front" || slot === "back")) frame.origin[1] = lm.hps_y - patternBounds[3] * frame.y[1];
     return { frame, wrap: null, meta: meta() };

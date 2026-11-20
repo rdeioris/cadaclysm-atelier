@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, onHosts, slotFields } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, slotFields, arrangeSlots } from "../arrange.js";
 import { seamColour } from "../sewing.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
@@ -161,15 +161,57 @@ const near = (p, q, tol = 1e-6) => p.every((v, i) => Math.abs(v - q[i]) < tol);
     assert.deepEqual(wrapped.wrap, f.wrap, "a cuff on a sleeve wraps with it");
     assert.throws(() => slotFields({ meta: {} }, "on:p9", headed, pb, { host: { id: "p9", frame: "xy" } }), /first/);
 }
-// Arrange's first pass: unplaced pieces sewn to placed ones go on them, in chains
+// Arrange fills the free named slots in the old order, then the hood slots on a form with a
+// head; it never puts a piece on another, even one sewn to a placed piece (on:<id> is the
+// user's pick only)
 {
-    const pat = (id, slot) => ({ id, kind: "garment.pattern", meta: slot ? { atelier: { slot } } : {} });
+    const pat = (id, slot) => ({ id, kind: "garment.pattern", layer: 0, meta: slot ? { atelier: { slot } } : {}, ...(slot ? { frame: slotFrame(slot, [-666.85, 0, -156, 666.85, 1745, 144], [-280, 220, 280, 580]) } : {}) });
     const seam = (id, a, b) => ({ id, kind: "garment.seam", a, b });
-    const nodes = [
-        pat("front", "front"), pat("lower"), pat("band"), pat("pocket"), pat("loose"),
-        seam("s1", "lower", "front"), seam("s2", "band", "lower"), seam("s3", "pocket", "lower"),
-        { id: "garment", kind: "garment", patterns: ["front", "lower", "band", "pocket", "loose"], seams: ["s1", "s2", "s3"] },
-    ];
-    assert.deepEqual(onHosts(nodes), [{ id: "lower", host: "front" }, { id: "band", host: "lower" }, { id: "pocket", host: "lower" }]);
+    const ids = ["front", "back", "lside", "rside", "lsleeve", "rsleeve", "lhood", "rhood"];
+    const nodes = [pat("front", "front"), ...ids.slice(1).map((id) => pat(id)),
+        ...ids.slice(1).map((id, i) => seam(`s${i}`, id, "front")),
+        { id: "garment", kind: "garment", patterns: ids, seams: ids.slice(1).map((_, i) => `s${i}`) }];
+    const drawings = new Map(ids.map((id) => [id, { bounds: [-180, 0, 180, 300] }]));
+    const headed = [-666.85, 0, -156, 666.85, 1745, 144];
+    const got = arrangeSlots(nodes, drawings, { bounds: headed, landmarks: LM });
+    assert.deepEqual(got.map((g) => [g.id, g.fields.meta.atelier.slot]), [["back", "back"], ["lside", "left_side"], ["rside", "right_side"],
+        ["lsleeve", "left_arm"], ["rsleeve", "right_arm"], ["lhood", "hood_left"], ["rhood", "hood_right"]], "free slots, never on the front");
+    const byId = new Map(got.map((g) => [g.id, g.fields]));
+    assert.ok(Math.abs(at(byId.get("back").frame, [0, 300])[1] - 1425) < 1e-9, "the back hangs from the shoulder line");
+    assert.equal(byId.get("lsleeve").wrap.radius, 65, "the sleeves wrap");
+    assert.ok(near(byId.get("lhood").frame.origin, hoodFrame(1, LM.head, LM.hps_y, [-180, 0, 180, 300]).origin), "the hood beside the head");
+    // no head: no hood slots, the hood halves stay on the floor
+    const plain = arrangeSlots(nodes, drawings, { bounds: headed, landmarks: { ...LM, head: undefined } });
+    assert.deepEqual(plain.map((g) => g.id), ["back", "lside", "rside", "lsleeve", "rsleeve"]);
+    // no landmarks: the old fractions of the bounds, no wrap
+    const old = arrangeSlots(nodes, drawings, { bounds: headed, landmarks: null });
+    assert.deepEqual(old.map((g) => g.fields.frame), old.map((g) => slotFrame(g.fields.meta.atelier.slot, headed, [-180, 0, 180, 300])));
+    assert.ok(old.every((g) => g.fields.wrap === null));
+}
+// without landmarks every named slot is the old one exactly
+for (const s of Object.keys(SLOTS)) for (const ctx of [{}, { landmarks: null }]) {
+    const b = [-666.85, 0, -156, 666.85, 1745, 144], pb = [-280, 220, 280, 580];
+    const r = slotFields({ meta: {} }, s, b, pb, ctx);
+    assert.deepEqual(r.frame, slotFrame(s, b, pb), `${s} unchanged`);
+    assert.equal(r.wrap, null);
+}
+// on:<id> refusals in slotFields itself: not on itself, an unknown id named
+{
+    const pb = [-280, 220, 280, 580], b = [-666.85, 0, -156, 666.85, 1745, 144];
+    const host = { id: "p1", layer: 0, frame: slotFrame("front", b, pb), wrap: null };
+    assert.throws(() => slotFields({ id: "p1", meta: {} }, "on:p1", b, pb, { host }), /itself/);
+    assert.throws(() => slotFields({ id: "p2", meta: {} }, "on:p7", b, pb, { host: undefined }), /no piece p7/);
+    // an off-centre head: the hood follows its x
+    const hb = [0, 0, 250, 340];
+    const off = hoodFrame(1, { ...LM.head, centre: [20, 1630, 4] }, LM.hps_y, hb);
+    assert.ok(near(at(off, [0, 0]), [20 + 75 + 40, 1425, 129]), `off-centre hood ${at(off, [0, 0])}`);
+    // landmarks with one arm: a clear refusal for the other
+    assert.throws(() => slotFields({ meta: {} }, "right_arm", b, pb, { landmarks: { ...LM, arms: [LM.arms[0]] } }), /no right arm/);
+    // a piece on a wrapped piece: the wrap grows with it, so the arc length round the arm holds
+    const sleeve = armFields(LM.arms[0], [-198.25, -180, 198.25, 280]);
+    const cuff = slotFields({ layer: 2, meta: {} }, "on:s", b, [0, -90, 220, -20], { host: { id: "s", layer: 0, ...sleeve } });
+    assert.equal(cuff.wrap.radius, 65 + 16);
+    assert.deepEqual(cuff.wrap.origin, sleeve.wrap.origin);
+    assert.equal(sleeve.wrap.radius, 65, "the host's wrap untouched");
 }
 console.log("ok - arrange: landmarks, hood slots, arm wrap, on a piece");
