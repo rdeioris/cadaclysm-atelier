@@ -24,7 +24,6 @@ export class Atelier {
         this.d = this.f("document_new")("mm");
         this.g = 0;          // the evaluated garment handle (a copy), 0 when none
         this.open = null;    // an open preview: {nodes, problems} from before it, `ops` its last good frame
-        this.floor = null;   // the commit New / Open started from: undo stops there
         this.sidesCache = new Map();
         this.evalErrors = [];
         this.drawn = null;   // this evaluation's drawings, and the patterns that failed to draw
@@ -33,7 +32,7 @@ export class Atelier {
     dropGarment() { if (this.g) { this.f("garment_free")(this.g); this.g = 0; } }
     nodes() { return JSON.parse(this.f("document_nodes")(this.d)); }
     get previewing() { return this.open !== null; }
-    head() { return JSON.parse(this.f("document_log")(this.d))[0]?.id ?? null; }
+    head() { return this.f("document_head")(this.d); }
 
     evaluate() {
         this.sidesCache.clear();
@@ -110,22 +109,21 @@ export class Atelier {
         try { this.f("document_end_preview")(this.d); } finally { this.evaluate(); }
         return commit && p.ops ? this.commit(p.ops, "edit", reanchorId, p.problems) : { removed: [] };
     }
-    // false when there is nothing to take back since New / Open.
+    // false when there is nothing to take back (New and Open start a fresh history).
     undo() {
-        if (this.head() === this.floor) return false;
         const r = this.f("document_undo")(this.d);
         this.evaluate();
         return r !== "null";
     }
     redo() { this.f("document_redo")(this.d); this.evaluate(); }
     save() { return this.f("document_save")(this.d); }
-    swapDocument(d) { this.dropGarment(); this.f("document_free")(this.d); this.d = d; this.open = null; this.floor = null; }
-    load(text) { this.swapDocument(this.f("document_load")(text)); this.evaluate(); this.floor = this.head(); }
+    swapDocument(d) { this.dropGarment(); this.f("document_free")(this.d); this.d = d; this.open = null; }
+    load(text) { this.swapDocument(this.f("document_load")(text)); this.f("document_clear_history")(this.d); this.evaluate(); }
     reset(ops) {
         this.swapDocument(this.f("document_new")("mm"));
         this.evaluate();
         this.apply(ops, "new");
-        this.floor = this.head();
+        this.f("document_clear_history")(this.d);
     }
 
     patternIndex(id) {
