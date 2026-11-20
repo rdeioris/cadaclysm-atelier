@@ -4,6 +4,7 @@
 // column-major, entry 4 * col + row -- to go between its device pixels and pattern millimetres
 // (as the forge's projection.js does), and turns a pick answer into the hit a tool takes. Pure:
 // no View, no kernel, no DOM.
+import { segmentEnd } from "./model.js";
 
 const unit3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]); return l < 1e-20 ? [0, 0, 1] : [v[0] / l, v[1] / l, v[2] / l]; };
 function axes(r) {
@@ -73,7 +74,7 @@ export function pointsOf(nodes, id) {
             out.handles.push({ index: i, which: "c2", at: [...seg.c2], from: next });
         } else if (seg.type === "conic") out.handles.push({ index: i, which: "control", at: [...seg.control], from: i, to: next });
         else if (seg.type === "arc" || seg.type === "nurbs") out.locked.push(i, next);
-        if (i < n - 1) out.points.push([...(seg.to ?? seg.points.at(-1))]);
+        if (i < n - 1) out.points.push([...segmentEnd(seg)]);
     });
     out.locked = [...new Set(out.locked)];
     return out;
@@ -124,6 +125,12 @@ function segDist([x, y], a, b) {
     const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l2)) : 0;
     return Math.hypot(x - (a[0] + t * dx), y - (a[1] + t * dy));
 }
+
+/** The piece a box select takes from an item it touches: any of the piece's own drawing (its
+ *  fill, sew and cut lines, holes, internal lines, notches, grain); null for a label (its text runs
+ *  past the piece), a seam or an edit handle. */
+const BOX_KINDS = new Set(["fill", "sew", "cut", "hole", "internal", "notch", "grain"]);
+export const boxPiece = (what) => (what && BOX_KINDS.has(what.kind) ? what.id : null);
 
 /** The box around every drawing's bounds; null for none. */
 export function unionBounds(drawings) {

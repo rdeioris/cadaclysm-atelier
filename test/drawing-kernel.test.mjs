@@ -28,7 +28,7 @@ for (let i = 0; i + 1 < d.holes[0].cut[0].length; i += 2) {
 }
 assert.deepEqual(d.internal.map((l) => [l.kind, l.closed, l.beziers.length]), [["line", true, 64], ["fold", false, 16]]);
 assert.ok(d.fill.indices.length >= 3 * 8, "a rectangle with a square hole needs 8 triangles or more");
-for (let i = 2; i < d.fill.positions.length; i += 3) assert.equal(d.fill.positions[i], -1, "the fill lies under the lines");
+for (let i = 2; i < d.fill.positions.length; i += 3) assert.equal(d.fill.positions[i], 0, "the fill is built at z = 0 (scene2d lifts it to its band)");
 for (let t = 0; t < d.fill.indices.length; t += 3) {
     const c = [0, 1].map((ax) => (d.fill.positions[3 * d.fill.indices[t] + ax] + d.fill.positions[3 * d.fill.indices[t + 1] + ax] + d.fill.positions[3 * d.fill.indices[t + 2] + ax]) / 3);
     assert.ok(!(c[0] > 80 && c[0] < 120 && c[1] > 30 && c[1] < 70), `triangle ${t / 3} lies in the hole`);

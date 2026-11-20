@@ -1,7 +1,7 @@
 // The 2D window's mapping from its frame report, the nearest arc length, the edit handles and
 // the pick decoding: M4a's camera-mapping checks carried over to the View's ortho camera.
 import assert from "node:assert/strict";
-import { pxToWorld, worldToPx, mmPerPx, isOrtho, arcAt, pointsOf, hitOf, unionBounds, notchNormals } from "../view2d.js";
+import { pxToWorld, worldToPx, mmPerPx, isOrtho, arcAt, pointsOf, hitOf, unionBounds, notchNormals, boxPiece } from "../view2d.js";
 
 // A top view centred on (cx, cy), half-height H, of a w x h viewport: what frameReport() gives.
 function topView(cx, cy, H, w, h) {
@@ -92,4 +92,7 @@ for (const ccw of [true, false]) {
     const n = notchNormals(d).map((v) => v.map((x) => Math.round(x * 1000) / 1000 + 0));
     assert.deepEqual(n, [[-1, 0], [0, -1], [1, 0]], `outward on a ${ccw ? "ccw" : "cw"} outline: ${JSON.stringify(n)}`);
 }
+// a box select takes a piece from any of its own drawing, not from its label, a seam or a handle
+for (const kind of ["fill", "sew", "cut", "hole", "internal", "notch", "grain"]) assert.equal(boxPiece({ kind, id: "p1", index: 0 }), "p1", kind);
+for (const what of [{ kind: "label", id: "p1" }, { kind: "seam", id: "s1", pattern: "p1" }, { kind: "points", id: "p1" }, null]) assert.equal(boxPiece(what), null, JSON.stringify(what));
 console.log("view2d: ok");

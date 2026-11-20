@@ -172,6 +172,18 @@ function holed() {
     a.free();
 }
 
+// An internal line drawn with snaps ends within float32 of the outline, inside or out: its cut
+// still makes two pieces (profile_piece_count's tolerance 0 is the kernel's default, not exact)
+for (const e of [1e-5, -1e-5]) {
+    const a = setup();
+    const line = { start: [120, e], segments: [{ type: "line", to: [120, 100 - e] }] };
+    const p1 = m.byId(a.nodes()).get("p1");
+    a.apply(m.setPattern(a.nodes(), "p1", { internal: [...p1.internal, { kind: "line", path: line }] }), "line");
+    const r = a.cutOps("p1", line, { consume: 1 });
+    assert.equal(r.ids.length, 2, `ends ${e} mm inside: two pieces`);
+    a.free();
+}
+
 // A polyline cutter: an L across a corner cuts that corner off.
 {
     const a = setup();

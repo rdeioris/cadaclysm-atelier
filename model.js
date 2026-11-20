@@ -210,6 +210,6 @@ export const removeSeam = (nodes, id) =>
 // tools write it so), or within 1e-9 of it.
 export function isClosedPath(path) {
     const last = path?.segments?.at(-1);
-    const end = last?.to ?? last?.points?.at(-1);
+    const end = last && segmentEnd(last);
     return !!end && Math.hypot(end[0] - path.start[0], end[1] - path.start[1]) <= 1e-9;
 }

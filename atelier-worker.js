@@ -14,7 +14,7 @@ import { Atelier, forPage } from "./kernel.js";
 import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox } from "./arrange.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
-import { unionBounds } from "./view2d.js";
+import { unionBounds, boxPiece } from "./view2d.js";
 import { Pointer2d } from "./pointer2d.js";
 
 const ready = (async () => {
@@ -156,7 +156,7 @@ function boxSelect({ from, to, what }) {
         return { indices: item ? hits.filter((r) => r.item === item && r.kind === "point").map((r) => r.index) : [] };
     }
     const ids = new Set();
-    for (const r of hits) { const what2 = items2d.what(r.item); if (what2?.kind === "fill" || what2?.kind === "sew") ids.add(what2.id); }
+    for (const r of hits) { const id = boxPiece(items2d.what(r.item)); if (id) ids.add(id); }
     return { ids: [...ids] };
 }
 

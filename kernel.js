@@ -13,7 +13,6 @@ const batch = (ops) => JSON.stringify({ op: "batch", ops });
 const text = (e) => String(e && e.message ? e.message : e);
 const HOLE_GAP = 0.05;    // mm: a hole nearer the outline or another hole than this touches it
 const HOLE_TOL = 0.01;    // mm: profile_deviation's accuracy for that gap (1e-4 costs 50 times more)
-const FILL_Z = -1;       // fills lie under every line (z = 0): a hundredth of a mm higher per layer
 const OUTSIDE = 0, INSIDE = 1, ON = 2;   // profile_contains
 const LAND = 0.5;                        // mm: how near a point must lie to land on an outline
 const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
@@ -199,7 +198,7 @@ export class Atelier {
             }
             const allowance0 = (node.allowance ?? [0])[0];
             // the face first: it refuses crossing holes, and checkHoles counts on none crossing
-            const fill = this.fillOf(id, node.layer ?? 0);
+            const fill = this.fillOf(id);
             this.checkHoles(outlineNode.path);
             const holes = (outlineNode.path.holes ?? []).map((h) => ({
                 beziers: this.beziersOf(h),
@@ -274,10 +273,11 @@ export class Atelier {
     }
     // A path's exact Béziers, 16 doubles each, z = 0 (holes left out: each is drawn on its own).
     beziersOf(path) { return this.withPath({ start: path.start, segments: path.segments }, (p) => Float64Array.from(this.f("profile_beziers")(p, null))); }
-    // The piece's fill: its outline (holes cut out) as the kernel's planar face, triangulated.
-    fillOf(id, layer) {
+    // The piece's fill: its outline (holes cut out) as the kernel's planar face at z = 0,
+    // triangulated (scene2d.js lifts it to its piece's band, bandOf).
+    fillOf(id) {
         return this.withOutline(id, (p) => {
-            const sheet = this.f("face")(p, Float64Array.of(0, 0, FILL_Z + 0.01 * layer, 1, 0, 0, 0, 1, 0, 0, 0, 1));
+            const sheet = this.f("face")(p, Float64Array.of(0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1));
             try {
                 const t = this.f("mesh")(sheet, TOL);
                 return { positions: Float32Array.from(t.positions), indices: Uint32Array.from(t.indices) };
@@ -305,8 +305,9 @@ export class Atelier {
     }
     measureHoles(path) {
         const holes = path.holes;
-        const profiles = holes.map((h) => this.profileOf({ start: h.start, segments: h.segments }));
+        const profiles = [];
         try {
+            for (const h of holes) profiles.push(this.profileOf({ start: h.start, segments: h.segments }));
             const gap = (a, b) => this.f("profile_deviation")(a, b, HOLE_TOL)[5];
             this.withPath({ start: path.start, segments: path.segments }, (outer) => profiles.forEach((p, j) => {
                 if (gap(outer, p) < HOLE_GAP) throw new Error(`hole ${j} touches the outline`);
@@ -529,7 +530,7 @@ export class Atelier {
     // An open chain's own length: profile_length (and profile_point_at_length) run on along the
     // chord from its end back to its start, which comes last.
     openLength(q) {
-        const { start, segments } = this.pathJson(q), last = segments.at(-1), end = last.to ?? last.points.at(-1);
+        const { start, segments } = this.pathJson(q), end = m.segmentEnd(segments.at(-1));
         return this.f("profile_length")(q, ACC)[0] - Math.hypot(end[0] - start[0], end[1] - start[1]);
     }
 
