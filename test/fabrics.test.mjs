@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fromKes, PRESETS, presetParams, DISPLAY } from "../fabrics.js";
+import { fromKes, PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "../fabrics.js";
 import { FABRIC_FIELDS } from "../model.js";
 const close = (a, b, rel = 1e-9) => assert.ok(Math.abs(a - b) <= rel * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -33,6 +33,51 @@ for (const x of PRESETS) {
     assert.match(x.source, /\S{10,}/, `${x.slug} cites a source`);
     for (const f of FABRIC_FIELDS) assert.ok(Number.isFinite(presetParams(x.slug)[f]) && presetParams(x.slug)[f] >= 0, `${x.slug}.${f}`);
 }
+// labelling rule: every preset is either measured (a citation, no "estimat" anywhere) or an
+// estimate that says so three times: estimated: true, "(estimated)" in the label, and a
+// source starting "Estimated, not measured" that names the measured row it scales
+for (const x of PRESETS) {
+    if (x.estimated === true) {
+        assert.match(x.label, /\(estimated\)$/, `${x.slug}: an estimate's label ends "(estimated)"`);
+        assert.match(x.source, /^Estimated, not measured: /, `${x.slug}: an estimate's source says so first`);
+        assert.match(presetNote(x), /^ESTIMATE, not measured/);
+    } else {
+        assert.equal(x.estimated, undefined, `${x.slug}: estimated is true or absent`);
+        assert.doesNotMatch(x.label + x.source, /estimat/i, `${x.slug}: a measured preset never reads as an estimate`);
+        assert.match(x.source, /(19|20)\d\d/, `${x.slug}: a measured source cites a year`);
+        assert.match(presetNote(x), /^Measured \(KES-F\): /);
+    }
+}
+
+// the estimated fleece: cotton_jersey scaled by w = 30/16.2, t = 1.5/0.61 (fabrics.js says why)
+const fleece = PRESETS.find((x) => x.slug === "cotton_fleece");
+const jersey = PRESETS.find((x) => x.slug === "cotton_jersey");
+const denim = PRESETS.find((x) => x.slug === "denim");
+assert.ok(fleece.estimated === true && fleece.label === "Cotton fleece (estimated)");
+const w = 30 / 16.2, t = 1.5 / 0.61;
+close(fleece.kes.B[0], jersey.kes.B[0] * w * t, 1e-3);
+close(fleece.kes.B[1], jersey.kes.B[1] * w * t, 1e-3);
+close(fleece.kes.G, jersey.kes.G * w, 1e-3);
+close(fleece.kes.EMT[0], jersey.kes.EMT[0] / Math.sqrt(w), 1e-3);
+close(fleece.kes.EMT[1], jersey.kes.EMT[1] / Math.sqrt(w), 1e-3);
+assert.equal(fleece.kes.MIU, jersey.kes.MIU);
+// app units: 300 g/m², 1.5 mm, bending 0.123 gf·cm²/cm, stretch at the 500 gf/cm limit over 6.882 %
+const fp = presetParams("cotton_fleece"), jp = presetParams("cotton_jersey"), dp = presetParams("denim");
+close(DISPLAY.density.toShown(fp.density), 300);
+close(fp.thickness, 1.5);
+close(fp.friction, 0.208);
+close(fp.bending_warp, 0.1230 * 9.80665e4);
+close(fp.bending_weft, fp.bending_warp);
+close(fp.stretch_warp, (500 / 0.06882) * 980.665);
+close(fp.shear_left, 1.463 * (180 / Math.PI) * 980.665);
+// plausibility: stiffer than the jersey, softer and stretchier than the denim, heavier and thicker than both
+for (const f of ["bending_warp", "stretch_warp", "shear_left"]) assert.ok(jp[f] < fp[f] && fp[f] < dp[f], `${f}: jersey < fleece < denim`);
+assert.ok(fp.density > dp.density && fp.density > jp.density && fp.thickness > dp.thickness);
+// the UI's source line: a fabric still carrying the fleece's values is found as the estimate
+assert.equal(matchingPreset(fp).slug, "cotton_fleece");
+assert.equal(matchingPreset(jp).slug, "cotton_jersey");
+assert.equal(matchingPreset({ ...fp, density: 2e-4 }), undefined);
+
 // display: density shown in g/m², round trip exact
 close(DISPLAY.density.toShown(2e-4), 200);
 close(DISPLAY.density.fromShown(DISPLAY.density.toShown(3.3e-4)), 3.3e-4);

@@ -36,6 +36,10 @@ Values are EMT warp/weft, G, B warp/weft, W, T, MIU as stored in `PRESETS` (afte
 
 Not shipped: linen, taffeta, silk charmeuse/satin and a polyester/elastane knit have no open source with EMT, B and W found; they are dropped rather than guessed.
 
+## Estimated presets (not measured)
+
+- **cotton_fleece** ("Cotton fleece (estimated)", `estimated: true`): no citable KES-F values for a cotton fleece or French terry were found, so this is cotton_jersey (Narasimhan 2024 F1) scaled to a typical 300 g/m², 1.5 mm fleece, with w = 30/16.2 = 1.852 and t = 1.5/0.61 = 2.459 (0.61 mm is the jersey's printed T). B x w·t = 4.554 (0.123): the geometric mean of more-yarn scaling (x w) and solid-plate scaling (x w·t² = 11.2, which would make it stiffer than denim), since the raised loop pile adds thickness but little bending stiffness. G x w (1.463): shear resistance grows with yarn per area. EMT x w^-1/2 = 0.735 (6.882 %): between unchanged loop geometry (x1) and pure yarn-count scaling (x 1/w), since knit extension is loop opening, which the tucked backing yarn restricts. W 30, T 1.5 set; MIU 0.208 kept. The app shows it as an estimate (label, library tooltip, Source row in the fabric panel).
+
 ## Conversion (`fromKes`)
 
 g = 9.80665 m/s²; 1 gf/cm = 0.980665 N/m = 980.665 g/s².

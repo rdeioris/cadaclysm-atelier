@@ -7,7 +7,7 @@
 import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
-import { PRESETS, presetParams } from "./fabrics.js";
+import { PRESETS, presetParams, presetNote } from "./fabrics.js";
 import { makeTool, SNAPPING, typedPoint, typedValues, readout } from "./tools.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
@@ -258,7 +258,10 @@ function removeSelected() {
 // ---- the fabric library: a preset added to the document ----------------------------------
 {
     const sel = $("lib-select");
-    for (const p of PRESETS) { const o = document.createElement("option"); o.value = p.slug; o.textContent = p.label; sel.append(o); }
+    for (const p of PRESETS) { const o = document.createElement("option"); o.value = p.slug; o.textContent = p.label; o.title = presetNote(p); sel.append(o); }
+    // the select's tooltip names the chosen preset's source (an estimate says so first)
+    const noteSel = () => { const p = PRESETS.find((x) => x.slug === sel.value); if (p) sel.title = presetNote(p); };
+    noteSel(); sel.addEventListener("change", noteSel);
     $("lib-add").addEventListener("click", () => {
         const p = PRESETS.find((x) => x.slug === sel.value);
         const r = model.addFabric(nodes, p.slug, p.label, presetParams(p.slug));

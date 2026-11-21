@@ -1,7 +1,7 @@
 // The property editor's model: a selection -> field descriptors, and a field edit -> ops.
 // Pure (no DOM, no kernel), so Node tests it. atelier.js draws the fields and posts the ops.
 import * as model from "./model.js";
-import { PRESETS, presetParams, DISPLAY } from "./fabrics.js";
+import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
 import { SLOTS, HOOD_SLOTS, slotFields } from "./arrange.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
@@ -50,10 +50,12 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
         ];
     }
     if (selection.kind === "fabric") {
+        const matched = matchingPreset(n);
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
             ...model.FABRIC_FIELDS.map((key) => ({ key, label: DISPLAY[key].label, unit: DISPLAY[key].unit, type: "number", value: DISPLAY[key].toShown(n[key]) })),
             { key: "preset", label: "Apply preset", unit: "", type: "select", value: "", options: PRESETS.map((p) => ({ value: p.slug, label: p.label })) },
+            ...(matched ? [{ key: "source", label: matched.estimated ? "Source (ESTIMATE)" : "Source", unit: "", type: "readonly", value: presetNote(matched) }] : []),
         ];
     }
     return [];

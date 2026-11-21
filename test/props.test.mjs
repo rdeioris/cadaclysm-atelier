@@ -23,6 +23,16 @@ assert.ok(Math.abs(weight.value - params.density * 1e6) < 1e-9);
 const set = opsFor({ kind: "fabric", id: "f_cotton_jersey" }, nodes, "density", 150);
 assert.ok(Math.abs(set[0].fields.density - 150e-6) < 1e-15);
 assert.ok(ff.find((f) => f.key === "preset").options.length === PRESETS.length);
+// the fabric still carries jersey values: its measured source is shown; an estimated preset is flagged
+assert.match(ff.find((f) => f.key === "source").value, /^Measured \(KES-F\): Narasimhan/);
+assert.equal(ff.find((f) => f.key === "source").type, "readonly");
+const est = m.addFabric(nodes, "cotton_fleece", "Cotton fleece (estimated)", presetParams("cotton_fleece")).ops[0].node;
+const ef = fieldsFor({ kind: "fabric", id: est.id }, [...nodes, est], drawings);
+assert.equal(ef.find((f) => f.key === "source").label, "Source (ESTIMATE)");
+assert.match(ef.find((f) => f.key === "source").value, /^ESTIMATE, not measured/);
+assert.ok(ef.find((f) => f.key === "preset").options.some((o) => o.label === "Cotton fleece (estimated)"));
+const edited = { ...est, density: 2e-4 };
+assert.equal(fieldsFor({ kind: "fabric", id: est.id }, [...nodes, edited], drawings).find((f) => f.key === "source"), undefined);
 
 // beyond the brief: "none" takes the slot and frame back; duplicate labels and bad numbers are refused
 const placed = nodes.map((n) => (n.id === "p1" ? { ...n, frame: slotOps[0].fields.frame, meta: slotOps[0].fields.meta } : n));

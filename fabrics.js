@@ -34,7 +34,9 @@ export function fromKes({ EMT, G, B, W, T, MIU }) {
 
 // One row per researched fabric: { slug, label, kes: {EMT:[warp,weft], G, B:[warp,weft], W, T, MIU}, source }.
 // null = not published by the source (fromKes applies our default). `source` is the short
-// citation; docs/fabric-sources.md has the full one.
+// citation; docs/fabric-sources.md has the full one. A row with `estimated: true` is NOT
+// measured: it is a measured row scaled by stated factors (its `source` says which and why),
+// and its label ends in "(estimated)".
 export const PRESETS = [
     { slug: "cotton_poplin", label: "Cotton plain weave (poplin/shirting)", kes: { EMT: [9.14, 9.14], G: 2.81, B: [0.103, 0.103], W: 17.5, T: 0.975, MIU: 0.20 }, source: "Kan & Lam 2013, Materials, Table 4 (control; EMT/B not directional)" },
     { slug: "wool_suiting", label: "Wool plain weave (suiting weight)", kes: { EMT: [3.02, 9.58], G: 0.744, B: [0.0330, 0.0164], W: 16.18, T: 0.439, MIU: null }, source: "Petrak et al. 2021, Materials, Tables 1-2 (F4); B/G converted from cN x1.019716; MIU not published" },
@@ -44,6 +46,7 @@ export const PRESETS = [
     { slug: "silk_twill", label: "Silk twill (mulberry, medium weight)", kes: { EMT: [11.29, 11.29], G: 0.369, B: [0.0428, 0.0428], W: 18.0, T: null, MIU: null }, source: "Singh 2021, J Fashion Technol Textile Eng 9(4), Tables 1 & 5 (F2); B/G converted from cN x1.019716; not directional; T/MIU not published" },
     { slug: "denim", label: "Cotton denim (mid-weight)", kes: { EMT: [5.515, 5.515], G: 2.18, B: [0.172, 0.172], W: 24.6, T: 1.066, MIU: null }, source: "Kumari & Khurana 2016, J. Textiles 4614168, Tables 2 & 5 (A); W from GSM (Table 5 W inconsistent); MIU printed 1.765, not used" },
     { slug: "polyester_lycra_woven", label: "Polyester/elastane stretch plain weave", kes: { EMT: [1.84, 79.20], G: 0.77, B: [0.0665, 0.0134], W: 10.539, T: null, MIU: 0.300 }, source: "Varghese & Thilagavathi 2014, JTATM 8(4), Tables 1-5 (T5); G/MIU = printed warp/weft averages; T method not stated" },
+    { slug: "cotton_fleece", label: "Cotton fleece (estimated)", estimated: true, kes: { EMT: [6.882, 6.882], G: 1.463, B: [0.1230, 0.1230], W: 30, T: 1.5, MIU: 0.208 }, source: "Estimated, not measured: cotton_jersey (Narasimhan 2024 F1) scaled to a 300 g/m2, 1.5 mm cotton fleece (w = 30/16.2 = 1.852, t = 1.5/0.61 = 2.459, 0.61 mm = the jersey's printed T). B x4.554 = w*t: geometric mean of more-yarn scaling (x w) and solid-plate scaling (x w*t^2 = x11.2), because the raised loop pile adds thickness but little bending stiffness; G x1.852 = w: shear resistance grows with the yarn per area; EMT x0.735 = w^-1/2: geometric mean of unchanged loop geometry (x1) and pure yarn-count scaling (x1/w), because the tucked backing yarn restricts the loops but knit stretch is loop geometry, not yarn strain; W 30, T 1.5 typical fleece; MIU kept" },
 ];
 
 export const presetParams = (slug) => {
@@ -51,6 +54,17 @@ export const presetParams = (slug) => {
     if (!p) throw new Error(`no fabric preset ${slug}`);
     return fromKes(p.kes);
 };
+
+// The source line the UI shows for a preset: an estimate says so first.
+export const presetNote = (p) => (p.estimated ? `ESTIMATE, not measured. ${p.source}` : `Measured (KES-F): ${p.source}`);
+
+// The preset whose parameters a fabric node still carries (added from the library or applied, not edited since), else undefined.
+export function matchingPreset(node) {
+    return PRESETS.find((p) => {
+        const q = fromKes(p.kes);
+        return FABRIC_FIELDS.every((f) => Math.abs(node[f] - q[f]) <= 1e-9 * Math.max(1, Math.abs(q[f])));
+    });
+}
 
 const same = (label, unit) => ({ label, unit, toShown: (v) => v, fromShown: (v) => v });
 const title = (f) => f.split("_").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
