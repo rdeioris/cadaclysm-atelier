@@ -57,9 +57,11 @@ for (let f = 1; f <= FRAMES; f++) {
 const s = statusOf(drape.status());
 console.log(`  ${drape.phase}, seams ${s.welded}/${s.seamPairs}; peak mm/s per ${WINDOW} frames: ${peaks.join(", ")}`);
 assert.equal(drape.phase, "draping");
-// not every seam pair need be welded here: on master 2 of the 116 stay open once the cloth
-// is calm (the old stiff hinges kicked them shut); the weld is the sewing tests' business
-assert.ok(s.welded > 0.95 * s.seamPairs, `seams ${s.welded}/${s.seamPairs}`);
+// every seam pair welded (116 for the sample): before the kernel's sewing fix for three-piece
+// junctions (cadaclysm e41f6871de) 2 of them stayed open once the cloth was calm (the old
+// stiff hinges had kicked them shut)
+assert.ok(s.seamPairs > 0, "the sample has seams");
+assert.equal(s.welded, s.seamPairs, `seams ${s.welded}/${s.seamPairs}`);
 assert.ok(peaks.at(-1) < BOUND, `peak speed over the last ${WINDOW} frames ${peaks.at(-1)} mm/s, want < ${BOUND}: the cloth does not settle`);
 drape.free();
 a.free();
