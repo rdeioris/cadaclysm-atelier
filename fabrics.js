@@ -7,6 +7,8 @@ const GF_PER_CM = 980.665;            // 1 gf/cm in g/s²
 const BEND = 9.80665e4;               // 1 gf·cm²/cm in g·mm²/s²
 const PER_DEG = 180 / Math.PI;
 const BUCKLING_RATIO = 0.5;           // no KES measure: our default
+const BUCKLING_STIFFNESS = 0.5;       // no KES measure: our default, a fraction of the bending
+const BUCKLING_STIFFNESS_MAX = 1;     // a buckled hinge is never stiffer than an unbuckled one
 const DAMPING = 0.1;                  // no KES measure: our default
 // Our defaults (not measured) for values a source did not publish (null in PRESETS).
 const DEFAULT_G = 0.8;                // gf/(cm·deg)
@@ -27,7 +29,7 @@ export function fromKes({ EMT, G, B, W, T, MIU }) {
     };
     for (const d of ["warp", "weft", "bias_left", "bias_right"]) {
         p[`buckling_ratio_${d}`] = BUCKLING_RATIO;
-        p[`buckling_stiffness_${d}`] = BUCKLING_RATIO * p[`bending_${d}`];
+        p[`buckling_stiffness_${d}`] = BUCKLING_STIFFNESS;
     }
     return p;
 }
@@ -66,12 +68,39 @@ export function matchingPreset(node) {
     });
 }
 
-const same = (label, unit) => ({ label, unit, toShown: (v) => v, fromShown: (v) => v });
+// Documents saved before buckling_stiffness became a ratio carry it as an absolute stiffness
+// (0.5 x that direction's bending, g·mm²/s²): the kernel reads it as a factor of the bending,
+// so a buckled hinge was ~1000-6000 times stiffer than an unbuckled one and the cloth never
+// settled. A value above 1 is that old form: -> old / bending (0.5 for the app's own fabrics),
+// kept in [0, 1]; 0.5 where the bending is 0 (the buckled stiffness is 0 either way). One-way and
+// idempotent: a migrated fabric has no value above 1. -> the set ops for `nodes` (none when current).
+export function bucklingMigration(nodes) {
+    const ops = [];
+    for (const n of nodes) {
+        if (n.kind !== "garment.fabric") continue;
+        const fields = {};
+        for (const d of ["warp", "weft", "bias_left", "bias_right"]) {
+            const v = n[`buckling_stiffness_${d}`], b = n[`bending_${d}`];
+            if (!(typeof v === "number" && v > BUCKLING_STIFFNESS_MAX)) continue;
+            fields[`buckling_stiffness_${d}`] = b > 0 ? Math.min(BUCKLING_STIFFNESS_MAX, v / b) : BUCKLING_STIFFNESS;
+        }
+        if (Object.keys(fields).length) ops.push({ op: "set", id: n.id, fields });
+    }
+    return ops;
+}
+
+// How the props panel shows each field: label, unit, the shown value both ways, and for some a
+// range `[min, max]` it accepts and a tooltip `tip`.
+const same = (label, unit, extra = {}) => ({ label, unit, toShown: (v) => v, fromShown: (v) => v, ...extra });
 const title = (f) => f.split("_").map((w) => w[0].toUpperCase() + w.slice(1)).join(" ");
 export const DISPLAY = Object.fromEntries(FABRIC_FIELDS.map((f) => {
     if (f === "density") return [f, { label: "Weight", unit: "g/m²", toShown: (v) => v * 1e6, fromShown: (v) => v / 1e6 }];
     if (f === "thickness") return [f, same("Thickness", "mm")];
     if (f.startsWith("stretch") || f.startsWith("shear")) return [f, same(title(f), "g/s²")];
-    if (f.startsWith("bending") || f.startsWith("buckling_stiffness")) return [f, same(title(f), "g·mm²/s²")];
+    if (f.startsWith("bending")) return [f, same(title(f), "g·mm²/s²")];
+    if (f.startsWith("buckling_stiffness")) return [f, same(title(f), "× bending", { range: [0, BUCKLING_STIFFNESS_MAX],
+        tip: "A buckled hinge's bending stiffness as a fraction of the bending stiffness (0 to 1): past the buckling ratio the cloth bends with bending × this" })];
+    if (f.startsWith("buckling_ratio")) return [f, same(title(f), "", { range: [0, 1],
+        tip: "How far a hinge folds before it buckles (0 to 1): buckled once π − |angle| < ratio × (π − |rest angle|)" })];
     return [f, same(title(f), "")];
 }));

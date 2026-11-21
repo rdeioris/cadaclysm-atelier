@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fromKes, PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "../fabrics.js";
+import { fromKes, PRESETS, presetParams, DISPLAY, presetNote, matchingPreset, bucklingMigration } from "../fabrics.js";
 import { FABRIC_FIELDS } from "../model.js";
 const close = (a, b, rel = 1e-9) => assert.ok(Math.abs(a - b) <= rel * Math.max(1, Math.abs(b)), `${a} vs ${b}`);
 
@@ -13,7 +13,8 @@ close(p.shear_right, p.shear_left);
 close(p.bending_warp, 0.1 * 9.80665e4);
 close(p.bending_weft, 0.05 * 9.80665e4);
 close(p.bending_bias_left, (p.bending_warp + p.bending_weft) / 2);
-close(p.buckling_stiffness_warp, 0.5 * p.bending_warp);
+// buckling stiffness is a ratio of the bending (the kernel: buckled k = bending x it), not g·mm²/s²
+for (const dir of ["warp", "weft", "bias_left", "bias_right"]) close(p[`buckling_stiffness_${dir}`], 0.5);
 close(p.buckling_ratio_weft, 0.5);
 close(p.density, 20e-5);
 close(p.thickness, 0.5);
@@ -82,4 +83,30 @@ assert.equal(matchingPreset({ ...fp, density: 2e-4 }), undefined);
 close(DISPLAY.density.toShown(2e-4), 200);
 close(DISPLAY.density.fromShown(DISPLAY.density.toShown(3.3e-4)), 3.3e-4);
 assert.equal(Object.keys(DISPLAY).length, 20);
+assert.equal(DISPLAY.buckling_stiffness_warp.unit, "× bending");
+assert.deepEqual(DISPLAY.buckling_stiffness_bias_left.range, [0, 1]);
+assert.deepEqual(DISPLAY.buckling_ratio_weft.range, [0, 1]);
+assert.equal(DISPLAY.bending_warp.unit, "g·mm²/s²");
+for (const x of PRESETS) for (const dir of ["warp", "weft", "bias_left", "bias_right"]) {
+    const v = presetParams(x.slug)[`buckling_stiffness_${dir}`];
+    assert.ok(v >= 0 && v <= 1, `${x.slug}: buckling_stiffness_${dir} ${v} is a ratio`);
+}
+
+// migration: a fabric saved with the old absolute form (0.5 x bending) gets the ratio back
+{
+    const old = { id: "f_j", kind: "garment.fabric", ...jp };
+    for (const dir of ["warp", "weft", "bias_left", "bias_right"]) old[`buckling_stiffness_${dir}`] = 0.5 * jp[`bending_${dir}`];
+    const ops = bucklingMigration([old, { id: "garment", kind: "garment.garment" }, { id: "f_new", kind: "garment.fabric", ...fp }]);
+    assert.equal(ops.length, 1, "only the old fabric changes");
+    assert.equal(ops[0].id, "f_j");
+    assert.deepEqual(Object.keys(ops[0].fields).sort(), ["buckling_stiffness_bias_left", "buckling_stiffness_bias_right", "buckling_stiffness_warp", "buckling_stiffness_weft"]);
+    for (const v of Object.values(ops[0].fields)) close(v, 0.5);
+    const migrated = { ...old, ...ops[0].fields };
+    assert.deepEqual(bucklingMigration([migrated]), [], "idempotent");
+    assert.equal(matchingPreset(migrated).slug, "cotton_jersey", "a migrated app fabric is its preset again");
+    // one direction old, the others current: only that one; above 2 x bending: clamped to 1; no bending: 0.5
+    const mixed = { ...jp, id: "f_m", kind: "garment.fabric", buckling_stiffness_weft: 4 * jp.bending_weft, buckling_stiffness_warp: 3, bending_warp: 0 };
+    assert.deepEqual(bucklingMigration([mixed]), [{ op: "set", id: "f_m", fields: { buckling_stiffness_warp: 0.5, buckling_stiffness_weft: 1 } }]);
+    assert.deepEqual(bucklingMigration([{ ...mixed, buckling_stiffness_warp: 0.5, buckling_stiffness_weft: 1 }]), []);
+}
 console.log("fabrics: ok");

@@ -4,6 +4,7 @@ import * as m from "./model.js";
 import { reanchor, anchorOf } from "./sewing.js";
 import { arcAt } from "./view2d.js";
 import { translatePath } from "./drape.js";
+import { bucklingMigration } from "./fabrics.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
@@ -133,10 +134,14 @@ export class Atelier {
     save() { return this.f("document_save")(this.d); }
     swapDocument(d) { this.dropGarment(); this.f("document_free")(this.d); this.d = d; this.open = null; }
     // An opened document's seams without the app's anchor (an older or imported one) are anchored
-    // to their sides as they are now, before the history is cleared: part of the base, no undo step.
+    // to their sides as they are now, and fabrics with buckling_stiffness in the old absolute form
+    // get the ratio (fabrics.js bucklingMigration), before the history is cleared: part of the
+    // base, no undo step.
     load(text) {
         this.swapDocument(this.f("document_load")(text));
         this.evaluate();
+        const fabrics = bucklingMigration(this.nodes());
+        if (fabrics.length) { this.f("document_apply")(this.d, batch(fabrics), null); this.evaluate(); }
         const ops = this.missingAnchors();
         if (ops.length) { try { this.f("document_apply")(this.d, batch(ops), null); } catch { /* left unanchored, as before */ } finally { this.evaluate(); } }
         this.f("document_clear_history")(this.d);

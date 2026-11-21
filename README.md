@@ -141,5 +141,7 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both
   directions, so warp and weft (and the biases) often carry the same number.
+- Buckling stiffness is a ratio of the bending stiffness (0 to 1, 0.5 in every preset), as the kernel
+  reads it; documents saved with the old absolute value (> 1) get the ratio when opened.
 - One preset is an estimate, not a measurement: "Cotton fleece (estimated)" (sweatshirt fleece for
   the hoodie) is cotton jersey scaled to 300 g/m², 1.5 mm, because no published KES-F data for fleece was found.

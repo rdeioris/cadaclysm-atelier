@@ -65,7 +65,8 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
         const matched = matchingPreset(n);
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
-            ...model.FABRIC_FIELDS.map((key) => ({ key, label: DISPLAY[key].label, unit: DISPLAY[key].unit, type: "number", value: DISPLAY[key].toShown(n[key]) })),
+            ...model.FABRIC_FIELDS.map((key) => ({ key, label: DISPLAY[key].label, unit: DISPLAY[key].unit, type: "number", value: DISPLAY[key].toShown(n[key]),
+                ...(DISPLAY[key].tip ? { tip: DISPLAY[key].tip } : {}) })),
             { key: "preset", label: "Apply preset", unit: "", type: "select", value: "", options: PRESETS.map((p) => ({ value: p.slug, label: p.label })) },
             ...(matched ? [{ key: "source", label: matched.estimated ? "Source (ESTIMATE)" : "Source", unit: "", type: "readonly", value: presetNote(matched) }] : []),
         ];
@@ -92,6 +93,10 @@ export function validate(selection, nodes, key, value) {
             if (typeof value !== "string" || !value.trim()) return "a label cannot be empty";
             if (nodes.some((n) => n.kind === "garment.fabric" && n.id !== selection.id && n.label === value)) return `another fabric is already called "${value}"`;
         } else if (key !== "preset" && !num(value)) return "not a number";
+        else if (DISPLAY[key]?.range) {
+            const [lo, hi] = DISPLAY[key].range;
+            if (value < lo || value > hi) return `${DISPLAY[key].label} must be from ${lo} to ${hi}`;
+        }
     } else if (selection.kind === "seam") {
         if (["a_from", "a_to", "b_from", "b_to"].includes(key) && !(num(value) && value >= 0)) return "a seam position is a number of 0 mm or more";
     }

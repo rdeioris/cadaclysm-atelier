@@ -53,6 +53,6 @@ g = 9.80665 m/s²; 1 gf/cm = 0.980665 N/m = 980.665 g/s².
 
 ## Our defaults (not measured, not from any source)
 
-- `buckling_ratio_*` = 0.5 and `buckling_stiffness_*` = 0.5 x the matching bending (bias: the bias bending). KES has no buckling measure.
+- `buckling_ratio_*` = 0.5 and `buckling_stiffness_*` = 0.5. KES has no buckling measure. Both are unitless: the kernel bends a buckled hinge with bending x `buckling_stiffness` (CLO's meaning). The app once stored 0.5 x the bending here (g·mm²/s²), which made buckled hinges ~1000-6000 times stiffer and the cloth jitter for ever; a fabric with a value above 1 is converted to value / bending (clamped to 1) when a document is opened.
 - `internal_damping` = 0.1. KES has no damping measure.
 - Where a source did not publish a value (null in `PRESETS`), `fromKes` uses: T = 0.5 mm, MIU = 0.2, G = 0.8 gf/(cm·deg).

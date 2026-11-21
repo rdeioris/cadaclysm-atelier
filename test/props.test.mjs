@@ -19,6 +19,16 @@ assert.ok(slotOps[0].fields.frame.origin && slotOps[0].fields.meta.atelier.slot 
 const ff = fieldsFor({ kind: "fabric", id: "f_cotton_jersey" }, nodes, drawings);
 const weight = ff.find((f) => f.key === "density");
 assert.equal(weight.unit, "g/m²");
+// buckling stiffness: a ratio of the bending, 0 to 1, with a tooltip saying so
+const bs = ff.find((f) => f.key === "buckling_stiffness_warp");
+assert.equal(bs.unit, "× bending");
+assert.equal(bs.value, 0.5);
+assert.match(bs.tip, /fraction of the bending stiffness/);
+assert.equal(validate({ kind: "fabric", id: "f_cotton_jersey" }, nodes, "buckling_stiffness_warp", 0.3), null);
+assert.match(validate({ kind: "fabric", id: "f_cotton_jersey" }, nodes, "buckling_stiffness_warp", 1323.9), /from 0 to 1/);
+assert.match(validate({ kind: "fabric", id: "f_cotton_jersey" }, nodes, "buckling_ratio_weft", -0.1), /from 0 to 1/);
+assert.equal(validate({ kind: "fabric", id: "f_cotton_jersey" }, nodes, "bending_warp", 5000), null);
+assert.equal(ff.find((f) => f.key === "bending_warp").tip, undefined);
 assert.ok(Math.abs(weight.value - params.density * 1e6) < 1e-9);
 const set = opsFor({ kind: "fabric", id: "f_cotton_jersey" }, nodes, "density", 150);
 assert.ok(Math.abs(set[0].fields.density - 150e-6) < 1e-15);

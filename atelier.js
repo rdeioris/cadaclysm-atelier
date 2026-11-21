@@ -187,6 +187,7 @@ function commitField(f, raw) {
 function fieldRow(f) {
     const dt = document.createElement("dt");
     dt.textContent = f.unit ? `${f.label} (${f.unit})` : f.label;
+    if (f.tip) dt.title = f.tip;
     const dd = document.createElement("dd");
     let input;
     if (f.type === "readonly") dd.textContent = String(f.value);
