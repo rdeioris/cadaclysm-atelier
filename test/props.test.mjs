@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fieldsFor, opsFor, validate } from "../props.js";
+import { fieldsFor, opsFor, validate, fieldText } from "../props.js";
 import { presetParams, PRESETS } from "../fabrics.js";
 import * as m from "../model.js";
 import { reanchor } from "../sewing.js";
@@ -106,5 +106,21 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
     const host = slotOps[0].fields.frame;
     assert.deepEqual(on[0].fields.frame.origin, [host.origin[0], host.origin[1], host.origin[2] + 8]);
     assert.equal(on[0].fields.meta.atelier.slot, "on:p1");
+}
+// a field's text: numbers as the user would type them; a grain rounded to 1e-4 (a mirrored
+// piece's reflected grain is 2.442346e-8, 1 stored), -0 shown as 0, the stored value untouched
+{
+    const g = { key: "grain", type: "numbers", value: [2.442346e-8, 1] };
+    assert.equal(fieldText(g), "0, 1");
+    assert.deepEqual(g.value, [2.442346e-8, 1], "stored grain kept");
+    assert.equal(fieldText({ key: "grain", type: "numbers", value: [-1e-9, -1] }), "0, -1");
+    assert.equal(fieldText({ key: "grain", type: "numbers", value: [0.70710678, 0.70710678] }), "0.7071, 0.7071");
+    assert.equal(fieldText({ key: "grain", type: "numbers", value: [-0.25, 1] }), "-0.25, 1");
+    assert.equal(fieldText({ key: "allowance", type: "numbers", value: [10, 12.5] }), "10, 12.5");
+    assert.equal(fieldText({ key: "x", type: "number", value: 1 / 3 }), "0.3333333");
+    assert.equal(fieldText({ key: "label", type: "text", value: "Front" }), "Front");
+    const mirrored = { ...nodes.find((n) => n.id === "p1"), grain: [2.442346e-8, 1] };
+    const gf = fieldsFor({ kind: "pattern", id: "p1" }, [...nodes.filter((n) => n.id !== "p1"), mirrored], drawings).find((f) => f.key === "grain");
+    assert.equal(fieldText(gf), "0, 1");
 }
 console.log("props: ok");

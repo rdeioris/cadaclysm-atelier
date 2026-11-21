@@ -6,6 +6,18 @@ import { SLOTS, HOOD_SLOTS, slotFields } from "./arrange.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 
+// A number as a field shows it: seven significant digits (an integer as it is).
+const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? String(Number(v.toPrecision(7))) : String(v));
+// A grain component as shown: to 1e-4 (a mirrored piece's reflected grain is stored as
+// 2.442346e-8, 1; showing it never changes the stored value). -0 shows as 0: String(-0) is "0".
+const showGrain = (v) => showNumber(Math.round(v * 1e4) / 1e4);
+// The text an input field holds for a field descriptor.
+export function fieldText(f) {
+    if (f.type === "numbers") return f.value.map(f.key === "grain" ? showGrain : showNumber).join(", ");
+    if (f.type === "number") return showNumber(f.value);
+    return String(f.value);
+}
+
 // -> [{key, label, unit, type: "text"|"number"|"select"|"numbers"|"readonly"|"action", value, options?}]
 export function fieldsFor(selection, nodes, drawings, avatar = null) {
     if (!selection) return [];

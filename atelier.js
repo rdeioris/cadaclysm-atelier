@@ -13,7 +13,7 @@ import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
-import { fieldsFor, opsFor, validate } from "./props.js";
+import { fieldsFor, opsFor, validate, fieldText } from "./props.js";
 import { ENGINE_TEXT, ENGINE_TITLE } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 
@@ -170,7 +170,6 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? String(Number(v.toPrecision(7))) : String(v));
 const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
 function commitField(f, raw) {
     if (!selection) return;
@@ -206,7 +205,7 @@ function fieldRow(f) {
     } else {
         input = document.createElement("input");
         input.type = "text";
-        input.value = f.type === "numbers" ? f.value.map(showNumber).join(", ") : f.type === "number" ? showNumber(f.value) : String(f.value);
+        input.value = fieldText(f);
         input.addEventListener("change", () => commitField(f, input.value));
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
     }
