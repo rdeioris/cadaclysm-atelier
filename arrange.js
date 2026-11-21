@@ -145,11 +145,65 @@ export function drawFrame(node, avatarBounds) {
     return node.frame && node.frame !== "xy" ? node.frame : floorFrame(avatarBounds);
 }
 
-// 2D points (x, y pairs) through a frame, as 3D segments for showLines: consecutive points
-// join, x0,y0,z0,x1,y1,z1 per segment. Display only.
-export function polylineSegments(pts, frame) {
-    const f = frame12(frame), out = [];
-    const at = (i) => { const x = pts[2 * i], y = pts[2 * i + 1]; return [0, 1, 2].map((k) => f[k] + x * f[3 + k] + y * f[6 + k]); };
+// The arranged 3D point of pattern point (x, y): through the frame, then round the wrap (a
+// sleeve's cylinder) when there is one -- the kernel's arrangement (cadaclysm-cloth simmesh.rs
+// `arrange`), so what the 3D window draws before Simulate stands where the cloth starts. A
+// wrap measures its angle from the frame origin's side of the axis, the arc as the 2D distance
+// along x from the origin: a sleeve drawn far along x in 2D still lands round its arm, where
+// the flat frame alone would put it that far off.
+export function arrangedPoint(frame, wrap, x, y) {
+    const f = frame12(frame), o = [f[0], f[1], f[2]], fx = [f[3], f[4], f[5]];
+    const q = [0, 1, 2].map((k) => f[k] + x * f[3 + k] + y * f[6 + k]);
+    if (!wrap || !(wrap.radius > 0)) return q;
+    const kl = Math.hypot(...wrap.dir);
+    if (!(kl > 0)) return q;
+    const kk = wrap.dir.map((v) => v / kl), a = wrap.origin;
+    const oa = o.map((v, i) => v - a[i]), radial = oa.map((v, i) => v - kk[i] * vdot(oa, kk));
+    const tx = fx.map((v, i) => v - kk[i] * vdot(fx, kk)), rl = Math.hypot(...radial), tl = Math.hypot(...tx);
+    if (!(rl > 0) || !(tl > 0)) return q;
+    const rr = vmul(radial, 1 / rl), tt = vmul(tx, 1 / tl);
+    const dd = q.map((v, i) => v - o[i]), theta = vdot(dd, tt) / wrap.radius;
+    const hgt = vdot(q.map((v, i) => v - a[i]), kk), rad = wrap.radius + vdot(dd, rr) + rl - wrap.radius;
+    return [0, 1, 2].map((i) => a[i] + kk[i] * hgt + (rr[i] * Math.cos(theta) + tt[i] * Math.sin(theta)) * rad);
+}
+
+// A wrapped piece's mesh for the 3D window: its 2D fill ({positions xyz at z = 0, indices},
+// kernel.js fillOf) cut finer -- every triangle split evenly so no 2D edge is over `maxEdge`
+// mm, the one count for the whole piece so neighbours share their edges' points -- and each
+// point arranged. -> {positions (Float32Array xyz), indices, uv (Float64Array, the 2D points)}.
+export function wrappedMesh(fill, frame, wrap, maxEdge = 15) {
+    const P = fill.positions, I = fill.indices;
+    let longest = 0;
+    for (let i = 0; i < I.length; i += 3) for (let j = 0; j < 3; j++) {
+        const a = I[i + j], b = I[i + (j + 1) % 3];
+        longest = Math.max(longest, Math.hypot(P[3 * a] - P[3 * b], P[3 * a + 1] - P[3 * b + 1]));
+    }
+    const n = Math.min(64, Math.max(1, Math.ceil(longest / maxEdge)));
+    const uv = [], index = new Map(), indices = [];
+    const vertex = (x, y) => {
+        const key = `${Math.round(x * 1e3)},${Math.round(y * 1e3)}`;
+        let v = index.get(key);
+        if (v === undefined) { v = uv.length / 2; uv.push(x, y); index.set(key, v); }
+        return v;
+    };
+    for (let t = 0; t < I.length; t += 3) {
+        const c = [0, 1, 2].map((j) => [P[3 * I[t + j]], P[3 * I[t + j] + 1]]);
+        const grid = (i, j) => { const u = i / n, v = j / n, w = 1 - u - v; return vertex(w * c[0][0] + u * c[1][0] + v * c[2][0], w * c[0][1] + u * c[1][1] + v * c[2][1]); };
+        for (let j = 0; j < n; j++) for (let i = 0; i + j < n; i++) {
+            indices.push(grid(i, j), grid(i + 1, j), grid(i, j + 1));
+            if (i + j + 1 < n) indices.push(grid(i + 1, j), grid(i + 1, j + 1), grid(i, j + 1));
+        }
+    }
+    const positions = new Float32Array(uv.length / 2 * 3);
+    for (let v = 0; v < uv.length / 2; v++) positions.set(arrangedPoint(frame, wrap, uv[2 * v], uv[2 * v + 1]), 3 * v);
+    return { positions, indices: Uint32Array.from(indices), uv: Float64Array.from(uv) };
+}
+
+// 2D points (x, y pairs) through a frame (and its wrap, if any), as 3D segments for showLines:
+// consecutive points join, x0,y0,z0,x1,y1,z1 per segment. Display only.
+export function polylineSegments(pts, frame, wrap = null) {
+    const out = [];
+    const at = (i) => arrangedPoint(frame, wrap, pts[2 * i], pts[2 * i + 1]);
     for (let i = 0; i + 1 < pts.length / 2; i++) out.push(...at(i), ...at(i + 1));
     return out;
 }
@@ -157,13 +211,13 @@ export function polylineSegments(pts, frame) {
 // One seam as 3D segments: both placed ranges as polylines along the outlines, and
 // connectors joining evenly spaced points of the two ranges. Both ranges are in path order,
 // so a reversed seam pairs the first point of one with the last of the other.
-export function seamSegments(seam, frameA, frameB) {
-    const fa = frame12(frameA), fb = frame12(frameB);
+export function seamSegments(seam, frameA, frameB, wrapA = null, wrapB = null) {
     const pa = seam.points_a, pb = seam.points_b;
-    const out = [...polylineSegments(pa, fa), ...polylineSegments(pb, fb)];
+    const out = [...polylineSegments(pa, frameA, wrapA), ...polylineSegments(pb, frameB, wrapB)];
     const na = pa.length / 2, nb = pb.length / 2;
     if (!na || !nb) return out;
-    const at = (pts, f, i) => { const x = pts[2 * i], y = pts[2 * i + 1]; return [0, 1, 2].map((k) => f[k] + x * f[3 + k] + y * f[6 + k]); };
+    const fa = { frame: frameA, wrap: wrapA }, fb = { frame: frameB, wrap: wrapB };
+    const at = (pts, f, i) => arrangedPoint(f.frame, f.wrap, pts[2 * i], pts[2 * i + 1]);
     const steps = Math.min(Math.max(na, nb), 6);
     for (let s = 0; s < steps; s++) {
         const u = steps > 1 ? s / (steps - 1) : 0;
@@ -190,13 +244,14 @@ export const isSelected = (selection, kind, id) => !!selection && selection.kind
 
 // The seams in the 3D window: one lines item per seam, in its 2D colour (the accent when
 // selected), so a seam is picked and highlighted on its own. -> {shown: [{item, id, colour}], error}
-export function showSeams(viewer, seams, frames, selection) {
+// `wraps`: pattern id -> its wrap (the wrapped pieces only).
+export function showSeams(viewer, seams, frames, selection, wraps = new Map()) {
     const shown = [];
     let error = null;
     seams.forEach((s, i) => {
         const colour = seamColour(i);
         try {
-            const segs = seamSegments(s, frames.get(s.a), frames.get(s.b));
+            const segs = seamSegments(s, frames.get(s.a), frames.get(s.b), wraps.get(s.a) ?? null, wraps.get(s.b) ?? null);
             if (segs.length) shown.push({ item: viewer.showLines(segs, isSelected(selection, "seam", s.id) ? ACCENT : colour), id: s.id, colour });
         } catch (e) { error ??= e; }
     });

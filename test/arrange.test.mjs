@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, slotFields, arrangeSlots } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, slotFields, arrangeSlots, arrangedPoint, wrappedMesh } from "../arrange.js";
 import { seamColour } from "../sewing.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
@@ -215,3 +215,50 @@ for (const s of Object.keys(SLOTS)) for (const ctx of [{}, { landmarks: null }])
     assert.equal(sleeve.wrap.radius, 65, "the host's wrap untouched");
 }
 console.log("ok - arrange: landmarks, hood slots, arm wrap, on a piece");
+
+// The arranged point (the kernel's arrange: frame, then wrap), so a wrapped sleeve is drawn
+// round its arm before the cloth is built -- whatever its 2D place. A long sleeve drawn far
+// right in 2D (the hoodie's, 460 mm, centre x 866, and its mirror at 1366): every point on
+// the wrap's cylinder, the centre on the limb's top, the hem `dist` down the axis.
+{
+    const flat = slotFrame("front", [-200, 0, -150, 200, 1700, 150], [0, 0, 400, 600]);
+    assert.deepEqual(arrangedPoint(flat, null, 30, 40), at(flat, [30, 40]), "no wrap: the frame alone");
+    const arm = LM.arms[0], d = arm.dir.map((v) => v / Math.hypot(...arm.dir));
+    for (const cx of [866, 1366, 0, -500]) {
+        const pb = [cx - 216, -90, cx + 216, 370];
+        const f = armFields(arm, pb);
+        const off = (p) => { const v = p.map((c, i) => c - f.wrap.origin[i]), t = v[0] * d[0] + v[1] * d[1] + v[2] * d[2]; return { t, r: Math.hypot(...v.map((c, i) => c - t * d[i])) }; };
+        for (const [x, y] of [[pb[0], pb[1]], [pb[2], pb[3]], [cx, 200], [cx + 100, 0]]) {
+            const q = off(arrangedPoint(f.frame, f.wrap, x, y));
+            assert.ok(Math.abs(q.r - f.wrap.radius) < 1e-6, `cx ${cx}: (${x}, ${y}) on the cylinder (${q.r})`);
+        }
+        const top = arrangedPoint(f.frame, f.wrap, cx, pb[1]), hem = off(top);
+        assert.ok(Math.abs(hem.t - (pb[3] - pb[1] + 40)) < 1e-6, `cx ${cx}: the hem ${hem.t} down the arm`);
+        const axisPt = f.wrap.origin.map((c, i) => c + hem.t * d[i]);
+        assert.ok(top[1] - axisPt[1] > 0.6 * f.wrap.radius, `cx ${cx}: the centre on the limb's top`);
+        // the cap's top 40 mm down the arm from the shoulder joint, whatever the sleeve's length
+        assert.ok(Math.abs(off(arrangedPoint(f.frame, f.wrap, cx, pb[3])).t - 40) < 1e-6);
+    }
+    // a wrapped piece's mesh: the fill subdivided (no edge over maxEdge in 2D), each vertex arranged
+    const fill = { positions: Float32Array.of(650, -90, 0, 1082, -90, 0, 866, 370, 0), indices: Uint32Array.of(0, 1, 2) };
+    const f = armFields(arm, [650, -90, 1082, 370]);
+    const w = wrappedMesh(fill, f.frame, f.wrap, 15);
+    assert.equal(w.indices.length % 3, 0);
+    assert.ok(w.indices.length / 3 >= (460 / 15) ** 2, `subdivided: ${w.indices.length / 3} triangles`);
+    assert.ok(w.positions.length / 3 < w.indices.length, "shared vertices are shared");
+    let longest = 0;
+    for (let i = 0; i < w.indices.length; i += 3) for (let j = 0; j < 3; j++) {
+        const p = w.uv.subarray(2 * w.indices[i + j], 2 * w.indices[i + j] + 2), q = w.uv.subarray(2 * w.indices[i + (j + 1) % 3], 2 * w.indices[i + (j + 1) % 3] + 2);
+        longest = Math.max(longest, Math.hypot(p[0] - q[0], p[1] - q[1]));
+    }
+    assert.ok(longest <= 15 + 1e-3, `longest 2D edge ${longest}`);
+    for (let v = 0; v < w.positions.length / 3; v++) {
+        const p = arrangedPoint(f.frame, f.wrap, w.uv[2 * v], w.uv[2 * v + 1]);
+        assert.ok(near(Array.from(w.positions.subarray(3 * v, 3 * v + 3)), p, 1e-3), `vertex ${v} arranged`);
+    }
+    // seam lines through a wrap: both ends on the cylinder, not on the flat frame
+    const sw = seamSegments({ points_a: [700, 0, 1000, 0], points_b: [700, 0, 1000, 0], reversed: false }, f.frame, f.frame, f.wrap, f.wrap);
+    assert.ok(near(sw.slice(0, 3), arrangedPoint(f.frame, f.wrap, 700, 0)) && near(sw.slice(3, 6), arrangedPoint(f.frame, f.wrap, 1000, 0)));
+    assert.deepEqual(polylineSegments([700, 0, 1000, 0], f.frame, f.wrap), sw.slice(0, 6));
+}
+console.log("ok - arrange: wrapped pieces drawn round the arm");

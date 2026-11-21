@@ -13,7 +13,7 @@ import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
 import { Atelier, forPage } from "./kernel.js";
-import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox } from "./arrange.js";
+import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, wrappedMesh } from "./arrange.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
 import { unionBounds, boxPiece } from "./view2d.js";
@@ -110,6 +110,13 @@ function slabBox(bounds, frame) {
     return out;
 }
 
+// A mesh's world box (its xyz positions).
+function meshBox(p) {
+    const out = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+    for (let i = 0; i + 2 < p.length; i += 3) for (let k = 0; k < 3; k++) { out[k] = Math.min(out[k], p[i + k]); out[3 + k] = Math.max(out[3 + k], p[i + k]); }
+    return out;
+}
+
 // The two windows: viewport 0 the orbit camera on layer 0 (the avatar, slabs, seams, cloth),
 // viewport 1 an orthographic camera on the pattern plane z = 0 on layer 1. The first rects set
 // them; later ones (the divider, F2/F3, a resize) only move them.
@@ -172,7 +179,8 @@ function boxSelect({ from, to, what }) {
     return { ids: [...ids] };
 }
 
-// Redraw the garment: a 1 mm slab per pattern at its frame, each seam as its own lines item.
+// Redraw the garment: a 1 mm slab per pattern at its frame (a wrapped one round its arm), each
+// seam as its own lines item.
 function refresh3d() {
     if (!viewer || !atelier) return;
     for (const id of drawn) viewer.remove(id);
@@ -183,13 +191,27 @@ function refresh3d() {
     const colours = fabricColours(nodes);
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const bounds = avatar?.bounds ?? [-200, 0, -150, 200, 1700, 150];
-    const frames = new Map();
+    const frames = new Map(), wraps = new Map();
     let first = null;
     slabs.clear(); seamLines.clear(); slabBoxes.clear();
     for (const d of atelier.drawings()) {
         const node = byId.get(d.id);
         const frame = drawFrame(node, bounds);
         frames.set(d.id, frame);
+        // a wrapped piece (a sleeve, a cuff on it) is drawn round its arm, as the cloth starts:
+        // its fill arranged through the wrap, not a flat slab at its frame
+        if (node.wrap && frame === node.frame && d.fill) {
+            wraps.set(d.id, node.wrap);
+            try {
+                const w = wrappedMesh(d.fill, frame, node.wrap);
+                const colour = colours.get(node.fabric) ?? "#cccccc";
+                const id = viewer.showMesh({ positions: w.positions, indices: w.indices, colour: selected("pattern", d.id) ? ACCENT : colour });
+                drawn.push(id); items.set(id, { kind: "pattern", id: d.id });
+                slabs.set(d.id, { item: id, colour });
+                slabBoxes.set(d.id, meshBox(w.positions));
+            } catch (e) { first ??= e; }
+            continue;
+        }
         if (d.bounds) slabBoxes.set(d.id, slabBox(d.bounds, frame));
         try {
             const solid = atelier.withOutline(d.id, (p) => k.cadaclysm_blacksmith_extrude(p, frame12(frame), 1));
@@ -203,7 +225,7 @@ function refresh3d() {
             } finally { k.cadaclysm_blacksmith_solid_free(solid); }
         } catch (e) { first ??= e; }
     }
-    const { shown, error } = showSeams(viewer, atelier.seams(), frames, selection);
+    const { shown, error } = showSeams(viewer, atelier.seams(), frames, selection, wraps);
     for (const s of shown) { drawn.push(s.item); items.set(s.item, { kind: "seam", id: s.id }); seamLines.set(s.id, s); }
     if (sim.meshes.length) flatVisible(false);
     first ??= error;

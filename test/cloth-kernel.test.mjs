@@ -8,6 +8,7 @@ import { Atelier } from "../kernel.js";
 import { Drape } from "../cloth.js";
 import { avatarMesh, splitByPattern, gather, statusOf } from "../drape.js";
 import * as m from "../model.js";
+import { arrangedPoint } from "../arrange.js";
 
 const k = await loadKernel();
 const asset = (n) => new URL(`../assets/${n}`, import.meta.url);
@@ -21,6 +22,21 @@ a.load(readFileSync(asset("tshirt.json"), "utf8"));
 const drape = new Drape(k, avatar);
 assert.throws(() => drape.build(new Atelier(k).save()), /no garment/);
 drape.build(a.save());
+// before any step the cloth stands where the kernel arranged it: arrange.js arrangedPoint (what
+// the 3D window draws before Simulate) gives every vertex's place, the wrapped sleeves included
+{
+    const pos = drape.positions(), links = k.cadaclysm_blacksmith_cloth_vertex_links(drape.h), topo0 = drape.topology();
+    const nodes = m.byId(a.nodes());
+    let worst = 0, wrapped = 0;
+    topo0.vertexPatterns.forEach((pi, v) => {
+        const n = nodes.get(topo0.patterns[pi]);
+        if (n.wrap) wrapped++;
+        const p = arrangedPoint(n.frame, n.wrap ?? null, links[2 * v], links[2 * v + 1]);
+        worst = Math.max(worst, Math.hypot(p[0] - pos[3 * v], p[1] - pos[3 * v + 1], p[2] - pos[3 * v + 2]));
+    });
+    assert.ok(wrapped > 50, `the sample's sleeves are wrapped (${wrapped} vertices)`);
+    assert.ok(worst < 0.01, `arrangedPoint against the kernel's arranged vertices: ${worst} mm`);
+}
 const st = () => statusOf(drape.status());
 assert.equal(drape.phase, "sewing");
 const t0 = performance.now();
