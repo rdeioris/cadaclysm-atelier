@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, slotFields, arrangeSlots, arrangedPoint, wrappedMesh } from "../arrange.js";
+import { SLOTS, slotFrame, frame12, polylineSegments, floorFrame, seamSegments, ItemMap, showSeams, isSelected, survivingSelection, ACCENT, bodyBounds, HOOD_SLOTS, hoodFrame, armFields, onFrame, slotFields, arrangeSlots, arrangedPoint, wrappedMesh, WrappedMeshCache } from "../arrange.js";
 import { seamColour } from "../sewing.js";
 const avatar = [-200, 0, -150, 200, 1700, 150];   // min xyz, max xyz (y up, facing +z)
 const piece = [0, 0, 400, 600];
@@ -260,5 +260,26 @@ console.log("ok - arrange: landmarks, hood slots, arm wrap, on a piece");
     const sw = seamSegments({ points_a: [700, 0, 1000, 0], points_b: [700, 0, 1000, 0], reversed: false }, f.frame, f.frame, f.wrap, f.wrap);
     assert.ok(near(sw.slice(0, 3), arrangedPoint(f.frame, f.wrap, 700, 0)) && near(sw.slice(3, 6), arrangedPoint(f.frame, f.wrap, 1000, 0)));
     assert.deepEqual(polylineSegments([700, 0, 1000, 0], f.frame, f.wrap), sw.slice(0, 6));
+}
+// the worker's wrapped meshes, one a piece: a redraw with the piece unchanged (an edit elsewhere)
+// reuses its mesh; a new drawing, frame or wrap builds it again; a piece gone is forgotten
+{
+    let calls = 0;
+    const cache = new WrappedMeshCache((fill, frame, wrap) => ({ n: ++calls, frame, wrap }));
+    const arm = LM.arms[0], f = armFields(arm, [650, -90, 1082, 370]), fill = { positions: [], indices: [] };
+    const first = cache.get("p6", "sig1", f.frame, f.wrap, fill);
+    assert.equal(cache.get("p6", "sig1", f.frame, f.wrap, fill), first, "unchanged: the same mesh");
+    assert.equal(cache.get("p6", "sig1", JSON.parse(JSON.stringify(f.frame)), { ...f.wrap }, fill), first, "equal values, new objects: still the same");
+    assert.equal(calls, 1);
+    cache.get("p7", "sig9", f.frame, f.wrap, fill);
+    assert.equal(cache.get("p6", "sig1", f.frame, f.wrap, fill), first, "another piece's build leaves it");
+    assert.equal(calls, 2);
+    cache.get("p6", "sig2", f.frame, f.wrap, fill);
+    cache.get("p6", "sig2", f.frame, { ...f.wrap, radius: 81 }, fill);
+    cache.get("p6", "sig2", { ...f.frame, origin: [0, 0, 0] }, { ...f.wrap, radius: 81 }, fill);
+    assert.equal(calls, 5, "a new drawing, wrap or frame builds again");
+    assert.equal(cache.builds, 5);
+    cache.keep(new Set(["p6"]));
+    assert.deepEqual([...cache.byId.keys()], ["p6"]);
 }
 console.log("ok - arrange: wrapped pieces drawn round the arm");

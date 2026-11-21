@@ -13,7 +13,7 @@ import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
 import { Atelier, forPage } from "./kernel.js";
-import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, wrappedMesh } from "./arrange.js";
+import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, WrappedMeshCache } from "./arrange.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
 import { unionBounds, boxPiece } from "./view2d.js";
@@ -46,6 +46,7 @@ const items = new ItemMap();
 const slabs = new Map();                 // pattern id -> { item, colour }
 const seamLines = new Map();             // seam id -> { item, colour }
 const slabBoxes = new Map();             // pattern id -> its slab's world box [x0, y0, z0, x1, y1, z1]
+const wrappedMeshes = new WrappedMeshCache();   // a wrapped piece's mesh, kept while its drawing, frame and wrap stay
 let canvasRef = null;                    // the OffscreenCanvas: its height is the drag's pixel scale
 let items2d = null, overlay2d = null, rects = null, hover2d = null, pointSel = [];
 
@@ -203,7 +204,7 @@ function refresh3d() {
         if (node.wrap && frame === node.frame && d.fill) {
             wraps.set(d.id, node.wrap);
             try {
-                const w = wrappedMesh(d.fill, frame, node.wrap);
+                const w = wrappedMeshes.get(d.id, d.sig, frame, node.wrap, d.fill);
                 const colour = colours.get(node.fabric) ?? "#cccccc";
                 const id = viewer.showMesh({ positions: w.positions, indices: w.indices, colour: selected("pattern", d.id) ? ACCENT : colour });
                 drawn.push(id); items.set(id, { kind: "pattern", id: d.id });
@@ -225,6 +226,7 @@ function refresh3d() {
             } finally { k.cadaclysm_blacksmith_solid_free(solid); }
         } catch (e) { first ??= e; }
     }
+    wrappedMeshes.keep(new Set(wraps.keys()));
     const { shown, error } = showSeams(viewer, atelier.seams(), frames, selection, wraps);
     for (const s of shown) { drawn.push(s.item); items.set(s.item, { kind: "seam", id: s.id }); seamLines.set(s.id, s); }
     if (sim.meshes.length) flatVisible(false);

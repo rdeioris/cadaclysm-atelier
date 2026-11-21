@@ -163,40 +163,64 @@ export function arrangedPoint(frame, wrap, x, y) {
     if (!(rl > 0) || !(tl > 0)) return q;
     const rr = vmul(radial, 1 / rl), tt = vmul(tx, 1 / tl);
     const dd = q.map((v, i) => v - o[i]), theta = vdot(dd, tt) / wrap.radius;
-    const hgt = vdot(q.map((v, i) => v - a[i]), kk), rad = wrap.radius + vdot(dd, rr) + rl - wrap.radius;
+    // the kernel's radius + ww, ww = d.rr + (|radial| - radius): the frame origin's own distance from the axis
+    const hgt = vdot(q.map((v, i) => v - a[i]), kk), rad = vdot(dd, rr) + rl;
     return [0, 1, 2].map((i) => a[i] + kk[i] * hgt + (rr[i] * Math.cos(theta) + tt[i] * Math.sin(theta)) * rad);
 }
 
 // A wrapped piece's mesh for the 3D window: its 2D fill ({positions xyz at z = 0, indices},
-// kernel.js fillOf) cut finer -- every triangle split evenly so no 2D edge is over `maxEdge`
-// mm, the one count for the whole piece so neighbours share their edges' points -- and each
-// point arranged. -> {positions (Float32Array xyz), indices, uv (Float64Array, the 2D points)}.
+// kernel.js fillOf) refined by longest-edge bisection until no 2D edge is over `maxEdge` mm,
+// then each point arranged. Each triangle is cut only as much as its own edges need (a small
+// one is left alone), and an edge's midpoint is one shared point, so the mesh stays conforming:
+// an edge over maxEdge is split at its midpoint by both triangles on it, one at most maxEdge by
+// neither. -> {positions (Float32Array xyz), indices, uv (Float64Array, the 2D points)}.
 export function wrappedMesh(fill, frame, wrap, maxEdge = 15) {
     const P = fill.positions, I = fill.indices;
-    let longest = 0;
-    for (let i = 0; i < I.length; i += 3) for (let j = 0; j < 3; j++) {
-        const a = I[i + j], b = I[i + (j + 1) % 3];
-        longest = Math.max(longest, Math.hypot(P[3 * a] - P[3 * b], P[3 * a + 1] - P[3 * b + 1]));
-    }
-    const n = Math.min(64, Math.max(1, Math.ceil(longest / maxEdge)));
-    const uv = [], index = new Map(), indices = [];
-    const vertex = (x, y) => {
-        const key = `${Math.round(x * 1e3)},${Math.round(y * 1e3)}`;
-        let v = index.get(key);
-        if (v === undefined) { v = uv.length / 2; uv.push(x, y); index.set(key, v); }
-        return v;
-    };
-    for (let t = 0; t < I.length; t += 3) {
-        const c = [0, 1, 2].map((j) => [P[3 * I[t + j]], P[3 * I[t + j] + 1]]);
-        const grid = (i, j) => { const u = i / n, v = j / n, w = 1 - u - v; return vertex(w * c[0][0] + u * c[1][0] + v * c[2][0], w * c[0][1] + u * c[1][1] + v * c[2][1]); };
-        for (let j = 0; j < n; j++) for (let i = 0; i + j < n; i++) {
-            indices.push(grid(i, j), grid(i + 1, j), grid(i, j + 1));
-            if (i + j + 1 < n) indices.push(grid(i + 1, j), grid(i + 1, j + 1), grid(i, j + 1));
+    const nv = P.length / 3;
+    let uv = new Float64Array(Math.max(16, nv * 4)), n = nv;
+    for (let v = 0; v < nv; v++) { uv[2 * v] = P[3 * v]; uv[2 * v + 1] = P[3 * v + 1]; }
+    const mids = new Map();       // edge (lo * 2^26 + hi) -> its midpoint's index
+    const mid = (a, b) => {
+        const lo = a < b ? a : b, hi = a < b ? b : a, key = lo * 67108864 + hi;
+        let m = mids.get(key);
+        if (m === undefined) {
+            if (2 * n + 2 > uv.length) { const g = new Float64Array(uv.length * 2); g.set(uv); uv = g; }
+            m = n++;
+            uv[2 * m] = (uv[2 * a] + uv[2 * b]) / 2; uv[2 * m + 1] = (uv[2 * a + 1] + uv[2 * b + 1]) / 2;
+            mids.set(key, m);
         }
+        return m;
+    };
+    const len2 = (a, b) => { const dx = uv[2 * a] - uv[2 * b], dy = uv[2 * a + 1] - uv[2 * b + 1]; return dx * dx + dy * dy; };
+    const max2 = maxEdge * maxEdge, out = [], stack = Array.from(I);
+    while (stack.length) {
+        const c = stack.pop(), b = stack.pop(), a = stack.pop();
+        const ab = len2(a, b), bc = len2(b, c), ca = len2(c, a);
+        if (ab <= max2 && bc <= max2 && ca <= max2) { out.push(a, b, c); continue; }
+        // split the longest edge at its midpoint: two triangles, the same winding
+        if (ab >= bc && ab >= ca) { const m = mid(a, b); stack.push(a, m, c, m, b, c); }
+        else if (bc >= ca) { const m = mid(b, c); stack.push(a, b, m, a, m, c); }
+        else { const m = mid(c, a); stack.push(a, b, m, m, b, c); }
     }
-    const positions = new Float32Array(uv.length / 2 * 3);
-    for (let v = 0; v < uv.length / 2; v++) positions.set(arrangedPoint(frame, wrap, uv[2 * v], uv[2 * v + 1]), 3 * v);
-    return { positions, indices: Uint32Array.from(indices), uv: Float64Array.from(uv) };
+    const positions = new Float32Array(3 * n);
+    for (let v = 0; v < n; v++) positions.set(arrangedPoint(frame, wrap, uv[2 * v], uv[2 * v + 1]), 3 * v);
+    return { positions, indices: Uint32Array.from(out), uv: uv.slice(0, 2 * n) };
+}
+
+// The wrapped meshes drawn, one a piece, kept while the piece's drawing (its `sig`), frame and
+// wrap stay the same: a redraw after an edit elsewhere reuses them. `builds` counts the meshes made.
+export class WrappedMeshCache {
+    constructor(build = wrappedMesh) { this.build = build; this.byId = new Map(); this.builds = 0; }
+    get(id, sig, frame, wrap, fill) {
+        const key = JSON.stringify([sig, frame, wrap]), hit = this.byId.get(id);
+        if (hit && hit.key === key) return hit.mesh;
+        const mesh = this.build(fill, frame, wrap);
+        this.builds++;
+        this.byId.set(id, { key, mesh });
+        return mesh;
+    }
+    // forget the pieces not in `ids` (removed, or no longer wrapped)
+    keep(ids) { for (const id of this.byId.keys()) if (!ids.has(id)) this.byId.delete(id); }
 }
 
 // 2D points (x, y pairs) through a frame (and its wrap, if any), as 3D segments for showLines:
