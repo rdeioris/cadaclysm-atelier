@@ -291,9 +291,14 @@ export class ItemMap {
 }
 
 const PALETTE = ["#d96c5a", "#5aa0d9", "#d9c05a", "#7fbf7a", "#b07fd9", "#d98fb4"];
+// A fabric's own colour ("#rrggbb", set in the property panel: the document keeps it in the
+// node's meta.atelier.colour), or null for the palette's.
+export const fabricColourOf = (n) => (COLOUR.test(n?.meta?.atelier?.colour ?? "") ? n.meta.atelier.colour.toLowerCase() : null);
+export const COLOUR = /^#[0-9a-fA-F]{6}$/;
+// Each fabric's colour: its own, else the palette's by its place among the fabrics.
 export function fabricColours(nodes) {
     const m = new Map();
-    for (const n of nodes) if (n.kind === "garment.fabric") m.set(n.id, n.colour ?? PALETTE[m.size % PALETTE.length]);
+    for (const n of nodes) if (n.kind === "garment.fabric") m.set(n.id, fabricColourOf(n) ?? PALETTE[m.size % PALETTE.length]);
     return m;
 }
 export const ACCENT = "#ffb347";

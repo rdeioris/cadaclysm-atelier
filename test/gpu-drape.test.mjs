@@ -9,7 +9,8 @@ import { readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
 import { Atelier } from "../kernel.js";
 import { avatarMesh, healthOf, statusOf, SEW_FRAMES, MAX_SPEED } from "../drape.js";
-import { GpuDrapeHost, statusFromHealth, sewingOver, clothColour, gpuClothOk, ENGINE_TEXT, giaState } from "../gpu-drape.js";
+import { GpuDrapeHost, statusFromHealth, sewingOver, clothColour, gpuClothOk, ENGINE_TEXT, giaState, vertexColours } from "../gpu-drape.js";
+import { fabricColours } from "../arrange.js";
 import * as m from "../model.js";
 
 // ---- the pure parts ---------------------------------------------------------------------------
@@ -90,6 +91,16 @@ scene.free();
 const a = new Atelier(kernel);
 a.load(readFileSync(asset("tshirt.json"), "utf8"));
 assert.match(clothColour(a.nodes()), /^#/);
+// one piece in a copy of the fabric, in a colour of its own (the kernel keeps both fabrics and the colour)
+{
+    const f0 = a.nodes().find((n) => n.kind === "garment.fabric").id, dup = m.duplicateFabric(a.nodes(), f0);
+    a.apply(dup.ops, "duplicate fabric");
+    a.apply([{ op: "set", id: dup.id, fields: { meta: { atelier: { colour: "#204060" } } } }], "colour");
+    a.apply(m.setPattern(a.nodes(), "p2", { fabric: dup.id }), "fabric");
+    assert.equal(fabricColours(a.nodes()).get(dup.id), "#204060", "the colour read back from the kernel's document");
+    const fs = a.nodes().filter((n) => n.kind === "garment.fabric");
+    for (const k of m.FABRIC_FIELDS) assert.equal(fs[1][k], fs[0][k], `the copy's ${k}`);
+}
 
 const view = new FakeView();
 const host = new GpuDrapeHost(view, k);
@@ -117,6 +128,21 @@ assert.equal(topo.gpu.item, item1);
 assert.equal(view.named("showCloth")[0][1], host.drape.h, "the kernel handle is shown");
 assert.equal(view.named("showCloth")[0][2].colour, clothColour(a.nodes()));
 assert.equal(view.named("showCloth")[0][2].gia, false, "GIA off unless asked for");
+// every sim vertex in its piece's fabric colour: p2 in the copy's #204060, the rest in the first fabric's
+{
+    const cs = view.named("showCloth")[0][2].colours, base = clothColour(a.nodes());
+    const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    assert.equal(cs.length, 3 * topo.vertexPatterns.length);
+    const p2 = topo.patterns.indexOf("p2");
+    let n2 = 0;
+    topo.vertexPatterns.forEach((p, k) => {
+        const want = rgb(p === p2 ? "#204060" : base);
+        if (p === p2) n2++;
+        for (let c = 0; c < 3; c++) assert.ok(Math.abs(cs[k * 3 + c] - want[c]) < 1e-6, `vertex ${k} (pattern ${topo.patterns[p]})`);
+    });
+    assert.ok(n2 > 0 && n2 < topo.vertexPatterns.length, `${n2} vertices in p2`);
+    assert.deepEqual([...vertexColours(a.nodes(), topo)], [...cs]);
+}
 assert.deepEqual([...topo.patterns].sort(), ["p1", "p2", "p3", "p4"]);
 assert.equal(topo.positions.length, 3 * topo.vertexPatterns.length);
 assert.equal(topo.phase, "sewing");
@@ -251,7 +277,9 @@ assert.equal(view.named("clothPositions").at(-1)[1], item3);
     const iPos = names.indexOf("clothPositions"), iRemove = names.indexOf("remove"), iShow = names.indexOf("showCloth");
     assert.ok(iPos >= 0 && iPos < iRemove && iRemove < iShow, `positions, remove, show: ${names.join(",")}`);
     assert.deepEqual(calls[iRemove], ["remove", item3]);
-    assert.deepEqual(calls[iShow][2], { colour: clothColour(a.nodes()), gia: true });
+    const { colours: shownColours, ...rest } = calls[iShow][2];
+    assert.deepEqual(rest, { colour: clothColour(a.nodes()), gia: true });
+    assert.equal(shownColours.length, 3 * last("topology").vertexPatterns.length, "the vertex colours shown again");
     assert.equal(names.filter((n) => n === "showCloth").length, 1, "shown once");
     const item4 = last("topology").gpu.item;
     assert.notEqual(item4, item3);

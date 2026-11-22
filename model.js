@@ -74,6 +74,23 @@ export function addFabric(nodes, slug, label, params) {
     return { id, ops: [{ op: "add", node }] };
 }
 
+// A copy of fabric `id` -- the same cloth numbers and meta, so the same physics -- as a new
+// node: id `<id>_2` (or the next free number), label "<label> copy" (or "copy 2", ...).
+export function duplicateFabric(nodes, id) {
+    const map = byId(nodes), src = map.get(id);
+    if (!src || src.kind !== "garment.fabric") throw new Error(`no fabric ${id}`);
+    let k = 2;
+    while (map.has(`${id}_${k}`)) k++;
+    const labels = new Set(nodes.filter((n) => n.kind === "garment.fabric").map((n) => n.label));
+    const base = `${src.label ?? id} copy`;
+    let label = base;
+    for (let j = 2; labels.has(label); j++) label = `${base} ${j}`;
+    const node = { id: `${id}_${k}`, kind: "garment.fabric", label };
+    for (const f of FABRIC_FIELDS) node[f] = src[f];
+    if (src.meta) node.meta = JSON.parse(JSON.stringify(src.meta));
+    return { id: node.id, ops: [{ op: "add", node }] };
+}
+
 export const setFabric = (nodes, id, params) =>
     [{ op: "set", id, fields: Object.fromEntries(FABRIC_FIELDS.filter((f) => f in params).map((f) => [f, params[f]])) }];
 

@@ -175,13 +175,15 @@ function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
     if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
-    const value = f.type === "text" ? raw.trim() : parseField(f, raw);
+    const value = f.type === "text" || f.type === "colour" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
         status(f.type === "action" ? f.label : `${f.label}: set`);
+        // a duplicated fabric is the one selected next, for its label and colour
+        if (f.key === "duplicate" && ops[0]?.op === "add") { pickedFabric = ops[0].node.id; setSelection({ kind: "fabric", id: ops[0].node.id }); }
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
 }
 function fieldRow(f) {
@@ -210,6 +212,7 @@ function fieldRow(f) {
         input.addEventListener("change", () => commitField(f, input.value));
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
     }
+    if (f.type === "colour") dd.append(swatch(f.value));
     if (input) {
         input.dataset.key = f.key; dd.append(input);
         input.addEventListener("keydown", (e) => { if (e.key === "Tab") tabFrom = { key: f.key, dir: e.shiftKey ? -1 : 1, t: performance.now() }; });

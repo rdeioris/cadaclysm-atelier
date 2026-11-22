@@ -53,6 +53,17 @@ export function clothColour(nodes) {
     return fabricColours(nodes).get(fabric) ?? "#cccccc";
 }
 
+// Each sim vertex's colour, its piece's fabric colour: three numbers in 0..1 a vertex, for
+// showCloth's `colours` (a package without it draws the whole cloth in `colour`).
+export function vertexColours(nodes, topology) {
+    const colours = fabricColours(nodes), fabricOf = new Map(nodes.filter((n) => n.kind === "garment.pattern").map((n) => [n.id, n.fabric]));
+    const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+    const byPattern = topology.patterns.map((id) => rgb(colours.get(fabricOf.get(id)) ?? "#cccccc"));
+    const out = new Float32Array(topology.vertexPatterns.length * 3);
+    topology.vertexPatterns.forEach((p, k) => out.set(byPattern[p] ?? byPattern[0] ?? [0.8, 0.8, 0.8], k * 3));
+    return out;
+}
+
 // One task of the event loop, so queued messages (pause, pin, drag, an update) are read
 // between frames and the GPU's map callbacks land.
 function taskYielder() {
@@ -76,7 +87,7 @@ export class GpuDrape extends Drape {
     show(colour, gia = false) {
         if (this.id) this.viewer.remove(this.id);
         this.id = 0; this.gen++;
-        this.id = this.viewer.showCloth(this.h, { colour, gia: !!gia });
+        this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, this.topology()), gia: !!gia });
         this.shownGia = !!gia;
         return this.id;
     }

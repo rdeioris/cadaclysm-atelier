@@ -2,7 +2,7 @@
 // Pure (no DOM, no kernel), so Node tests it. atelier.js draws the fields and posts the ops.
 import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
-import { SLOTS, HOOD_SLOTS, slotFields } from "./arrange.js";
+import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 
@@ -18,7 +18,7 @@ export function fieldText(f) {
     return String(f.value);
 }
 
-// -> [{key, label, unit, type: "text"|"number"|"select"|"numbers"|"readonly"|"action", value, options?}]
+// -> [{key, label, unit, type: "text"|"number"|"select"|"numbers"|"colour"|"readonly"|"action", value, options?}]
 export function fieldsFor(selection, nodes, drawings, avatar = null) {
     if (!selection) return [];
     if (selection.kind === "avatar") {
@@ -65,10 +65,12 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
         const matched = matchingPreset(n);
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
+            { key: "colour", label: "Colour", unit: "", type: "colour", value: fabricColours(nodes).get(n.id) ?? "#cccccc", tip: "How the fabric is drawn (#rrggbb): the 2D fills, the 3D pieces and the cloth. Looks only: the physics is the numbers below." },
             ...model.FABRIC_FIELDS.map((key) => ({ key, label: DISPLAY[key].label, unit: DISPLAY[key].unit, type: "number", value: DISPLAY[key].toShown(n[key]),
                 ...(DISPLAY[key].tip ? { tip: DISPLAY[key].tip } : {}) })),
             { key: "preset", label: "Apply preset", unit: "", type: "select", value: "", options: PRESETS.map((p) => ({ value: p.slug, label: p.label })) },
             ...(matched ? [{ key: "source", label: matched.estimated ? "Source (ESTIMATE)" : "Source", unit: "", type: "readonly", value: presetNote(matched) }] : []),
+            { key: "duplicate", label: "Duplicate fabric", unit: "", type: "action", value: null },
         ];
     }
     return [];
@@ -92,7 +94,10 @@ export function validate(selection, nodes, key, value) {
         if (key === "label") {
             if (typeof value !== "string" || !value.trim()) return "a label cannot be empty";
             if (nodes.some((n) => n.kind === "garment.fabric" && n.id !== selection.id && n.label === value)) return `another fabric is already called "${value}"`;
-        } else if (key !== "preset" && !num(value)) return "not a number";
+        } else if (key === "colour") {
+            if (typeof value !== "string" || !COLOUR.test(value.trim())) return "a colour is #rrggbb (six hex digits)";
+        } else if (key === "duplicate") return null;
+        else if (key !== "preset" && !num(value)) return "not a number";
         else if (DISPLAY[key]?.range) {
             const [lo, hi] = DISPLAY[key].range;
             if (value < lo || value > hi) return `${DISPLAY[key].label} must be from ${lo} to ${hi}`;
@@ -150,6 +155,11 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
     if (selection.kind === "fabric") {
         if (key === "label") return [{ op: "set", id, fields: { label: value } }];
         if (key === "preset") return model.setFabric(nodes, id, presetParams(value));
+        if (key === "duplicate") return model.duplicateFabric(nodes, id).ops;
+        if (key === "colour") {
+            const n = find(nodes, id);
+            return [{ op: "set", id, fields: { meta: { ...(n?.meta ?? {}), atelier: { ...(n?.meta?.atelier ?? {}), colour: value.trim().toLowerCase() } } } }];
+        }
         return [{ op: "set", id, fields: { [key]: DISPLAY[key].fromShown(value) } }];
     }
     throw new Error(`nothing to edit for ${selection.kind}`);

@@ -133,4 +133,30 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
     const gf = fieldsFor({ kind: "pattern", id: "p1" }, [...nodes.filter((n) => n.id !== "p1"), mirrored], drawings).find((f) => f.key === "grain");
     assert.equal(fieldText(gf), "0, 1");
 }
+// a fabric's colour: the palette's until set, #rrggbb only, kept in meta.atelier (other meta kept)
+{
+    const fSel = { kind: "fabric", id: "f_cotton_jersey" };
+    const cf = fieldsFor(fSel, nodes, drawings);
+    assert.deepEqual(cf.slice(0, 2).map((f) => f.key), ["label", "colour"]);
+    assert.equal(cf[1].type, "colour");
+    assert.equal(cf[1].value, "#d96c5a", "the palette's first colour until one is set");
+    assert.equal(cf.at(-1).key, "duplicate"); assert.equal(cf.at(-1).type, "action");
+    assert.equal(validate(fSel, nodes, "colour", "#2B4A6F"), null);
+    for (const bad of ["2b4a6f", "#2b4a6", "#2b4a6g", "blue", ""]) assert.match(validate(fSel, nodes, "colour", bad), /#rrggbb/, bad);
+    const withMeta = nodes.map((n) => (n.id === "f_cotton_jersey" ? { ...n, meta: { note: 1, atelier: { x: 2 } } } : n));
+    const ops = opsFor(fSel, withMeta, "colour", " #2B4A6F ");
+    assert.deepEqual(ops, [{ op: "set", id: "f_cotton_jersey", fields: { meta: { note: 1, atelier: { x: 2, colour: "#2b4a6f" } } } }]);
+    const coloured = withMeta.map((n) => (n.id === "f_cotton_jersey" ? { ...n, ...ops[0].fields } : n));
+    assert.equal(fieldsFor(fSel, coloured, drawings)[1].value, "#2b4a6f");
+    // Duplicate: the same numbers and meta (so the same physics and colour) under a new id and label
+    const dup = opsFor(fSel, coloured, "duplicate", null);
+    assert.equal(dup.length, 1); assert.equal(dup[0].op, "add");
+    const copy = dup[0].node, src = coloured.find((n) => n.id === "f_cotton_jersey");
+    assert.equal(copy.id, "f_cotton_jersey_2"); assert.equal(copy.label, "Cotton jersey copy");
+    for (const k of m.FABRIC_FIELDS) assert.equal(copy[k], src[k], k);
+    assert.deepEqual(copy.meta, src.meta); assert.notEqual(copy.meta, src.meta, "a copy, not the same object");
+    const again = m.duplicateFabric([...coloured, copy], "f_cotton_jersey").ops[0].node;
+    assert.deepEqual([again.id, again.label], ["f_cotton_jersey_3", "Cotton jersey copy 2"]);
+    assert.throws(() => m.duplicateFabric(nodes, "p1"), /no fabric p1/);
+}
 console.log("props: ok");
