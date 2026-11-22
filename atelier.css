@@ -69,6 +69,7 @@ footer { padding: 4px 14px; color: var(--dim); font-size: 12px; background: var(
 #status-text.error { color: #ff8a7a; }
 #issues { position: relative; color: var(--accent); cursor: default; }
 #issues:empty { display: none; }
+#issues.notes { color: inherit; }
 #issues ul { display: none; position: absolute; bottom: 100%; left: 0; margin: 0 0 6px; padding: 6px 10px 6px 24px; background: var(--panel);
     border: 1px solid var(--line); border-radius: 4px; color: var(--text); min-width: 260px; max-width: 520px; z-index: 5; }
 #issues:hover ul { display: block; }

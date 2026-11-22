@@ -16,6 +16,7 @@ import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./a
 import { fieldsFor, opsFor, validate, fieldText } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
+import { issuesLabel, isEaseNote } from "./kernel.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -103,7 +104,8 @@ function renderIssues() {
     const el = $("issues");
     el.replaceChildren();
     if (!issues.length) return;
-    el.append(`${issues.length} issue${issues.length === 1 ? "" : "s"}`);
+    el.append(issuesLabel(issues));
+    el.classList.toggle("notes", issues.every(isEaseNote));
     const ul = document.createElement("ul");
     for (const i of issues) { const li = document.createElement("li"); li.textContent = i.message ?? `${i.kind}`; ul.append(li); }
     el.append(ul);

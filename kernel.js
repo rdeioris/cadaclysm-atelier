@@ -29,6 +29,18 @@ export function forPage(d) {
 const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "profile_fillet_corner", "profile_piece_count",
     "profile_piece", "profile_chain", "profile_close_loop", "profile_beziers", "profile_contains", "profile_offset", "face", "mesh"];
 
+// The kernel's seam-length warning (garment_issue: severity 1 = warning, kind 10 =
+// ISSUE_SEAM_LENGTH_MISMATCH): CLO's ease rule, a seam whose sides differ by more than 5 %.
+// An intended gather (a cuff taking a wider sleeve end) raises it, so the status bar counts
+// these as ease notes, apart from the issues.
+export const isEaseNote = (i) => i.severity === 1 && i.kind === 10;
+const plural = (n, one) => `${n} ${one}${n === 1 ? "" : "s"}`;
+// The status bar's count: "2 issues", "1 ease note", "1 issue, 2 ease notes"; "" when none.
+export function issuesLabel(issues) {
+    const ease = issues.filter(isEaseNote).length, rest = issues.length - ease;
+    return [rest ? plural(rest, "issue") : "", ease ? plural(ease, "ease note") : ""].filter(Boolean).join(", ");
+}
+
 export class Atelier {
     constructor(k) {
         const lacks = NEEDS.filter((n) => typeof k[`cadaclysm_blacksmith_${n}`] !== "function");

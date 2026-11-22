@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { loadKernel } from "./package.mjs";
-import { Atelier } from "../kernel.js";
+import { Atelier, isEaseNote, issuesLabel } from "../kernel.js";
 import * as m from "../model.js";
 const k = await loadKernel();
 const params = Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1]));
@@ -105,6 +105,14 @@ const mm = m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: 100, a_to: 150, b_fr
 a.apply(mm.ops, "mismatch");
 const iss = a.issues();
 assert.ok(iss.length >= 1 && iss.every((i) => i.message.length > 0), "a length mismatch is reported");
+// ...as an ease note (a warning of the seam-length kind), which the status bar counts apart from the issues
+assert.ok(iss.some(isEaseNote), `an ease note among ${JSON.stringify(iss)}`);
+assert.equal(issuesLabel(iss.filter(isEaseNote)), "1 ease note");
+assert.equal(issuesLabel([{ severity: 1, kind: 10 }, { severity: 1, kind: 10 }]), "2 ease notes");
+assert.equal(issuesLabel([{ severity: 0, kind: 9 }, { severity: 1, kind: 10 }]), "1 issue, 1 ease note");
+assert.equal(issuesLabel([{ severity: "error", kind: "evaluation" }, { severity: 0, kind: 10 }]), "2 issues");
+assert.equal(issuesLabel([{ severity: 1, kind: 9 }]), "1 issue");
+assert.equal(issuesLabel([]), "");
 
 // a side shorter than 1 mm still gets its own entry
 const e = new Atelier(k);
