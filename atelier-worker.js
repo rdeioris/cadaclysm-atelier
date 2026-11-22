@@ -505,6 +505,13 @@ self.onmessage = async ({ data }) => {
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
             case "viewStats": answer(data, () => viewer.stats()); break;
+            // the cloth's sim vertex positions (xyz, mm) as they stand, read back from the GPU (film.js
+            // clothPositions); null with no GPU cloth
+            case "clothPositions": {
+                try { const p = clothPort?.positions ? await clothPort.positions() : null; post({ kind: "path", reqId: data.reqId, path: p ? Array.from(p) : null }); }
+                catch (e) { post({ kind: "error", reqId: data.reqId, text: String(e?.message ?? e) }); }
+                break;
+            }
             // an opened garment is framed with the avatar: its pieces may stand beyond the form
             case "open": atelier.load(data.text); changed(data.seq); if (rects) frame3d(); break;
             case "new": atelier.reset(data.ops); changed(data.seq); break;

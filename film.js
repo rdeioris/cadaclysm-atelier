@@ -27,6 +27,8 @@ export function filmCommand(action, sim, data = {}) {
 //   run()      runs free; pause() stops it (the Simulate button does nothing to a built film cloth)
 //   garment()  the document's text, no download; calls settle in order
 //   viewStats() View::stats: framesDrawn, lastFrameMs, lastGpuMs, ...
+//   clothPositions() the GPU cloth's sim vertex positions (xyz, mm, in cloth_vertex_patterns'
+//              order), read back; null on the CPU path
 //   stops      rises each time the cloth says it has stopped
 //   fpsText    the footer's text, kept when set (the driver sets the measured one)
 //   log        [cloth frame, page ms, step ms] for every frame reported
@@ -53,6 +55,7 @@ export function createFilm({ post, request, nextPaint, wait = (ms) => new Promis
         stops: 0,
         fpsText: null,
         viewStats: () => request("viewStats"),
+        clothPositions: () => request("clothPositions"),
         step(n = 1) {
             const go = queue.then(() => stepNow(n));
             queue = go.catch(() => {});

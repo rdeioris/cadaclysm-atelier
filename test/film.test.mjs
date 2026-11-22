@@ -28,7 +28,7 @@ const posts = [];
 let framesDrawn = 0, painted = 0, saves = 0;
 const { film, onSim, onSaved } = createFilm({
     post: (m) => { posts.push(m); if (m.kind === "save") saves++; },
-    request: async (kind) => { assert.equal(kind, "viewStats"); return { framesDrawn }; },
+    request: async (kind) => { assert.ok(kind === "viewStats" || kind === "clothPositions", kind); return kind === "viewStats" ? { framesDrawn } : [1, 2, 3]; },
     nextPaint: async () => { painted++; },
     wait: () => tick(),
     now: () => 0,
@@ -83,5 +83,8 @@ assert.equal(onSaved("three"), false, "a Save from the menu still downloads");
 // run and pause
 film.run(); film.pause();
 assert.deepEqual(posts.slice(-2), [{ kind: "sim", action: "run" }, { kind: "sim", action: "pause" }]);
+
+// clothPositions asks the worker
+assert.deepEqual(await film.clothPositions(), [1, 2, 3]);
 
 console.log("film: ok");
