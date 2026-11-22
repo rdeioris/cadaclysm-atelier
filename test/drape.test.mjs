@@ -63,6 +63,7 @@ const close = (a, b, eps = 1e-9) => a.length === b.length && a.every((x, i) => M
     assert.deepEqual(garmentChange(base(), edit((m) => { m.get("p1").label = "F"; m.get("p1").frame = { origin: [1, 2, 3] }; m.get("f1").label = "J"; })), { kind: "same" });
     assert.deepEqual(garmentChange(base(), edit((m) => { m.get("p2_outline").path.start = [6, 0]; m.get("s1").b_from = 1; })), { kind: "remesh", patterns: ["p2"] });
     assert.deepEqual(garmentChange(base(), edit((m) => { m.get("p1").grain = [1, 0]; })), { kind: "remesh", patterns: ["p1"] });
+    assert.deepEqual(garmentChange(base(), edit((m) => { m.get("p1").particle_distance = 10; })), { kind: "remesh", patterns: ["p1"] });
     assert.deepEqual(garmentChange(base(), edit((m) => { m.get("s1").a_to = 9; })).patterns.sort(), ["p1", "p2"]);
     assert.equal(garmentChange(base(), edit((m) => { m.get("f1").stretch_warp = 2; })).kind, "stale");
     assert.equal(garmentChange(base(), edit((m) => { m.get("p1").fabric = "f2"; })).kind, "stale");

@@ -5,6 +5,7 @@ import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fa
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
+export const DEFAULT_MESH = 20;   // the kernel's default particle_distance (cloth_default_options()[0])
 
 // A number as a field shows it: seven significant digits (an integer as it is).
 const showNumber = (v) => (typeof v === "number" && !Number.isInteger(v) ? String(Number(v.toPrecision(7))) : String(v));
@@ -14,11 +15,13 @@ const showGrain = (v) => showNumber(Math.round(v * 1e4) / 1e4);
 // The text an input field holds for a field descriptor.
 export function fieldText(f) {
     if (f.type === "numbers") return f.value.map(f.key === "grain" ? showGrain : showNumber).join(", ");
+    if (f.type === "optnumber") return f.value == null ? "" : showNumber(f.value);
     if (f.type === "number") return showNumber(f.value);
     return String(f.value);
 }
 
-// -> [{key, label, unit, type: "text"|"number"|"select"|"numbers"|"colour"|"readonly"|"action", value, options?}]
+// -> [{key, label, unit, type: "text"|"number"|"optnumber"|"select"|"numbers"|"colour"|"readonly"|"action", value, options?, placeholder?}]
+// An "optnumber" may be empty (value null): the default its placeholder shows.
 export function fieldsFor(selection, nodes, drawings, avatar = null) {
     if (!selection) return [];
     if (selection.kind === "avatar") {
@@ -49,6 +52,8 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             { key: "layer", label: "Layer", unit: "", type: "number", value: n.layer ?? 0 },
             { key: "allowance", label: "Allowance", unit: "mm", type: "numbers", value: n.allowance ?? [0] },
             { key: "grain", label: "Grain", unit: "", type: "numbers", value: n.grain ?? [0, 1] },
+            { key: "particle_distance", label: "Mesh", unit: "mm", type: "optnumber", value: n.particle_distance ?? null, placeholder: String(DEFAULT_MESH),
+                tip: `This piece's cloth particle distance. Empty: the garment's ${DEFAULT_MESH} mm. Finer (10 mm) where a piece gathers or creases, as a cuff; it costs about four times the vertices on that piece. Pieces sewn together must be within 2x of each other: the drape refuses a seam whose pieces differ by more.` },
             { key: "slot", label: "Slot", unit: "", type: "select", value: n.meta?.atelier?.slot ?? "none", options: slots },
             { key: "remove", label: "Remove piece", unit: "", type: "action", value: null },
         ];
@@ -90,6 +95,8 @@ export function validate(selection, nodes, key, value) {
             if (!Array.isArray(value) || !value.length || !value.every((v) => num(v) && v >= 0)) return "allowance must be numbers of 0 mm or more";
         } else if (key === "grain") {
             if (!Array.isArray(value) || value.length !== 2 || !value.every(num) || (value[0] === 0 && value[1] === 0)) return "grain must be two numbers, not both 0";
+        } else if (key === "particle_distance") {
+            if (value !== null && !(num(value) && value >= 10 && value <= 40)) return `mesh must be from 10 to 40 mm, or empty for the garment's ${DEFAULT_MESH}`;
         }
     } else if (selection.kind === "fabric") {
         if (key === "label") {

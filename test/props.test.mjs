@@ -9,7 +9,26 @@ nodes.push({ id: "p1", kind: "garment.pattern", label: "Front", fabric: "f_cotto
 const drawings = new Map([["p1", { sides: [0, 100, 150, 250, 300], bounds: [0, 0, 100, 50] }]]);
 
 const pf = fieldsFor({ kind: "pattern", id: "p1" }, nodes, drawings);
-assert.deepEqual(pf.map((f) => f.key), ["label", "fabric", "layer", "allowance", "grain", "slot", "remove"]);
+assert.deepEqual(pf.map((f) => f.key), ["label", "fabric", "layer", "allowance", "grain", "particle_distance", "slot", "remove"]);
+{
+    const mesh = pf.find((f) => f.key === "particle_distance");
+    assert.equal(mesh.label, "Mesh");
+    assert.equal(mesh.unit, "mm");
+    assert.equal(mesh.type, "optnumber");
+    assert.equal(mesh.value, null, "unset: the garment default");
+    assert.equal(mesh.placeholder, "20");
+    assert.equal(fieldText(mesh), "");
+    assert.equal(fieldText({ ...mesh, value: 10 }), "10");
+    const sel = { kind: "pattern", id: "p1" };
+    assert.equal(validate(sel, nodes, "particle_distance", 10), null);
+    assert.equal(validate(sel, nodes, "particle_distance", null), null, "empty is the default");
+    assert.equal(validate(sel, nodes, "particle_distance", 40), null);
+    assert.match(validate(sel, nodes, "particle_distance", 5), /from 10 to 40/);
+    assert.match(validate(sel, nodes, "particle_distance", 50), /from 10 to 40/);
+    assert.match(validate(sel, nodes, "particle_distance", NaN), /from 10 to 40/);
+    assert.deepEqual(opsFor(sel, nodes, "particle_distance", 10), [{ op: "set", id: "p1", fields: { particle_distance: 10 } }]);
+    assert.deepEqual(opsFor(sel, nodes, "particle_distance", null), [{ op: "set", id: "p1", fields: { particle_distance: null } }]);
+}
 assert.equal(pf.at(-1).type, "action");
 assert.deepEqual(pf.find((f) => f.key === "fabric").options.map((o) => o.value), ["f_cotton_jersey"]);
 assert.deepEqual(opsFor({ kind: "pattern", id: "p1" }, nodes, "label", "Back"), [{ op: "set", id: "p1", fields: { label: "Back" } }]);

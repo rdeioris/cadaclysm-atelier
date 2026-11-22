@@ -167,6 +167,7 @@ $("browser").addEventListener("click", (e) => {
 // Parsed from the text a field holds; NaN / blank is caught by validate().
 const parseField = (f, raw) => {
     if (f.type === "number") return raw.trim() === "" ? NaN : Number(raw);
+    if (f.type === "optnumber") return raw.trim() === "" ? null : Number(raw);
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
@@ -209,6 +210,7 @@ function fieldRow(f) {
         input = document.createElement("input");
         input.type = "text";
         input.value = fieldText(f);
+        if (f.placeholder) input.placeholder = f.placeholder;
         input.addEventListener("change", () => commitField(f, input.value));
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
     }

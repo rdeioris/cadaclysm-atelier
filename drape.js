@@ -115,11 +115,11 @@ export function dragTarget(start, basis, dx, dy) {
 // Compare the document's nodes before and after an edit:
 //   { kind: "same" }                      nothing the cloth reads changed (labels, allowance,
 //                                         notches, the 3D arrangement: Reset picks those up);
-//   { kind: "remesh", patterns: [ids] }   outlines, grains, layers or seam ranges changed:
+//   { kind: "remesh", patterns: [ids] }   outlines, grains, layers, mesh sizes or seam ranges changed:
 //                                         cloth_remesh_pattern each, the drape kept;
 //   { kind: "stale", why }                patterns, seams or fabrics added, removed or
 //                                         changed otherwise: Reset rebuilds the cloth.
-const PATTERN_KEYS = ["grain", "layer"];
+const PATTERN_KEYS = ["grain", "layer", "particle_distance"];
 const SEAM_RANGE = ["a_from", "a_to", "b_from", "b_to", "reversed"];
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 export function garmentChange(before, after) {

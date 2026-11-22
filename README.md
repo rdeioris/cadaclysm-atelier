@@ -86,8 +86,10 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
 - **Pin**: click the cloth to pin the nearest point where it is; click it again to unpin.
 - **Drag**: press on the cloth and pull; the point follows the pointer on the plane facing the
   camera. Right or middle drag and the wheel still move the camera while a tool is on.
-- **Editing while it runs**: a 2D edit of an outline, a grain or a seam's range re-meshes that
-  piece and keeps the drape (also live, during a 2D drag). A 2D move of a piece changes nothing
+- **Editing while it runs**: a 2D edit of an outline, a grain, a piece's Mesh (its own particle
+  distance, 10 to 40 mm; empty is the garment's 20 mm) or a seam's range re-meshes that piece and
+  keeps the drape (also live, during a 2D drag). Pieces sewn together must be within 2x of each
+  other's Mesh: the drape refuses a seam past that, and the strip shows why. A 2D move of a piece changes nothing
   in 3D. Adding or removing a piece, seam or fabric, a fabric's values or a new avatar make the
   cloth stale: the strip says so, and Simulate (paused) rebuilds it.
 - **Health**: the strip shows the frame, the phase, the welded seam pairs, the mesh size and the
