@@ -14,7 +14,7 @@ import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate, fieldText } from "./props.js";
-import { ENGINE_TEXT, ENGINE_TITLE } from "./gpu-drape.js";
+import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 
 const $ = (id) => document.getElementById(id);
@@ -371,8 +371,29 @@ function handle(r) {
 for (const b of document.querySelectorAll("[data-tool]")) b.addEventListener("click", () => setTool(b.dataset.tool));
 for (const b of document.querySelectorAll("[data-command]")) b.addEventListener("click", () => command(b.dataset.command));
 
+// GIA (the cloth's global intersection analysis): a session choice, off by default, for the GPU
+// cloth (the CPU always runs it: the button reads on there, disabled). Not saved in the document.
+let clothEngine = null;        // "gpu" / "cpu" once the worker is ready
+let gia = false;
+function showGia() {
+    const s = giaState(clothEngine, gia), b = $("sim-gia");
+    $("sim-engine").textContent = s.text;
+    $("sim-engine").title = s.title;
+    b.classList.toggle("on", s.on);
+    b.disabled = s.disabled;
+    b.title = s.button;
+    document.body.dataset.gia = s.on ? "on" : "off";
+}
+function toggleGia() {
+    if (clothEngine !== "gpu") return;
+    gia = !gia;
+    post({ kind: "gia", on: gia });
+    showGia();
+}
+
 function command(name) {
     if (name === "fit") fit2d();
+    else if (name === "gia") toggleGia();
     else if (name === "arrange") arrange();
     else if (name === "simulate") post({ kind: "sim", action: "toggle" });
     else if (name === "reset") post({ kind: "sim", action: "reset" });
@@ -807,8 +828,8 @@ worker.onmessage = ({ data: m }) => {
     switch (m.kind) {
         case "ready":
             if (m.clothEngine !== "gpu") startClothWorker();
-            $("sim-engine").textContent = ENGINE_TEXT[m.clothEngine === "gpu" ? "gpu" : "cpu"];
-            $("sim-engine").title = ENGINE_TITLE[m.clothEngine === "gpu" ? "gpu" : "cpu"];
+            clothEngine = m.clothEngine === "gpu" ? "gpu" : "cpu";
+            showGia();
             $("lic").textContent = `cadaclysm ${m.version} · ${m.backend}${m.license ? ` · ${m.license}` : ""}`;
             status("ready");
             fitNext = true;

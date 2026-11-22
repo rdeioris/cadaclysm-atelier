@@ -4,7 +4,7 @@
 // speaks the cloth worker's port protocol (cloth-worker.js) in-process, so the View worker
 // keeps one code path:
 //   in:  avatar, build {text, ops, run}, update {text, ops}, run, pause, reset, pin {vertex},
-//        drag {vertex, target}
+//        drag {vertex, target}, gia {on} (a live cloth is re-shown with it after a positions read)
 //   out: hello, topology (+ gpu: {item}), frame (positions: null), state, pinned
 // Edits go through the View (pinCloth, dragCloth, setClothOptions), never straight to the
 // kernel cloth: its state is stale between the View's round trips.
@@ -12,12 +12,24 @@ import { Drape } from "./cloth.js";
 import { healthOf, SEW_FRAMES } from "./drape.js";
 import { fabricColours } from "./arrange.js";
 
-// The 3D strip's engine label.
-export const ENGINE_TEXT = { gpu: "GPU · GIA off", cpu: "CPU" };
+// The 3D strip's engine label. GIA (the global intersection analysis: it untangles a cloth caught
+// through itself) is off on the GPU unless the GIA button asks for it; the CPU always runs it.
+export const ENGINE_TEXT = { gpu: "GPU · GIA off", gpuGia: "GPU · GIA on", cpu: "CPU" };
 export const ENGINE_TITLE = {
-    gpu: "WebGPU cloth; the global intersection analysis is not on the GPU yet",
-    cpu: "the cloth steps on the CPU, in its own worker",
+    gpu: "WebGPU cloth; the global intersection analysis is off (the GIA button turns it on)",
+    gpuGia: "WebGPU cloth with the global intersection analysis (self-collision untangling): slower a frame",
+    cpu: "the cloth steps on the CPU, in its own worker; the global intersection analysis always runs",
 };
+// The engine label and the GIA button for an engine ("gpu" / "cpu") and the session's GIA choice:
+// on the GPU the button is the choice; on the CPU it reads on and is disabled (always on there).
+export function giaState(engine, gia) {
+    if (engine !== "gpu") return { text: ENGINE_TEXT.cpu, title: ENGINE_TITLE.cpu, on: true, disabled: true, button: "GIA always runs on the CPU engine" };
+    const key = gia ? "gpuGia" : "gpu";
+    return {
+        text: ENGINE_TEXT[key], title: ENGINE_TITLE[key], on: !!gia, disabled: false,
+        button: gia ? "GIA on: the GPU untangles self-intersections (slower); click to turn it off" : "GIA off: click to run the global intersection analysis (self-collision) on the GPU, slower a frame",
+    };
+}
 // Whether this View can step the cloth on the GPU (an older package has no showCloth).
 export const gpuClothOk = (viewer) => !!viewer && typeof viewer.showCloth === "function" && !!viewer.clothGpu;
 
@@ -58,11 +70,14 @@ export class GpuDrape extends Drape {
         this.viewer = viewer;
         this.id = 0;                 // the View item, or 0 while not shown
         this.gen = 0;                // bumped whenever the item goes or comes: awaits check it
+        this.shownGia = null;        // the `gia` the item was shown with (fixed for its life)
     }
-    show(colour) {
+    // `gia`: the View runs the intersection analysis for this item; it is set at show time only.
+    show(colour, gia = false) {
         if (this.id) this.viewer.remove(this.id);
         this.id = 0; this.gen++;
-        this.id = this.viewer.showCloth(this.h, { colour });
+        this.id = this.viewer.showCloth(this.h, { colour, gia: !!gia });
+        this.shownGia = !!gia;
         return this.id;
     }
     // Before showCloth (in build) the kernel cloth is current: Drape's own switch.
@@ -103,6 +118,8 @@ export class GpuDrapeHost {
         this.onmessage = null;
         this.running = false;
         this.pending = null;          // the newest garment update not yet applied: {text, ops}
+        this.gia = false;             // the session's GIA choice: showCloth's `gia`
+        this.reshow = false;          // a GIA change waiting for the shown item: re-show it
         this.applying = null;         // the update under way (a promise)
         this.looping = false;
         this.budget = Infinity;    // frames a film step may still submit
@@ -151,24 +168,34 @@ export class GpuDrapeHost {
 
     // Latest wins: the cloth's state comes back from the GPU, then the kernel re-meshes what the
     // edit touched; a re-mesh shows the cloth afresh.
+    // A GIA change re-shows the cloth the same way (the View takes `gia` at show time only).
     applyPending() {
         // (the body below always awaits before it ends, so `applying` is set before it clears)
-        if (!this.applying && !(this.pending && this.drape?.id)) return Promise.resolve();
+        if (!this.applying && !(this.due() && this.drape?.id)) return Promise.resolve();
         return (this.applying ??= (async () => {
             try {
-                while (this.pending && this.drape?.id) {
+                while (this.due() && this.drape?.id) {
                     const gen = this.drape.gen;
                     await this.viewer.clothPositions(this.drape.id);
                     if (this.drape.gen !== gen) return;          // reset or rebuilt meanwhile
-                    const { text, ops } = this.pending;
-                    this.pending = null;
-                    const r = this.drape.update(text, ops);
-                    if (r.remeshed) { this.drape.show(this.colour); this.health = null; this.topology(); }
-                    else if (r.kind === "stale") this.state();
+                    let shown = false;
+                    if (this.pending) {
+                        const { text, ops } = this.pending;
+                        this.pending = null;
+                        const r = this.drape.update(text, ops);
+                        if (r.remeshed) { this.drape.show(this.colour, this.gia); shown = true; }
+                        else if (r.kind === "stale") this.state();
+                    }
+                    this.reshow = false;
+                    if (!shown && this.drape.shownGia !== this.gia) { this.drape.show(this.colour, this.gia); shown = true; }
+                    if (shown) { this.health = null; this.topology(); }
                 }
             } finally { this.applying = null; }
         })());
     }
+
+    // Work waiting for a positions read: a garment update or a GIA change.
+    due() { return !!this.pending || this.reshow; }
 
     // Two frames in flight: step frame N+1, then await frame N's health and report it, so the
     // GPU always has the next frame queued while the CPU reads the last one back.
@@ -180,7 +207,7 @@ export class GpuDrapeHost {
         try {
             while (this.running && this.drape?.id) {
                 try {
-                    if (this.pending) {
+                    if (this.due()) {
                         if (inflight) { const f = inflight; inflight = null; await this.finish(f); }
                         await this.applyPending();
                     } else if (this.budget <= 0) {
@@ -233,12 +260,12 @@ export class GpuDrapeHost {
                 case "avatar": (this.drape ??= new GpuDrape(this.k, this.viewer)).avatar = data.avatar; break;
                 case "build": {
                     const d = (this.drape ??= new GpuDrape(this.k, this.viewer));
-                    this.pending = null;
+                    this.pending = null; this.reshow = false;
                     this.running = false;
                     d.build(data.text, data.ops);             // drops the old item and cloth
                     this.colour = clothColour(d.nodes);
                     this.frames = 0; this.health = null;
-                    d.show(this.colour);
+                    d.show(this.colour, this.gia);
                     this.topology();
                     this.budget = Infinity;
                     this.running = !!data.run;
@@ -251,7 +278,11 @@ export class GpuDrapeHost {
                     break;
                 case "run": this.running = !!this.drape?.id; this.budget = data.frames > 0 ? data.frames : Infinity; this.state(); this.loop(); break;
                 case "pause": this.running = false; this.state(); break;
-                case "reset": this.running = false; this.pending = null; this.drape?.freeCloth(); this.health = null; this.state(); break;
+                case "gia":
+                    this.gia = !!data.on;
+                    if (this.drape?.id && this.drape.shownGia !== this.gia) { this.reshow = true; if (!this.running) await this.applyPending(); }
+                    break;
+                case "reset": this.running = false; this.pending = null; this.reshow = false; this.drape?.freeCloth(); this.health = null; this.state(); break;
                 case "pin": {
                     const d = this.drape;
                     if (!d?.id) break;

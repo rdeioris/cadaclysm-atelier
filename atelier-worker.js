@@ -537,6 +537,8 @@ self.onmessage = async ({ data }) => {
             }
             case "resize": viewer.resize?.(data.width, data.height, data.dpr); break;
             case "sim": simCommand(data.action, data); break;
+            // GIA on the GPU cloth (the CPU worker always runs it): the host re-shows a live cloth with it
+            case "gia": if (clothEngine === "gpu") clothPort.postMessage({ kind: "gia", on: !!data.on }); break;
             case "tool3d": await tool3d(data); break;
             case "rects": setRects(data.rects); break;
             case "pointer2d": pointers2d.event(data); break;

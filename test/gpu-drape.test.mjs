@@ -2,13 +2,14 @@
 // real Drape (the sample T-shirt on the pkg's kernel) against a fake View that records its
 // calls: build -> topology with the item, frames, sewing -> draping through setClothOptions,
 // pins and drags through the View (never the kernel cloth), a blow-up pausing with a reason,
-// an outline edit re-showing the cloth after a positions read, a stale edit, and Reset.
+// an outline edit re-showing the cloth after a positions read, a stale edit, Reset, and the
+// GIA switch (showCloth's `gia`: off by default, a live cloth re-shown with it, kept by a rebuild).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
 import { Atelier } from "../kernel.js";
 import { avatarMesh, healthOf, statusOf, SEW_FRAMES, MAX_SPEED } from "../drape.js";
-import { GpuDrapeHost, statusFromHealth, sewingOver, clothColour, gpuClothOk, ENGINE_TEXT } from "../gpu-drape.js";
+import { GpuDrapeHost, statusFromHealth, sewingOver, clothColour, gpuClothOk, ENGINE_TEXT, giaState } from "../gpu-drape.js";
 import * as m from "../model.js";
 
 // ---- the pure parts ---------------------------------------------------------------------------
@@ -35,6 +36,18 @@ const H = (o = {}) => ({ nonFinite: 0, dropped: 0, maxSpeed: 120, weldCandidates
     assert.equal(gpuClothOk({ clothGpu: false, showCloth() {} }), false, "WebGL2");
     assert.equal(gpuClothOk({ clothGpu: true, showCloth() {} }), true);
     assert.equal(ENGINE_TEXT.gpu, "GPU · GIA off");
+    assert.equal(ENGINE_TEXT.gpuGia, "GPU · GIA on");
+    // the label and the GIA button: off by default on the GPU; on and disabled on the CPU
+    const off = giaState("gpu", false), on = giaState("gpu", true), cpu = giaState("cpu", false), cpuOn = giaState("cpu", true);
+    assert.equal(off.text, "GPU · GIA off"); assert.equal(off.on, false); assert.equal(off.disabled, false);
+    assert.equal(on.text, "GPU · GIA on"); assert.equal(on.on, true); assert.equal(on.disabled, false);
+    assert.notEqual(on.title, off.title);
+    assert.match(off.button, /GIA off/); assert.match(on.button, /GIA on/);
+    for (const c of [cpu, cpuOn]) {
+        assert.equal(c.text, "CPU"); assert.equal(c.on, true, "always on on the CPU"); assert.equal(c.disabled, true);
+        assert.match(c.button, /always runs on the CPU/);
+    }
+    assert.deepEqual(giaState(null, false), cpu, "before the worker answers: the CPU's (disabled)");
 }
 
 // ---- the host on the real kernel, a fake View ---------------------------------------------------
@@ -103,6 +116,7 @@ const item1 = view.named("showCloth")[0] && view.next - 1;
 assert.equal(topo.gpu.item, item1);
 assert.equal(view.named("showCloth")[0][1], host.drape.h, "the kernel handle is shown");
 assert.equal(view.named("showCloth")[0][2].colour, clothColour(a.nodes()));
+assert.equal(view.named("showCloth")[0][2].gia, false, "GIA off unless asked for");
 assert.deepEqual([...topo.patterns].sort(), ["p1", "p2", "p3", "p4"]);
 assert.equal(topo.positions.length, 3 * topo.vertexPatterns.length);
 assert.equal(topo.phase, "sewing");
@@ -226,6 +240,46 @@ await until("the quick switch", () => view.named("setClothOptions").length > opt
 const item3 = last("topology").gpu.item;
 assert.equal((await host.positions()).length, 3 * last("topology").vertexPatterns.length);
 assert.equal(view.named("clothPositions").at(-1)[1], item3);
+
+// GIA on while running: positions read back, the item removed, the cloth shown with gia true;
+// the frames go on on the new item, the count carried over
+{
+    const topos = of("topology").length, callsBefore = view.calls.length, f0 = host.frames;
+    await host.postMessage({ kind: "gia", on: true });
+    await until("the GIA re-show", () => of("topology").length > topos);
+    const calls = view.calls.slice(callsBefore), names = calls.map((c) => c[0]);
+    const iPos = names.indexOf("clothPositions"), iRemove = names.indexOf("remove"), iShow = names.indexOf("showCloth");
+    assert.ok(iPos >= 0 && iPos < iRemove && iRemove < iShow, `positions, remove, show: ${names.join(",")}`);
+    assert.deepEqual(calls[iRemove], ["remove", item3]);
+    assert.deepEqual(calls[iShow][2], { colour: clothColour(a.nodes()), gia: true });
+    assert.equal(names.filter((n) => n === "showCloth").length, 1, "shown once");
+    const item4 = last("topology").gpu.item;
+    assert.notEqual(item4, item3);
+    await until("frames on the GIA item", () => view.named("stepCloth").at(-1)[1] === item4 && statusOf(last("frame").status).frame > f0);
+    assert.equal(last("state").running, true, "still running");
+    // the same choice again: nothing re-shown
+    const shows = view.named("showCloth").length;
+    await host.postMessage({ kind: "gia", on: true });
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(view.named("showCloth").length, shows, "no re-show for the same choice");
+    // paused: GIA off re-shows at once, the cloth stays paused
+    await host.postMessage({ kind: "pause" });
+    await host.postMessage({ kind: "gia", on: false });
+    assert.equal(view.named("showCloth").length, shows + 1);
+    assert.equal(view.named("showCloth").at(-1)[2].gia, false);
+    assert.equal(host.running, false);
+    // a rebuild keeps the choice; with no cloth the choice is only kept
+    await host.postMessage({ kind: "gia", on: true });
+    await host.postMessage({ kind: "reset" });
+    const shows2 = view.named("showCloth").length;
+    await host.postMessage({ kind: "gia", on: false });
+    await host.postMessage({ kind: "gia", on: true });
+    assert.equal(view.named("showCloth").length, shows2, "no cloth: nothing shown");
+    await host.postMessage({ kind: "build", text: a.save(), ops: null, run: false });
+    assert.equal(view.named("showCloth").at(-1)[2].gia, true, "the rebuild shows with GIA on");
+    await host.postMessage({ kind: "gia", on: false });
+    assert.equal(view.named("showCloth").at(-1)[2].gia, false);
+}
 await host.postMessage({ kind: "pause" });
 await host.postMessage({ kind: "reset" });
 assert.deepEqual(kernelCalls, [], `no kernel cloth edit while shown: ${kernelCalls}`);
