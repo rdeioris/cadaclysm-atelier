@@ -137,10 +137,10 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
 {
     const fSel = { kind: "fabric", id: "f_cotton_jersey" };
     const cf = fieldsFor(fSel, nodes, drawings);
-    assert.deepEqual(cf.slice(0, 2).map((f) => f.key), ["label", "colour"]);
+    assert.deepEqual(cf.slice(0, 3).map((f) => f.key), ["label", "colour", "duplicate"], "the three at the top: the numbers below scroll");
     assert.equal(cf[1].type, "colour");
     assert.equal(cf[1].value, "#d96c5a", "the palette's first colour until one is set");
-    assert.equal(cf.at(-1).key, "duplicate"); assert.equal(cf.at(-1).type, "action");
+    assert.equal(cf[2].type, "action");
     assert.equal(validate(fSel, nodes, "colour", "#2B4A6F"), null);
     for (const bad of ["2b4a6f", "#2b4a6", "#2b4a6g", "blue", ""]) assert.match(validate(fSel, nodes, "colour", bad), /#rrggbb/, bad);
     const withMeta = nodes.map((n) => (n.id === "f_cotton_jersey" ? { ...n, meta: { note: 1, atelier: { x: 2 } } } : n));

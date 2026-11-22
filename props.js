@@ -66,11 +66,12 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
             { key: "colour", label: "Colour", unit: "", type: "colour", value: fabricColours(nodes).get(n.id) ?? "#cccccc", tip: "How the fabric is drawn (#rrggbb): the 2D fills, the 3D pieces and the cloth. Looks only: the physics is the numbers below." },
+            // at the top, with the label and colour: the panel's 20 numbers scroll
+            { key: "duplicate", label: "Duplicate fabric", unit: "", type: "action", value: null },
             ...model.FABRIC_FIELDS.map((key) => ({ key, label: DISPLAY[key].label, unit: DISPLAY[key].unit, type: "number", value: DISPLAY[key].toShown(n[key]),
                 ...(DISPLAY[key].tip ? { tip: DISPLAY[key].tip } : {}) })),
             { key: "preset", label: "Apply preset", unit: "", type: "select", value: "", options: PRESETS.map((p) => ({ value: p.slug, label: p.label })) },
             ...(matched ? [{ key: "source", label: matched.estimated ? "Source (ESTIMATE)" : "Source", unit: "", type: "readonly", value: presetNote(matched) }] : []),
-            { key: "duplicate", label: "Duplicate fabric", unit: "", type: "action", value: null },
         ];
     }
     return [];
