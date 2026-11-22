@@ -302,6 +302,24 @@ async function check(cdp, base) {
                 await frames();
                 if (!(await evaluate(`document.getElementById("split").classList.contains("${cls}")`))) throw new Error(`${k} did not maximise`);
                 await sleep(300);
+                // the maximised window takes the height: the toolbar row is the visible strip alone
+                // (the hidden strip must not wrap down the screen), one line for the 3D strip (the 2D
+                // strip's own ~40 buttons take two at 1340 px), and the window's rect is the visible strip's
+                const [shown, hidden, rect, gone] = cls === "max3d" ? ["tools3d", "tools2d", "rect3d", "rect2d"] : ["tools2d", "tools3d", "rect2d", "rect3d"];
+                const lay = await evaluate(`(() => { const s = document.getElementById("${shown}"), c = document.getElementById("view").getBoundingClientRect();
+                    const tops = [...s.querySelectorAll("button")].filter((b) => b.offsetParent).map((b) => Math.round(b.getBoundingClientRect().top));
+                    return { strip: s.getBoundingClientRect().toJSON(), hidden: document.getElementById("${hidden}").getBoundingClientRect().height,
+                        lines: new Set(tops).size, row: c.top - document.getElementById("split").getBoundingClientRect().top, canvas: c.toJSON(), win: document.getElementById("view").dataset.${rect}, gone: document.getElementById("view").dataset.${gone} }; })()`);
+                const [wx, , ww, wh] = lay.win.split(",").map(Number);
+                if (!(wh > 0.7 * H)) throw new Error(`${k}: the window is ${wh} px tall of ${H} (${JSON.stringify(lay)})`);
+                const most = cls === "max3d" ? 1 : 2;
+                if (lay.lines > most || lay.strip.height > 36 * most) throw new Error(`${k}: the toolbar is ${lay.lines} lines, ${lay.strip.height} px (${JSON.stringify(lay)})`);
+                if (Math.abs(lay.row - lay.strip.height) > 1) throw new Error(`${k}: the toolbar row is ${lay.row} px, the visible strip ${lay.strip.height} px`);
+                if (lay.hidden > 40) throw new Error(`${k}: the hidden strip is ${lay.hidden} px tall`);
+                if (Math.abs(lay.canvas.left + wx - lay.strip.left) > 1 || Math.abs(ww - lay.strip.width) > 1) throw new Error(`${k}: the window ${lay.win} is not under its strip (${JSON.stringify(lay)})`);
+                if (Math.abs(wh - lay.canvas.height) > 1) throw new Error(`${k}: the window ${lay.win} is not the canvas's height ${lay.canvas.height}`);
+                if (lay.gone.split(",").map(Number)[2] !== 0) throw new Error(`${k}: the hidden window still has a rect ${lay.gone}`);
+                console.log(`# ${k}: window ${lay.win}, toolbar ${lay.lines} line(s), ${lay.row} px`);
                 await key(k, code, vk);
                 await frames();
                 if (await evaluate(`document.getElementById("split").className`)) throw new Error(`${k} again did not restore`);
@@ -313,7 +331,7 @@ async function check(cdp, base) {
             await sleep(500);
             await noStatusError();
             failIfErrors();
-            ok("F2/F3, arrange");
+            ok("F2/F3 (the maximised window takes the height), arrange");
 
             // the property editor: a label, the slot, a fractional layer refused, a fabric's weight
             await setField("label", "Bodice");
