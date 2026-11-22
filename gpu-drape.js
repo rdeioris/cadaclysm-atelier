@@ -13,10 +13,11 @@ import { healthOf, SEW_FRAMES } from "./drape.js";
 import { fabricColours } from "./arrange.js";
 
 // The 3D strip's engine label. GIA (the global intersection analysis: it untangles a cloth caught
-// through itself) is off on the GPU unless the GIA button asks for it; the CPU always runs it.
+// through itself) is on by default on the GPU (as the View's showCloth) and the GIA button can
+// turn it off; the CPU always runs it.
 export const ENGINE_TEXT = { gpu: "GPU · GIA off", gpuGia: "GPU · GIA on", cpu: "CPU" };
 export const ENGINE_TITLE = {
-    gpu: "WebGPU cloth; the global intersection analysis is off (the GIA button turns it on)",
+    gpu: "WebGPU cloth; the global intersection analysis is off (the GIA button turns it back on)",
     gpuGia: "WebGPU cloth with the global intersection analysis (self-collision untangling): slower a frame",
     cpu: "the cloth steps on the CPU, in its own worker; the global intersection analysis always runs",
 };
@@ -129,7 +130,7 @@ export class GpuDrapeHost {
         this.onmessage = null;
         this.running = false;
         this.pending = null;          // the newest garment update not yet applied: {text, ops}
-        this.gia = false;             // the session's GIA choice: showCloth's `gia`
+        this.gia = true;              // the session's GIA choice: showCloth's `gia` (on by default)
         this.reshow = false;          // a GIA change waiting for the shown item: re-show it
         this.applying = null;         // the update under way (a promise)
         this.looping = false;

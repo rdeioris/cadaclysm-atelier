@@ -81,7 +81,8 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
   worker), at about 28 frames a second for the sample T-shirt in Chrome on an RTX 3070 (2 on the
   CPU worker; `ATELIER_FPS=1 node test/browser.mjs` measures it). Elsewhere (WebGL2), or
   with `?cloth=cpu` in the URL, it steps on the CPU in a worker of its own (`cloth-worker.js`).
-  The 3D strip says which: `GPU · GIA off` or `CPU`.
+  The 3D strip says which: `GPU · GIA on` (the default; the GIA button turns it off),
+  `GPU · GIA off` or `CPU`.
 
 - **Pin**: click the cloth to pin the nearest point where it is; click it again to unpin.
 - **Drag**: press on the cloth and pull; the point follows the pointer on the plane facing the
@@ -111,8 +112,8 @@ and stop, `atelierFilm.garment()` reads the document without a download,
   meanwhile and the cloth moves as frames arrive.
 - On the GPU the cloth is one View item in one colour (the first piece's fabric): its pieces
   are not coloured apart and the selection accent does not show on it.
-- On the GPU the global intersection analysis (GIA) is off until it is ported; the CPU path
-  keeps it on.
+- On the GPU the global intersection analysis (GIA) is on by default, as in the View; the GIA
+  button turns it off (faster a frame) and back on. The CPU path always runs it.
 - On the GPU a seam's weld lands up to about 2 frames later than on the CPU (it waits for the
   View's next round trip).
 - A settled shirt still has a few particles jittering at 2-10 m/s (the health line's max speed).

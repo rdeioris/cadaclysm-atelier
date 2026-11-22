@@ -3,7 +3,7 @@
 // calls: build -> topology with the item, frames, sewing -> draping through setClothOptions,
 // pins and drags through the View (never the kernel cloth), a blow-up pausing with a reason,
 // an outline edit re-showing the cloth after a positions read, a stale edit, Reset, and the
-// GIA switch (showCloth's `gia`: off by default, a live cloth re-shown with it, kept by a rebuild).
+// GIA switch (showCloth's `gia`: on by default, a live cloth re-shown with it, kept by a rebuild).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
@@ -38,7 +38,7 @@ const H = (o = {}) => ({ nonFinite: 0, dropped: 0, maxSpeed: 120, weldCandidates
     assert.equal(gpuClothOk({ clothGpu: true, showCloth() {} }), true);
     assert.equal(ENGINE_TEXT.gpu, "GPU · GIA off");
     assert.equal(ENGINE_TEXT.gpuGia, "GPU · GIA on");
-    // the label and the GIA button: off by default on the GPU; on and disabled on the CPU
+    // the label and the GIA button: either choice on the GPU (the app starts on); on and disabled on the CPU
     const off = giaState("gpu", false), on = giaState("gpu", true), cpu = giaState("cpu", false), cpuOn = giaState("cpu", true);
     assert.equal(off.text, "GPU · GIA off"); assert.equal(off.on, false); assert.equal(off.disabled, false);
     assert.equal(on.text, "GPU · GIA on"); assert.equal(on.on, true); assert.equal(on.disabled, false);
@@ -104,6 +104,7 @@ assert.match(clothColour(a.nodes()), /^#/);
 
 const view = new FakeView();
 const host = new GpuDrapeHost(view, k);
+assert.equal(host.gia, true, "the host starts with GIA on");
 const got = [];
 host.onmessage = ({ data }) => got.push(data);
 const of = (kind) => got.filter((x) => x.kind === kind);
@@ -127,7 +128,7 @@ const item1 = view.named("showCloth")[0] && view.next - 1;
 assert.equal(topo.gpu.item, item1);
 assert.equal(view.named("showCloth")[0][1], host.drape.h, "the kernel handle is shown");
 assert.equal(view.named("showCloth")[0][2].colour, clothColour(a.nodes()));
-assert.equal(view.named("showCloth")[0][2].gia, false, "GIA off unless asked for");
+assert.equal(view.named("showCloth")[0][2].gia, true, "GIA on unless turned off (the View's GPU default)");
 // every sim vertex in its piece's fabric colour: p2 in the copy's #204060, the rest in the first fabric's
 {
     const cs = view.named("showCloth")[0][2].colours, base = clothColour(a.nodes());
@@ -267,18 +268,18 @@ const item3 = last("topology").gpu.item;
 assert.equal((await host.positions()).length, 3 * last("topology").vertexPatterns.length);
 assert.equal(view.named("clothPositions").at(-1)[1], item3);
 
-// GIA on while running: positions read back, the item removed, the cloth shown with gia true;
+// GIA off while running: positions read back, the item removed, the cloth shown with gia false;
 // the frames go on on the new item, the count carried over
 {
     const topos = of("topology").length, callsBefore = view.calls.length, f0 = host.frames;
-    await host.postMessage({ kind: "gia", on: true });
+    await host.postMessage({ kind: "gia", on: false });
     await until("the GIA re-show", () => of("topology").length > topos);
     const calls = view.calls.slice(callsBefore), names = calls.map((c) => c[0]);
     const iPos = names.indexOf("clothPositions"), iRemove = names.indexOf("remove"), iShow = names.indexOf("showCloth");
     assert.ok(iPos >= 0 && iPos < iRemove && iRemove < iShow, `positions, remove, show: ${names.join(",")}`);
     assert.deepEqual(calls[iRemove], ["remove", item3]);
     const { colours: shownColours, ...rest } = calls[iShow][2];
-    assert.deepEqual(rest, { colour: clothColour(a.nodes()), gia: true });
+    assert.deepEqual(rest, { colour: clothColour(a.nodes()), gia: false });
     assert.equal(shownColours.length, 3 * last("topology").vertexPatterns.length, "the vertex colours shown again");
     assert.equal(names.filter((n) => n === "showCloth").length, 1, "shown once");
     const item4 = last("topology").gpu.item;
@@ -287,14 +288,14 @@ assert.equal(view.named("clothPositions").at(-1)[1], item3);
     assert.equal(last("state").running, true, "still running");
     // the same choice again: nothing re-shown
     const shows = view.named("showCloth").length;
-    await host.postMessage({ kind: "gia", on: true });
+    await host.postMessage({ kind: "gia", on: false });
     await new Promise((r) => setTimeout(r, 30));
     assert.equal(view.named("showCloth").length, shows, "no re-show for the same choice");
-    // paused: GIA off re-shows at once, the cloth stays paused
+    // paused: GIA back on re-shows at once, the cloth stays paused
     await host.postMessage({ kind: "pause" });
-    await host.postMessage({ kind: "gia", on: false });
+    await host.postMessage({ kind: "gia", on: true });
     assert.equal(view.named("showCloth").length, shows + 1);
-    assert.equal(view.named("showCloth").at(-1)[2].gia, false);
+    assert.equal(view.named("showCloth").at(-1)[2].gia, true);
     assert.equal(host.running, false);
     // a rebuild keeps the choice; with no cloth the choice is only kept
     await host.postMessage({ kind: "gia", on: true });

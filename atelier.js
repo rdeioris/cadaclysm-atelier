@@ -378,10 +378,11 @@ function handle(r) {
 for (const b of document.querySelectorAll("[data-tool]")) b.addEventListener("click", () => setTool(b.dataset.tool));
 for (const b of document.querySelectorAll("[data-command]")) b.addEventListener("click", () => command(b.dataset.command));
 
-// GIA (the cloth's global intersection analysis): a session choice, off by default, for the GPU
-// cloth (the CPU always runs it: the button reads on there, disabled). Not saved in the document.
+// GIA (the cloth's global intersection analysis): a session choice, on by default (as the View's
+// GPU cloth), for the GPU cloth (the CPU always runs it: the button reads on there, disabled).
+// The choice is always sent to the worker explicitly. Not saved in the document.
 let clothEngine = null;        // "gpu" / "cpu" once the worker is ready
-let gia = false;
+let gia = true;
 function showGia() {
     const s = giaState(clothEngine, gia), b = $("sim-gia");
     $("sim-engine").textContent = s.text;
@@ -836,6 +837,7 @@ worker.onmessage = ({ data: m }) => {
         case "ready":
             if (m.clothEngine !== "gpu") startClothWorker();
             clothEngine = m.clothEngine === "gpu" ? "gpu" : "cpu";
+            if (clothEngine === "gpu") post({ kind: "gia", on: gia });
             showGia();
             $("lic").textContent = `cadaclysm ${m.version} · ${m.backend}${m.license ? ` · ${m.license}` : ""}`;
             status("ready");

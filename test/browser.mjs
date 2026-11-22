@@ -242,11 +242,11 @@ async function check(cdp, base) {
             // the cloth engine: CPU when asked, else the GPU whenever the page has a WebGPU adapter
             const engine = await evaluate(`document.getElementById("sim-engine").textContent`);
             const adapter = await evaluate(`(async () => { try { return !!(navigator.gpu && await navigator.gpu.requestAdapter()); } catch { return false; } })()`);
-            const engineWanted = clothWanted === "cpu" ? "CPU" : clothWanted === "gpu" || adapter ? "GPU · GIA off" : "CPU";
+            const engineWanted = clothWanted === "cpu" ? "CPU" : clothWanted === "gpu" || adapter ? "GPU · GIA on" : "CPU";
             if (engine !== engineWanted) throw new Error(`#sim-engine shows "${engine}", not "${engineWanted}" (ATELIER_CLOTH=${clothWanted || "-"}, WebGPU adapter ${adapter})`);
-            // the GIA button: off and enabled on the GPU; on and disabled on the CPU (always on there)
+            // the GIA button: on and enabled on the GPU (on by default); on and disabled on the CPU (always on there)
             const giaButton = await evaluate(`(() => { const b = document.getElementById("sim-gia"); return b && { on: b.classList.contains("on"), disabled: b.disabled, title: b.title }; })()`);
-            const giaWanted = engine === "CPU" ? { on: true, disabled: true } : { on: false, disabled: false };
+            const giaWanted = engine === "CPU" ? { on: true, disabled: true } : { on: true, disabled: false };
             if (!giaButton || giaButton.on !== giaWanted.on || giaButton.disabled !== giaWanted.disabled) throw new Error(`the GIA button: ${JSON.stringify(giaButton)}, wanted ${JSON.stringify(giaWanted)}`);
             if (engine === "CPU" && !/always runs on the CPU/.test(giaButton.title)) throw new Error(`the GIA button's tooltip on the CPU: ${giaButton.title}`);
             if (!clothWanted && !adapter) console.log("note - no WebGPU adapter in this browser: the cloth runs on the CPU");
@@ -610,29 +610,34 @@ async function check(cdp, base) {
             failIfErrors();
             ok("dragged the cloth");
 
-            // GIA: on the GPU the button turns it on while the cloth runs (re-shown with it), the
-            // label says so and the frames go on; off again after. On the CPU it is disabled.
+            // GIA: on by default on the GPU; the button turns it off while the cloth runs (re-shown
+            // without it), the label says so and the frames go on; on again after (re-shown with it).
+            // On the CPU it is disabled.
             if (engine !== "CPU") {
                 const giaGen = Number(await evaluate(`document.body.dataset.meshGen`));
+                await evaluate(`document.getElementById("sim-gia").click()`);
+                const labelOff = await evaluate(`document.getElementById("sim-engine").textContent`);
+                if (labelOff !== "GPU · GIA off") throw new Error(`#sim-engine after GIA off: "${labelOff}"`);
+                if (await evaluate(`document.getElementById("sim-gia").classList.contains("on")`)) throw new Error("the GIA button is still on");
+                await until("the cloth re-shown without GIA", async () => Number(await evaluate(`document.body.dataset.meshGen`)) > giaGen, 60000);
+                const fo = await frameNo();
+                await until("frames with GIA off", async () => (await frameNo()) >= fo + 2, 60000);
+                if ((await simState()) !== "running") throw new Error(`the cloth stopped with GIA off: ${await statusText()}`);
+                failIfErrors();
+                ok(`GIA off: "${labelOff}", running`);
+                const giaGen2 = Number(await evaluate(`document.body.dataset.meshGen`));
                 await evaluate(`document.getElementById("sim-gia").click()`);
                 const label = await evaluate(`document.getElementById("sim-engine").textContent`);
                 if (label !== "GPU · GIA on") throw new Error(`#sim-engine after GIA on: "${label}"`);
                 if (!(await evaluate(`document.getElementById("sim-gia").classList.contains("on")`))) throw new Error("the GIA button is not on");
-                await until("the cloth re-shown with GIA", async () => Number(await evaluate(`document.body.dataset.meshGen`)) > giaGen, 60000);
+                await until("the cloth re-shown with GIA", async () => Number(await evaluate(`document.body.dataset.meshGen`)) > giaGen2, 60000);
                 const fg = await frameNo();
-                await until("frames with GIA on", async () => (await frameNo()) >= fg + 3, 60000);
+                await until("frames with GIA on again", async () => (await frameNo()) >= fg + 3, 60000);
                 if ((await simState()) !== "running") throw new Error(`the cloth stopped with GIA on: ${await statusText()}`);
                 if (await evaluate(`document.getElementById("health").classList.contains("warn")`)) throw new Error(`health warns with GIA on: ${await health()}`);
                 const giaFps = await evaluate(`document.getElementById("fps").textContent`);
                 failIfErrors();
-                ok(`GIA on: "${label}", running (${await health()}; ${giaFps})`);
-                await evaluate(`document.getElementById("sim-gia").click()`);
-                const labelOff = await evaluate(`document.getElementById("sim-engine").textContent`);
-                if (labelOff !== "GPU · GIA off") throw new Error(`#sim-engine after GIA off: "${labelOff}"`);
-                const fo = await frameNo();
-                await until("frames with GIA off again", async () => (await frameNo()) >= fo + 2, 60000);
-                failIfErrors();
-                ok("GIA off again: the label back, running");
+                ok(`GIA on again: "${label}", running (${await health()}; ${giaFps})`);
             }
 
             // a 2D move of the front while it runs: no change in 3D (a 2D layout move is not a
