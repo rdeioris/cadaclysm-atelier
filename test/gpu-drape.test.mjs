@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
 import { Atelier } from "../kernel.js";
 import { avatarMesh, healthOf, statusOf, SEW_FRAMES, MAX_SPEED } from "../drape.js";
-import { GpuDrapeHost, statusFromHealth, sewingOver, clothColour, gpuClothOk, ENGINE_TEXT, giaState, vertexColours } from "../gpu-drape.js";
+import { GpuDrapeHost, STALL_WELD, statusFromHealth, sewingOver, clothColour, gpuClothOk, ENGINE_TEXT, giaState, vertexColours } from "../gpu-drape.js";
 import { fabricColours } from "../arrange.js";
 import * as m from "../model.js";
 
@@ -162,15 +162,23 @@ assert.equal(statusOf(f5.status).frame, 5);
 assert.equal(statusOf(f5.status).vertices, vertices);
 assert.match(f5.health.text, /frame 5 · sewing · seams 0\/40/);
 assert.equal(f5.running, true);
-assert.equal(view.named("setClothOptions").length, 0, "still sewing");
+assert.ok(view.named("setClothOptions").every((c) => [...c[2].slice(4, 7)].every((g) => g === 0)), "still sewing: no gravity yet");
 
 // sewing -> draping after SEW_FRAMES frames: gravity back through the View
 await until("draping", () => of("frame").some((x) => x.phase === "draping"));
+// 0 of 40 welded for STALL_FRAMES frames: a stalled sewing gets twice the weld distance, once,
+// and the drape puts it back
 const so = view.named("setClothOptions");
-assert.equal(so.length, 1, "one switch");
+assert.equal(so.length, 2, "one widening, one switch");
+const weld = host.drape.weldDistance;
+assert.ok(weld > 0, "the weld distance kept");
 assert.equal(so[0][1], item1);
-assert.equal(so[0][2].length, 20);
-assert.deepEqual([...so[0][2].slice(4, 7)], [...host.drape.gravity], "the stored gravity");
+assert.equal(so[0][2][14], weld * STALL_WELD, "the widened weld distance");
+assert.ok([...so[0][2].slice(4, 7)].every((g) => g === 0), "widened while sewing, no gravity");
+assert.equal(so[1][1], item1);
+assert.equal(so[1][2].length, 20);
+assert.equal(so[1][2][14], weld, "the drape's weld distance back");
+assert.deepEqual([...so[1][2].slice(4, 7)], [...host.drape.gravity], "the stored gravity");
 assert.ok(host.drape.gravity.some((g) => g !== 0));
 assert.equal(statusOf(of("frame").find((x) => x.phase === "draping").status).frame, SEW_FRAMES);
 

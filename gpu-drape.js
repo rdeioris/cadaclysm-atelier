@@ -75,6 +75,14 @@ function taskYielder() {
     return () => new Promise((r) => { waiting.push(r); ch.port2.postMessage(0); });
 }
 
+// A stalled sewing: some seam pairs open and no new weld for STALL_FRAMES frames. The kernel's
+// stall ramp caps a pair's pull at goal 0 under the soft sewing compliance, and a three-piece
+// point (the front neck centre: front, hood left, hood right) can hold its last pair a few mm
+// past the weld distance once the other two pieces have welded first (the stepped film's
+// weld order), against a stiff constraint (ten times the sewing stiffness closes 0.3 mm of it).
+// Such a cloth gets STALL_WELD times the weld distance, once, until the drape.
+export const STALL_FRAMES = 5, STALL_WELD = 2;
+
 // A Drape shown on the View: item `id`. Pins, drags and the sewing switch go through the View.
 export class GpuDrape extends Drape {
     constructor(k, viewer, avatar = null) {
@@ -83,13 +91,16 @@ export class GpuDrape extends Drape {
         this.id = 0;                 // the View item, or 0 while not shown
         this.gen = 0;                // bumped whenever the item goes or comes: awaits check it
         this.shownGia = null;        // the `gia` the item was shown with (fixed for its life)
+        this.unstall();
     }
+    unstall() { this.lastWelded = -1; this.weldedAt = 0; this.weldDistance = null; }
     // `gia`: the View runs the intersection analysis for this item; it is set at show time only.
     show(colour, gia = false) {
         if (this.id) this.viewer.remove(this.id);
         this.id = 0; this.gen++;
         this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, this.topology()), gia: !!gia });
         this.shownGia = !!gia;
+        this.unstall();
         return this.id;
     }
     // Before showCloth (in build) the kernel cloth is current: Drape's own switch.
@@ -98,8 +109,21 @@ export class GpuDrape extends Drape {
         if (this.phase !== "sewing" || !health || !sewingOver(health, frames)) return false;
         const opts = Float64Array.from(this.f("cloth_options")(this.h));
         opts.set(this.gravity, 4);
+        if (this.weldDistance != null) opts[14] = this.weldDistance;
         this.viewer.setClothOptions(this.id, opts);
         this.phase = "draping";
+        return true;
+    }
+    // A stalled sewing gets STALL_WELD times the weld distance (option 14), once; the drape puts
+    // it back. -> true when it widened it.
+    nudgeStall(h, frames) {
+        if (!this.id || this.phase !== "sewing" || this.weldDistance != null || h?.seamPairs == null || h.weldedPairs == null) return false;
+        if (h.weldedPairs !== this.lastWelded) { this.lastWelded = h.weldedPairs; this.weldedAt = frames; return false; }
+        if (h.weldedPairs >= h.seamPairs || frames - this.weldedAt < STALL_FRAMES) return false;
+        const opts = Float64Array.from(this.f("cloth_options")(this.h));
+        this.weldDistance = opts[14];
+        opts[14] *= STALL_WELD;
+        this.viewer.setClothOptions(this.id, opts);
         return true;
     }
     step() { throw new Error("a GPU cloth steps through GpuDrapeHost"); }
@@ -256,6 +280,7 @@ export class GpuDrapeHost {
         this.health = health0;
         this.frames += n;
         d.maybeDrape(health0, this.frames);
+        d.nudgeStall(health0, this.frames);
         if (!n || !this.running) return;                 // a round trip held the frame back, or paused
         const now = performance.now();
         const ms = this.lastDone ? now - this.lastDone : 0;
