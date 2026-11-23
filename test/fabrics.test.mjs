@@ -79,6 +79,22 @@ assert.equal(matchingPreset(fp).slug, "cotton_fleece");
 assert.equal(matchingPreset(jp).slug, "cotton_jersey");
 assert.equal(matchingPreset({ ...fp, density: 2e-4 }), undefined);
 
+// the heavyweight fleece: the same rules at w = 45/16.2, t = 2.5/0.61, heavier and stiffer than the fleece
+{
+    const heavy = PRESETS.find((x) => x.slug === "cotton_fleece_heavy");
+    assert.ok(heavy.estimated === true && heavy.label === "Heavyweight cotton fleece (estimated)");
+    const w = 45 / 16.2, t = 2.5 / 0.61;
+    close(heavy.kes.B[0], jersey.kes.B[0] * w * t, 1e-3);
+    close(heavy.kes.G, jersey.kes.G * w, 1e-3);
+    close(heavy.kes.EMT[0], jersey.kes.EMT[0] / Math.sqrt(w), 1e-3);
+    const hp = presetParams("cotton_fleece_heavy");
+    close(DISPLAY.density.toShown(hp.density), 450);
+    close(hp.thickness, 2.5);
+    for (const f of ["bending_warp", "shear_left", "stretch_warp"]) assert.ok(fp[f] < hp[f], `${f}: fleece < heavyweight`);
+    assert.ok(hp.density > fp.density && hp.thickness > fp.thickness, "heavier and thicker than the fleece");
+    assert.equal(matchingPreset(hp).slug, "cotton_fleece_heavy");
+}
+
 // display: density shown in g/m², round trip exact
 close(DISPLAY.density.toShown(2e-4), 200);
 close(DISPLAY.density.fromShown(DISPLAY.density.toShown(3.3e-4)), 3.3e-4);
