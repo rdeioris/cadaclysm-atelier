@@ -129,6 +129,7 @@ assert.equal(topo.gpu.item, item1);
 assert.equal(view.named("showCloth")[0][1], host.drape.h, "the kernel handle is shown");
 assert.equal(view.named("showCloth")[0][2].colour, clothColour(a.nodes()));
 assert.equal(view.named("showCloth")[0][2].gia, true, "GIA on unless turned off (the View's GPU default)");
+assert.equal(view.named("showCloth")[0][2].thickness, true, "drawn with the fabrics' thickness");
 // every sim vertex in its piece's fabric colour: p2 in the copy's #204060, the rest in the first fabric's
 {
     const cs = view.named("showCloth")[0][2].colours, base = clothColour(a.nodes());
@@ -287,7 +288,7 @@ assert.equal(view.named("clothPositions").at(-1)[1], item3);
     assert.ok(iPos >= 0 && iPos < iRemove && iRemove < iShow, `positions, remove, show: ${names.join(",")}`);
     assert.deepEqual(calls[iRemove], ["remove", item3]);
     const { colours: shownColours, ...rest } = calls[iShow][2];
-    assert.deepEqual(rest, { colour: clothColour(a.nodes()), gia: false });
+    assert.deepEqual(rest, { colour: clothColour(a.nodes()), gia: false, thickness: true });
     assert.equal(shownColours.length, 3 * last("topology").vertexPatterns.length, "the vertex colours shown again");
     assert.equal(names.filter((n) => n === "showCloth").length, 1, "shown once");
     const item4 = last("topology").gpu.item;

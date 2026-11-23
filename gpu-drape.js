@@ -98,7 +98,8 @@ export class GpuDrape extends Drape {
     show(colour, gia = false) {
         if (this.id) this.viewer.remove(this.id);
         this.id = 0; this.gen++;
-        this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, this.topology()), gia: !!gia });
+        // thickness: the View draws each fabric's thickness (two faces and a rim along open edges)
+        this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, this.topology()), gia: !!gia, thickness: true });
         this.shownGia = !!gia;
         this.unstall();
         return this.id;
