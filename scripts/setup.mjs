@@ -10,11 +10,10 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unzipSync } from "fflate";
 
-// The release whose web package Atelier is built against: none yet. The 2D window needs the
-// View's picking and snapping (view ABI 1.30) and the kernel's document_clear_history, which no
-// release carries before 0.16: until then, --pkg <a kernel+view build of cadaclysm master>
-// (README, "The package"). At 0.16: VERSION = "0.16.0".
-const VERSION = null;
+// The release whose web package Atelier is built against. The 2D window needs the View's
+// picking and snapping (view ABI 1.30) and the kernel's document_clear_history, which 0.16 is
+// the first release to carry; --pkg <folder> still takes a kernel+view build of cadaclysm master.
+const VERSION = "0.16.0";
 const ASSET = VERSION && `cadaclysm-${VERSION}-web.zip`;
 const URL = VERSION && `https://github.com/rdeioris/cadaclysm-sdk/releases/download/v${VERSION}/${ASSET}`;
 // Names the package must carry: the View's 1.30 calls and the kernel's fresh history.
