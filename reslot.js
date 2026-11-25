@@ -2,7 +2,7 @@
 // avatar. kernel.js runs it inside every batch for the pieces whose outline the batch changed
 // (Atelier.slotOps), and for every placed piece when a new avatar loads (Atelier.reslot, the
 // worker's setAvatar: one undo step). Pure (no kernel), so Node tests it.
-import { slotFields } from "./arrange.js";
+import { anchorFields, slotFields } from "./arrange.js";
 import { setPattern } from "./model.js";
 
 const EPS = 1e-9;
@@ -27,10 +27,12 @@ export const fixedSlot = (slot) => !slot || slot === "none" || slot === "custom"
  * frame and wrap are already there (to 1e-9) gives no op, so a re-slot on the same form changes
  * nothing. `only` (a Set of ids) re-places just those pieces, and the "on:" pieces whose host
  * (or its host, and so on) was re-placed; null re-places every placed piece. A custom slot is
- * never re-placed (fixedSlot); one in `only` still brings its "on:" pieces along.
+ * never re-placed (fixedSlot); one in `only` still brings its "on:" pieces along. `anchors`
+ * (id -> the 2D bounds before an outline edit) anchors a custom piece in `only` at its bounds
+ * centre (anchorFields): its centre's 3D point stays where it was, its "on:" pieces following.
  * -> {ops, moved: [ids], skipped: [{id, reason}]} (a hood slot on a form without a head, say).
  */
-export function reslotOps(nodes, drawings, avatar, only = null) {
+export function reslotOps(nodes, drawings, avatar, only = null, anchors = null) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const patterns = (byId.get("garment")?.patterns ?? []).map((id) => byId.get(id)).filter(Boolean);
     const now = new Map(patterns.map((n) => [n.id, n]));        // each piece as it will stand
@@ -47,11 +49,22 @@ export function reslotOps(nodes, drawings, avatar, only = null) {
         ops.push(...setPattern(nodes, n.id, { frame: f.frame, wrap: f.wrap ?? null }));
         moved.push(n.id);
     };
+    // a custom piece whose outline changed: its frame shifted so its bounds centre stays put
+    const anchor = (n) => {
+        const was = anchors?.get(n.id), d = drawings.get(n.id);
+        if (!was || !d?.bounds) return;
+        const mid = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+        const f = anchorFields(n.frame, n.wrap ?? null, mid(was), mid(d.bounds));
+        now.set(n.id, { ...n, ...f });
+        if (same(f.frame, n.frame) && same(f.wrap ?? null, n.wrap ?? null)) return;
+        ops.push(...setPattern(nodes, n.id, { frame: f.frame, wrap: f.wrap ?? null }));
+        moved.push(n.id);
+    };
     const onSlot = [];
     for (const n of patterns) {
         const slot = n.meta?.atelier?.slot;
         // a custom piece in `only` was moved by the caller (the gizmo): its "on:" pieces follow it
-        if (fixedSlot(slot)) { if (slot === "custom" && only?.has(n.id)) placed.add(n.id); continue; }
+        if (fixedSlot(slot)) { if (slot === "custom" && only?.has(n.id)) { placed.add(n.id); anchor(n); } continue; }
         if (slot.startsWith("on:")) onSlot.push(n); else if (!only || only.has(n.id)) place(n, slot);
     }
     // "on:" pieces once their host stands: a host may itself sit on another piece

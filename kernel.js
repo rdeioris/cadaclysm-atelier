@@ -112,7 +112,7 @@ export class Atelier {
     commit(ops, message, reanchorId = null, before = this.problems()) {
         const out = { removed: [] };
         if (!ops.length) return out;
-        const prior = this.nodes();
+        const prior = this.nodes(), anchors = this.customAnchors();
         this.f("document_batch_begin")(this.d, message ?? null);
         try {
             this.f("document_apply")(this.d, batch(ops), null);
@@ -122,7 +122,7 @@ export class Atelier {
             const sym = this.symmetryOps(prior, ops, true);
             if (sym.ops.length) { this.f("document_apply")(this.d, batch(sym.ops), null); this.evaluate(); }
             // the placed pieces whose outline changed, back on their slots (spec §5)
-            const slots = this.slotOps([...ops, ...sym.ops]);
+            const slots = this.slotOps([...ops, ...sym.ops], anchors);
             if (slots.length) { this.f("document_apply")(this.d, batch(slots), null); this.evaluate(); }
             // several pieces (a transform of a multi-selection): each one's seams in turn
             for (const rid of [...new Set([reanchorId ?? [], sym.reanchor].flat())]) {
@@ -152,7 +152,7 @@ export class Atelier {
         if (!this.open) {
             // `ops`: the last good frame as applied (a rebuilt partner's ops too: the cloth previews
             // it); `user`: that frame's own ops, which endPreview commits (the commit rebuilds again)
-            this.open = { nodes: this.nodes(), problems: this.problems(), ops: null, user: null };
+            this.open = { nodes: this.nodes(), problems: this.problems(), anchors: this.customAnchors(), ops: null, user: null };
             this.f("document_preview_begin")(this.d);
         }
         const p = this.open;
@@ -164,7 +164,7 @@ export class Atelier {
             const sym = this.symmetryOps(p.nodes, ops, false);
             if (sym.ops.length) { full = [...ops, ...sym.ops]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
             // and a placed piece stays on its slot while it is dragged
-            const slots = this.slotOps(full);
+            const slots = this.slotOps(full, p.anchors);
             if (slots.length) { full = [...full, ...slots]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
             bad = this.newProblems(p.problems);
         } catch (e) { bad = text(e); }
@@ -193,12 +193,22 @@ export class Atelier {
     }
     // The ops re-placing every placed piece whose outline `ops` changed (a 2D edit, a move, a
     // transform, a point added or removed; the document holds them applied) on its slot, and the
-    // pieces "on" a re-placed one. A custom slot keeps its frame.
-    slotOps(ops) {
+    // pieces "on" a re-placed one. A custom slot keeps its frame's axes and is anchored at its
+    // bounds centre: `anchors` (customAnchors before the ops) has the bounds it is anchored by.
+    slotOps(ops, anchors = null) {
         if (!this.avatar) return [];
         const nodes = this.nodes();
         const only = new Set([...this.touchedPieces(ops, m.byId(nodes))].filter(([, t]) => t.outline).map(([id]) => id));
-        return only.size ? reslotOps(nodes, this.slotBounds(), this.avatar, only).ops : [];
+        return only.size ? reslotOps(nodes, this.slotBounds(), this.avatar, only, anchors).ops : [];
+    }
+    // The 2D bounds of every piece on a custom (gizmo) slot as it stands now: id -> bounds.
+    customAnchors() {
+        const out = new Map();
+        if (!this.avatar) return out;
+        const b = this.slotBounds();
+        for (const n of this.nodes())
+            if (n.kind === "garment.pattern" && n.meta?.atelier?.slot === "custom") { const d = b.get(n.id); if (d?.bounds) out.set(n.id, d.bounds); }
+        return out;
     }
     // Every placed piece re-placed for the avatar now set, as one commit (one undo step), after a
     // new avatar. Not while a preview is open. -> reslotOps' {ops, moved, skipped}

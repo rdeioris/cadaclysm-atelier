@@ -174,6 +174,33 @@ export function arrangedPoint(frame, wrap, x, y) {
     return [0, 1, 2].map((i) => a[i] + kk[i] * hgt + (rr[i] * Math.cos(theta) + tt[i] * Math.sin(theta)) * rad);
 }
 
+// A custom (gizmo) placement anchored at the piece's bounds centre (spec §5): the `frame` and
+// `wrap` that put 2D point `now` (the centre after an outline edit) where `was` (the centre
+// before it) stood. A flat frame keeps its axes and shifts its origin along them. A wrapped one
+// keeps its wrap: the shift is unrolled round the cylinder, its part across the limb a turn of
+// the frame about the wrap's axis, its part along the limb a shift along it, any part off the
+// cylinder a shift of the origin in or out (arrangedPoint is unchanged by all three).
+// A frame that is not {origin, x, y} (the floor, "xy") is left as it is. -> {frame, wrap}
+export function anchorFields(frame, wrap, was, now) {
+    if (!frame || typeof frame !== "object" || !frame.origin) return { frame, wrap: wrap ?? null };
+    const dv = vadd(vmul(frame.x, now[0] - was[0]), vmul(frame.y, now[1] - was[1]));
+    const kl = wrap && wrap.radius > 0 ? Math.hypot(...wrap.dir) : 0;
+    if (!(kl > 0)) return { frame: { origin: frame.origin.map((v, i) => v - dv[i]), x: [...frame.x], y: [...frame.y] }, wrap: wrap ?? null };
+    const kk = wrap.dir.map((v) => v / kl), a = wrap.origin;
+    const oa = frame.origin.map((v, i) => v - a[i]), radial = oa.map((v, i) => v - kk[i] * vdot(oa, kk));
+    const tx = frame.x.map((v, i) => v - kk[i] * vdot(frame.x, kk)), rl = Math.hypot(...radial), tl = Math.hypot(...tx);
+    if (!(rl > 0) || !(tl > 0)) return { frame, wrap };
+    const rr = vmul(radial, 1 / rl), tt = vmul(tx, 1 / tl);
+    const dr = vdot(dv, rr) < rl ? vdot(dv, rr) : 0;
+    // the turn about the axis that takes the angle back by dv.tt / radius (tt is k x rr or its opposite)
+    const side = Math.sign(vdot(kk, cross(rr, tt))) || 1, beta = -side * vdot(dv, tt) / wrap.radius;
+    const c = Math.cos(beta), s = Math.sin(beta);
+    const turn = (v) => { const kv = cross(kk, v), d = vdot(kk, v) * (1 - c); return v.map((x, i) => x * c + kv[i] * s + kk[i] * d); };
+    const o1 = oa.map((v, i) => v - dr * rr[i]), along = vdot(dv, kk);
+    const origin = turn(o1).map((v, i) => a[i] + v - along * kk[i]);
+    return { frame: { origin, x: turn(frame.x), y: turn(frame.y) }, wrap: { ...wrap } };
+}
+
 // A wrapped piece's mesh for the 3D window: its 2D fill ({positions xyz at z = 0, indices},
 // kernel.js fillOf) refined by longest-edge bisection until no 2D edge is over `maxEdge` mm,
 // then each point arranged. Each triangle is cut only as much as its own edges need (a small

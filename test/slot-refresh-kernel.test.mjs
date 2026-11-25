@@ -79,12 +79,49 @@ a.undo();
 assert.deepEqual(node("Left sleeve").frame, sleeve.frame);
 console.log("ok - a sleeve moved in 2D stays wrapped on its arm, live in the preview and committed");
 
-// a custom slot and an unplaced piece are left alone
+// a custom slot is not re-placed: it keeps its frame's axes, anchored at its bounds centre (a
+// piece grown on one side keeps its centre's 3D point); one with no slot is left alone
+const growOps = (id, dx) => {
+    const b = bounds(id), mid = (b[0] + b[2]) / 2;
+    const grow = (x) => {
+        if (Array.isArray(x) && x.length === 2 && typeof x[0] === "number" && typeof x[1] === "number") return x[0] > mid ? [x[0] + dx, x[1]] : x;
+        if (Array.isArray(x)) return x.map(grow);
+        if (x && typeof x === "object") return Object.fromEntries(Object.entries(x).map(([k, v]) => [k, grow(v)]));
+        return x;
+    };
+    return m.setOutline(a.nodes(), id, grow(a.nodes().find((n) => n.id === `${id}_outline`).path));
+};
+const axes = (f) => JSON.stringify([f.x, f.y]);
 const back = node("Back");
 a.apply(m.setPattern(a.nodes(), back.id, { meta: { ...back.meta, atelier: { ...back.meta.atelier, slot: "custom" } } }), "custom");
-a.apply(moveOps(back.id, [80, 0]), "move");
-assert.deepEqual(node("Back").frame, back.frame, "a custom slot keeps its frame");
+const backAt = centre3d(node("Back")), backBounds = bounds(back.id);
+a.apply(growOps(back.id, 80), "grow");
+assert.ok(Math.abs(bounds(back.id)[2] - backBounds[2] - 80) < 1e-6, "the back grew 80 mm on its right");
+assert.equal(axes(node("Back").frame), axes(back.frame), "a custom slot keeps its frame's axes");
+assert.notDeepEqual(node("Back").frame.origin, back.frame.origin, "and shifts its origin");
+near(centre3d(node("Back")), backAt, 1e-6, "the grown back's bounds centre stays at its 3D point");
+assert.ok(a.undo());
+assert.deepEqual(node("Back").frame, back.frame, "one undo takes the grow and the anchor back");
+near(bounds(back.id), backBounds, 1e-9, "and the outline");
+// a 2D move of a custom piece leaves it where it stands in 3D, live in a preview too
+a.preview(moveOps(back.id, [60, -20]));
+near(centre3d(node("Back")), backAt, 1e-6, "the moved back's centre stays put in the preview");
+a.endPreview(true);
+near(centre3d(node("Back")), backAt, 1e-6, "and in the commit");
 a.undo(); a.undo();
+assert.deepEqual(node("Back").frame, back.frame);
+// a wrapped custom piece keeps its wrap: grown across the limb and along it, its centre stays
+const sl = node("Left sleeve");
+a.apply(m.setPattern(a.nodes(), sl.id, { meta: { ...sl.meta, atelier: { ...sl.meta.atelier, slot: "custom" } } }), "custom");
+const slAt = centre3d(node("Left sleeve"));
+assert.ok(sl.wrap?.radius > 0, "the sleeve is wrapped");
+a.apply(growOps(sl.id, 70), "grow");
+a.apply(moveOps(sl.id, [0, 45]), "move");
+assert.deepEqual(node("Left sleeve").wrap, sl.wrap, "a wrapped custom piece keeps its wrap");
+near(centre3d(node("Left sleeve")), slAt, 1e-6, "the grown sleeve's centre stays on its 3D point");
+a.undo(); a.undo(); a.undo();
+assert.deepEqual(node("Left sleeve").frame, sl.frame);
+console.log("ok - a custom piece grown or moved in 2D stays anchored at its bounds centre, one undo step");
 const rs = node("Right sleeve"), rsAtelier = { ...rs.meta.atelier };
 delete rsAtelier.slot;
 a.apply(m.setPattern(a.nodes(), rs.id, { meta: { ...rs.meta, atelier: rsAtelier } }), "no slot");
