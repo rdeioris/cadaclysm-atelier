@@ -8,6 +8,7 @@ import { makeSewingTool } from "./sewing.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 
+export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
 const DRAG_PX = 3; // screen pixels: less movement than this is a click, not a drag
 const TINY = 1e-9;
@@ -461,6 +462,8 @@ const TOOLS = {
         return {
             down(w, h, mods) {
                 if (!h && selectedId(ctx)) { box.start(w, mods); return {}; }
+                // a notch's mark selects that notch (its panel: kind, depth, at, remove)
+                if (h?.kind === "notch") return { select: { kind: "notch", id: h.id, index: h.index } };
                 if (h?.kind === "pattern" || (h?.kind === "internal" && h.id !== selectedId(ctx))) return { select: { kind: "pattern", id: h.id } };
                 // an internal line's point or handle (drawn on the selected piece only, spec §4)
                 if (h && (h.kind === "ipoint" || h.kind === "ihandle")) {
@@ -525,8 +528,9 @@ const TOOLS = {
             key(k) {
                 if (k === "Escape" && box.on) { box.cancel(); return { overlay: { lines: [] } }; }
                 if (k === "Escape" && hit) { hit = null; return { cancel: true }; }
-                if (k === "Delete" || k === "Backspace") return pointKey(ctx, "remove");
-                if (k === "c" || k === "C") return pointKey(ctx, "smooth");
+                // read when the page handles it: after a click just before the key has selected its point
+                if (k === "Delete" || k === "Backspace") return () => pointKey(ctx, "remove");
+                if (k === "c" || k === "C") return () => pointKey(ctx, "smooth");
                 return {};
             },
         };
@@ -631,12 +635,14 @@ const TOOLS = {
         }, { open: true });
     },
 
+    // Notch: a click on an edge places one, of the kind and depth last chosen (ctx.notchNext, which
+    // a selected notch's panel edit sets; a slit 6 mm deep at first).
     notch(ctx) {
         return {
             down(w, h) {
                 if (h?.kind !== "edge") return {};
-                const old = nodeOf(ctx, h.id)?.notches ?? [];
-                return { ops: setPattern(ctx.nodes, h.id, { notches: [...old, { at: h.s, kind: "slit", depth: 6 }] }) };
+                const old = nodeOf(ctx, h.id)?.notches ?? [], next = { ...NOTCH_DEFAULT, ...(ctx.notchNext ?? {}) };
+                return { ops: setPattern(ctx.nodes, h.id, { notches: [...old, { at: h.s, kind: next.kind, depth: next.depth }] }) };
             },
             move() { return {}; }, up() { return {}; }, key() { return {}; },
         };
@@ -789,8 +795,15 @@ const TOOLS = {
     },
 };
 
+// A notch's mark is picked as that notch; every tool but Edit reads it as its piece.
+const asPiece = (h) => (h?.kind === "notch" ? { kind: "pattern", id: h.id } : h);
+function piecesOnly(t) {
+    for (const k of ["down", "move", "up"]) { const fn = t[k]; if (fn) t[k] = (w, h, mods) => fn.call(t, w, asPiece(h), mods); }
+    return t;
+}
 export function makeTool(name, ctx) {
-    if (name === "segment" || name === "free") return makeSewingTool(name, ctx);
+    if (name === "segment" || name === "free") return piecesOnly(makeSewingTool(name, ctx));
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
-    return TOOLS[name](ctx);
+    const t = TOOLS[name](ctx);
+    return name === "edit" ? t : piecesOnly(t);
 }

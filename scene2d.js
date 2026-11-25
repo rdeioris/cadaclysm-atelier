@@ -10,7 +10,7 @@
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
 import { seamColour } from "./sewing.js";
-import { pointsOf, internalPointsOf, notchNormals, xformHandles } from "./view2d.js";
+import { pointsOf, internalPointsOf, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
@@ -21,10 +21,6 @@ const STATE = { normal: 0, hover: 1, selected: 2, first: 3 };
  *  that let a fill 1 mm above it show the grid through. */
 const BAND_BASE = 10;
 export const bandOf = (rank) => ({ fill: BAND_BASE + 4 * rank, line: BAND_BASE + 1 + 4 * rank, seam: BAND_BASE + 2 + 4 * rank });
-// The View's "tick" glyph is a slash turned 45 degrees from its `dir`: this turn makes the
-// stroke run along the notch's outward normal (M4a's notch mark).
-export const TICK_TURN = -Math.PI / 4;
-const turn = ([x, y], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
 const SEAM_NO_PX = 8;          // a seam's number stands this far out from its seam's middle
 
 const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
@@ -129,10 +125,12 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line), colour: sel ? ACCENT : INTERNAL,
             dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig,
         }));
-        if (notchAt.length) {
-            const dir = xyz(notchNormals(d).map((n) => turn(n, TICK_TURN)));
-            out.push({ key: `${id}/notches`, show: "glyphs", data: notchAt, colour: line, glyph: { kind: "tick", dir, sizePt: 10 }, what: { kind: "notch", id }, sig });
-        }
+        // each notch's mark, the kernel's polyline (garment_pattern_notch_lines): a lines item each,
+        // picked as that notch; the selected one in the accent
+        (d.notchLines ?? []).forEach((pl, k) => {
+            const on = selection?.kind === "notch" && selection.id === id && selection.index === k;
+            out.push({ key: `${id}/notch/${k}`, show: "lines", data: segs(pl, false, z.line), colour: on ? ACCENT : line, what: { kind: "notch", id, index: k }, sig });
+        });
         if (d.grain?.length >= 4) {
             const g = d.grain;
             out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });

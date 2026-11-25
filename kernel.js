@@ -217,6 +217,7 @@ export class Atelier {
                 const r = this.f("profile_point_at_length")(p, notchRaw[i], ACC);
                 notches.push([r[0], r[1], notchRaw[i + 1]]);
             }
+            const notchLines = this.notchLinesOf(pid);
             const allowance0 = (node.allowance ?? [0])[0];
             // the face first: it refuses crossing holes, and checkHoles counts on none crossing
             const fill = this.fillOf(id);
@@ -236,11 +237,18 @@ export class Atelier {
             return {
                 id, label: node.label, fabric: node.fabric, layer: node.layer ?? 0,
                 sew, cut: Array.from(this.f("garment_cut_line")(this.g, pid, TOL)),
-                samples, sides, notches, internal, grain, bounds,
+                samples, sides, notches, notchLines, internal, grain, bounds,
                 beziers: this.beziersOf(outlineNode.path), holes, fill,
                 sig: JSON.stringify([node, outlineNode.path]),
             };
         });
+    }
+    // Each notch's mark (spec §5: the kernel's slit, V, T, castle or U, cut inward `depth` deep)
+    // as one polyline, flat x, y pairs, in notch order: garment_pattern_notch_lines' [n, x, y, ...].
+    notchLinesOf(pid) {
+        const raw = this.f("garment_pattern_notch_lines")(this.g, pid, TOL), out = [];
+        for (let i = 0; i < raw.length;) { const n = raw[i]; out.push(Array.from(raw.subarray(i + 1, i + 1 + 2 * n))); i += 1 + 2 * n; }
+        return out;
     }
     // The outline every 1 mm: flat triples arc, x, y (what edge picking reads).
     samplesOf(p) { const out = []; this.rows(this.f("profile_divide_by_length")(p, STEP, ACC)).forEach((r, i) => out.push(i * STEP, r[0], r[1])); return out; }

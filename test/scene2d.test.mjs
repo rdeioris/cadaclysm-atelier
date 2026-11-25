@@ -1,7 +1,7 @@
 // The 2D scene against a fake viewer: what each piece shows, that an unchanged scene shows
 // nothing again, that a moved piece is updated in place, that the item map answers picks.
 import assert from "node:assert/strict";
-import { specs2d, Items2d, Overlay2d, fillColour, LAYER_2D, bandOf, TICK_TURN } from "../scene2d.js";
+import { specs2d, Items2d, Overlay2d, fillColour, LAYER_2D, bandOf, ACCENT } from "../scene2d.js";
 import { hitOf, pointsOf, xformHandles } from "../view2d.js";
 
 function fakeViewer() {
@@ -28,7 +28,7 @@ const square = (x) => {
 const drawing = (id, x, extra = {}) => ({
     id, label: id.toUpperCase(), fabric: "f_x", layer: 0, sew: [x, 0, x + 100, 0, x + 100, 50, x, 50, x, 0], cut: [x - 10, -10, x + 110, -10, x + 110, 60, x - 10, 60, x - 10, -10],
     samples: [0, x, 0, 100, x + 100, 0, 150, x + 100, 50, 250, x, 50], sides: [0, 100, 150, 250, 300],
-    notches: [[x + 50, 0, 0]], internal: [], holes: [], grain: [x + 50, 10, x + 50, 40], bounds: [x, 0, x + 100, 50],
+    notches: [[x + 50, 0, 0]], notchLines: [[x + 50, 0, x + 50, 6]], internal: [], holes: [], grain: [x + 50, 10, x + 50, 40], bounds: [x, 0, x + 100, 50],
     beziers: square(x), fill: { positions: Float32Array.of(x, 0, -1, x + 100, 0, -1, x, 50, -1), indices: Uint32Array.of(0, 1, 2) }, sig: `${id}@${x}`, ...extra,
 });
 const nodes = [{ id: "f_x", kind: "garment.fabric" }, { id: "p1_outline", kind: "profile.path", path: { start: [0, 0], segments: [
@@ -40,7 +40,7 @@ const state = (over = {}) => ({ drawings: [drawing("p1", 0), drawing("p2", 200)]
 // what a piece shows
 const specs = specs2d(state());
 const keys = specs.map((s) => s.key);
-for (const k of ["p1/fill", "p1/sew", "p1/cut", "p1/notches", "p1/grain", "p1/grainhead", "p1/label", "seam/s1/a", "seam/s1/b", "seam/s1/no"]) assert.ok(keys.includes(k), `${k} in ${keys}`);
+for (const k of ["p1/fill", "p1/sew", "p1/cut", "p1/notch/0", "p1/grain", "p1/grainhead", "p1/label", "seam/s1/a", "seam/s1/b", "seam/s1/no"]) assert.ok(keys.includes(k), `${k} in ${keys}`);
 assert.ok(!keys.includes("p1/points"), "handles only on the selected piece");
 const sew = specs.find((s) => s.key === "p1/sew");
 assert.equal(sew.show, "curves"); assert.deepEqual(sew.what, { kind: "sew", id: "p1" });
@@ -83,10 +83,13 @@ const against = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 100, 
 assert.deepEqual(against.find((x) => x.key === "seam/s1/no").offset, [8, 0], "a seam range running against the outline: still out of it");
 const top = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 0, 50] }] }));
 assert.deepEqual(top.find((x) => x.key === "seam/s1/no").offset, [0, 8], "on the top side: up the screen (the View's offset y runs up)");
-// a notch tick: its glyph turned so the stroke runs along the outward normal (p1's notch is on its bottom side)
-const ticks = specs.find((x) => x.key === "p1/notches");
-const want = [Math.cos(-Math.PI / 2 + TICK_TURN), Math.sin(-Math.PI / 2 + TICK_TURN), 0];
-Array.from(ticks.glyph.dir).forEach((v, i) => assert.ok(Math.abs(v - want[i]) < 1e-9, `tick dir ${ticks.glyph.dir} vs ${want}`));
+// a notch: the kernel's mark as lines, picked as that notch; the selected one in the accent
+const mark = specs.find((x) => x.key === "p1/notch/0");
+assert.equal(mark.show, "lines");
+assert.deepEqual(mark.data, [50, 0, bandOf(0).line, 50, 6, bandOf(0).line]);
+assert.deepEqual(mark.what, { kind: "notch", id: "p1", index: 0 });
+assert.equal(specs2d(state({ selection: { kind: "notch", id: "p1", index: 0 } })).find((x) => x.key === "p1/notch/0").colour, ACCENT);
+assert.notEqual(specs2d(state({ selection: { kind: "notch", id: "p2", index: 0 } })).find((x) => x.key === "p1/notch/0").colour, ACCENT);
 
 // apply: everything once on layer 1, nothing again for the same scene
 const v = fakeViewer(), items = new Items2d(v);
@@ -104,7 +107,7 @@ assert.deepEqual(v.calls, [], "an unchanged scene calls nothing");
 items.apply(specs2d(state({ hover: "p1" })));
 assert.ok(v.calls.length >= 1 && v.calls.every((c) => c[0] === "setColour"), "the sew line and the notches recoloured, nothing shown again");
 const recoloured = v.calls.map((c) => c[1]);
-for (const k of ["p1/sew", "p1/notches"]) assert.ok(recoloured.includes(items.item(k)), `${k} recoloured on hover`);
+for (const k of ["p1/sew", "p1/notch/0"]) assert.ok(recoloured.includes(items.item(k)), `${k} recoloured on hover`);
 v.calls.length = 0;
 // a moved piece: its curves and lines in place, its fill and glyphs shown again
 const moved = state({ drawings: [drawing("p1", 10), drawing("p2", 200)] });

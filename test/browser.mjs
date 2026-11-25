@@ -708,7 +708,8 @@ async function check(cdp, base) {
             if ((await size()) !== s0) throw new Error(`the move changed the piece: ${s0} -> ${await size()}`);
             await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
             await setField("grain", "0.2, 1");
-            await until("the cloth re-meshed", async () => (await gen()) > g0, 60000);
+            await until("the cloth re-meshed", async () => (await gen()) > g0, 60000)
+                .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}", sim ${await evaluate(`document.body.dataset.sim`)}, health "${await evaluate(`document.getElementById("health").textContent`)}", gen ${await gen()} vs ${g0}`); });
             const f2 = await frameNo();
             await until("frames after the edit", async () => (await frameNo()) >= f2 + 2, 60000);
             if (/Reset/.test(await health())) throw new Error(`the cloth went stale: ${await health()}`);
@@ -1437,10 +1438,13 @@ async function check(cdp, base) {
                 await evaluate(`document.getElementById("point-curve").click()`);
                 const pc = await until("a curve point", async () => { const p = await outlineNow(); return p.segments[0].type === "bezier" && p.segments[1].type === "bezier" ? p : null; }, 30000);
                 await noStatusError();
-                await click(Pn);
-                await until("the point selected", async () => (await evaluate(`document.body.dataset.hit`)) === "point", 10000);
+                await worldOf([Pn[0] + 1, Pn[1]]);
+                await worldOf(Pn);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error(`the curve point hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await click(Pn);                 // the click selects the point; C, typed at once, waits for it
                 await key("c", "KeyC", 67);
-                await until("a corner again", async () => { const p = await outlineNow(); return p.segments.length === 5 && p.segments.every((g) => g.type === "line") ? p : null; }, 30000);
+                await until("a corner again", async () => { const p = await outlineNow(); return p.segments.length === 5 && p.segments.every((g) => g.type === "line") ? p : null; }, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}", ${JSON.stringify(await outlineNow())}`); });
                 await key("Delete", "Delete", 46);
                 const p4 = await until("the point removed", async () => { const p = await outlineNow(); return p.segments.length === 4 ? p : null; }, 30000);
                 if (!p4.segments.every((g) => g.type === "line")) throw new Error(`after the delete: ${JSON.stringify(p4)}`);
@@ -1448,6 +1452,32 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok(`point editing: a double click added a point, the menu made it a curve point (${pc.segments[0].type}), C a corner, Delete removed it`);
+
+                // ---- notches (A1 task A6): the Notch tool places a slit; Edit selects its mark; the panel
+                // makes it a V; the next notch placed is a V ----
+                const notchesNow = async () => (await saveJson()).nodes.find((n) => n.id === pid).notches ?? [];
+                await evaluate(`document.querySelector('#tools2d [data-tool=notch]').click()`);
+                await click(screenAt([o[0] + 100, o[1] + 100]));
+                const n1 = await until("a notch", async () => { const n = await notchesNow(); return n.length === 1 ? n : null; }, 30000);
+                if (n1[0].kind !== "slit" || n1[0].depth !== 6) throw new Error(`the first notch is ${JSON.stringify(n1[0])}`);
+                await key("Escape", "Escape", 27);
+                await until("Edit armed", () => evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on")`), 10000);
+                const mark = screenAt([o[0] + 100, o[1] + 97]);
+                await worldOf(mark);
+                if (await evaluate(`document.body.dataset.hit`) !== "notch") throw new Error(`the notch's mark hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await click(mark);
+                await until("the notch's panel", () => evaluate(`!!${field("kind")}`), 10000);
+                await setField("kind", "v");
+                await until("the notch a V", async () => (await notchesNow())[0]?.kind === "v", 30000);
+                if (await evaluate(`document.body.dataset.notchNext`) !== "v,6") throw new Error(`the Notch tool's next is ${await evaluate(`document.body.dataset.notchNext`)}`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=notch]').click()`);
+                await click(screenAt([o[0] + 150, o[1] + 100]));
+                const n2 = await until("a second notch", async () => { const n = await notchesNow(); return n.length === 2 ? n : null; }, 30000);
+                if (n2[1].kind !== "v" || n2[1].depth !== 6) throw new Error(`the second notch is ${JSON.stringify(n2[1])}`);
+                await key("Escape", "Escape", 27);
+                await noStatusError();
+                failIfErrors();
+                ok("notches: placed a slit, selected its mark, set it to V in the panel; the next notch is a V");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

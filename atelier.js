@@ -8,13 +8,13 @@ import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams, presetNote } from "./fabrics.js";
-import { makeTool, SNAPPING, typedPoint, typedValues, readout, pointMenuOp } from "./tools.js";
+import { makeTool, SNAPPING, typedPoint, typedValues, readout, pointMenuOp, NOTCH_DEFAULT } from "./tools.js";
 import { isCurvePoint } from "./view2d.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
-import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds } from "./props.js";
+import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
@@ -26,7 +26,8 @@ const DEFAULT_FABRIC = "cotton_jersey";
 
 // ---- state --------------------------------------------------------------------------------
 let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
-let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id, ids?}: ids a box selection
+let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar"|"notch", id, ids?, index?}: ids a box selection, index a notch's
+let notchNext = { ...NOTCH_DEFAULT };   // the Notch tool's kind and depth: a selected notch's panel edit sets them
 let pointSel = [];            // the selected piece's selected point indices (the Edit tool: a click or a box)
 let ipointSel = [];           // or its internal lines' selected points, [{line, index}]
 let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
@@ -118,10 +119,11 @@ function renderIssues() {
 function exists(sel) {
     if (!sel) return true;
     if (sel.kind === "avatar") return !!avatar;
+    if (sel.kind === "notch") return !!nodes.find((n) => n.id === sel.id)?.notches?.[sel.index];
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
-    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}) } : null;
+    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}), ...(sel.index != null ? { index: sel.index } : {}) } : null;
     pointSel = []; ipointSel = [];   // the worker drops its own on `select`
     selSeq++;
     if (selection?.kind === "fabric") pickedFabric = selection.id;
@@ -176,7 +178,7 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
+const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar", notch: "Notch" };
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
@@ -191,6 +193,12 @@ function commitField(f, raw) {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
         status(f.type === "action" ? f.label : `${f.label}: set`);
+        // a notch's kind or depth is also the Notch tool's next; a removed notch leaves its piece selected
+        if (selection.kind === "notch") {
+            notchNext = nextNotch(notchNext, f.key, value);
+            document.body.dataset.notchNext = `${notchNext.kind},${notchNext.depth}`;
+            if (f.key === "remove") setSelection({ kind: "pattern", id: selection.id });
+        }
         // a duplicated fabric is the one selected next, for its label and colour
         if (f.key === "duplicate" && ops[0]?.op === "add") { pickedFabric = ops[0].node.id; setSelection({ kind: "fabric", id: ops[0].node.id }); }
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
@@ -240,7 +248,8 @@ function renderProps() {
     const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
-    h.textContent = `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
+    h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
+        : `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
     const dl = document.createElement("dl");
     for (const f of fields) dl.append(...fieldRow(f));
     const kids = [h, dl];
@@ -311,6 +320,13 @@ function duplicateSelected() {
 
 // The selected pieces (with their seams) or seam out of the document: one undo step.
 function removeSelected() {
+    if (selection?.kind === "notch" && exists(selection)) {
+        cancelPreview();
+        change("ops", { ops: opsFor(selection, nodes, "remove", null), message: "remove notch" });
+        status("removed the notch");
+        setSelection({ kind: "pattern", id: selection.id });
+        return true;
+    }
     if (!selection || (selection.kind !== "pattern" && selection.kind !== "seam") || !nodes.some((n) => n.id === selection.id)) return false;
     cancelPreview();
     const kind = selection.kind;
@@ -340,7 +356,8 @@ function removeSelected() {
 }
 
 // ---- tools --------------------------------------------------------------------------------
-const postPointSel = () => post({ kind: "pointSel", indices: pointSel, internal: ipointSel });
+// the browser test reads the selected points from the body's dataset
+const postPointSel = () => { post({ kind: "pointSel", indices: pointSel, internal: ipointSel }); document.body.dataset.pointSel = pointSel.join(","); };
 function freshTool() {
     const ctx = {
         nodes, drawings, request,
@@ -348,6 +365,7 @@ function freshTool() {
         get selection() { return selection; },
         get pointSel() { return pointSel; },
         get ipointSel() { return ipointSel; },
+        get notchNext() { return notchNext; },
         get pxToWorld() { return mmPerPx * dprNow(); },
         keep: toolKeep,
     };
@@ -392,8 +410,10 @@ $("tools2d").querySelector("[data-toggle=grid]").addEventListener("click", (e) =
 // A failure is reported and the queue goes on: the next result (an endPreview, say) is never lost.
 let queue = Promise.resolve();
 const toolFailed = (e) => status(`tool: ${e?.message ?? e}`, true);
+// A result may be a function: it is called in its turn, after the results before it are handled
+// (the Edit tool's point keys read the point selection a click just made).
 function apply(result) {
-    queue = queue.then(() => result).then(handle).catch(toolFailed);
+    queue = queue.then(() => (typeof result === "function" ? result() : result)).then(handle).catch(toolFailed);
 }
 // End an open preview without committing it.
 function cancelPreview() {
@@ -861,14 +881,26 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
-    // Delete (and Backspace in the edit tool) removes the selected points (the tool's key), else
-    // the selected piece, with its seams, or seam
-    const pointsChosen = toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0);
-    if (!pointsChosen && (e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
+    // Delete (and Backspace in the edit tool) removes the selected points (the Edit tool's key),
+    // else the selected piece, with its seams, seam or notch; else it is the tool's key. Decided in
+    // its turn, after the clicks before it: a click on a point just before selects that point.
+    if (e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) {
+        e.preventDefault();
+        const k = e.key;
+        afterUps(() => {
+            queue = queue.then(() => {
+                const points = toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0);
+                if (!points && removeSelected()) return;
+                const r = tool?.key(k);
+                if (typeof r === "function" || (r && Object.keys(r).length)) apply(r);
+            }).catch(toolFailed);
+        });
+        return;
+    }
     if (e.key === "Backspace" || e.key === "Enter") e.preventDefault();
     const k = e.key;
     afterUps(() => {
-        if (tool) { const r = tool.key(k); if (r && Object.keys(r).length) apply(r); }
+        if (tool) { const r = tool.key(k); if (typeof r === "function" || (r && Object.keys(r).length)) apply(r); }
         if (sc?.tool) setTool(sc.tool);
     });
 });
@@ -996,7 +1028,7 @@ function onDoc(m) {
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection
-    const kept = survivingSelection(selection, (id) => exists({ kind: selection.kind, id }));
+    const kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
     // a paste's or duplicate's new pieces, once they are in
     if (selectAfter && m.seq >= selectAfter.seq) { const sel = selectAfter.sel; selectAfter = null; if (exists(sel)) setSelection(sel); else if (kept !== selection) setSelection(kept); }
     else if (kept !== selection) setSelection(kept);

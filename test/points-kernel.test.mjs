@@ -143,6 +143,7 @@ a.free();
     b.reset(m.newDocumentOps({ slug: "x", label: "X", params }));
     b.apply(m.addPattern(b.nodes(), { label: "A", path: m.rectPath(0, 0, 100, 50), fabric: "f_x" }).ops, "a");
     const sel = { kind: "pattern", id: "p1" };
+    const keyOf = (t, k) => { const r = t.key(k); assert.equal(typeof r, "function", "a point key is read in its turn"); return r(); };
     const tool = (extra = {}) => makeTool("edit", { nodes: b.nodes(), drawings: new Map(b.drawings().map((d) => [d.id, d])), selection: sel, request: async () => ({}), ...extra });
     const send = (r) => { assert.ok(r.point, JSON.stringify(r)); b.commit(b.pointOps(r.point), "point", r.point.line == null ? r.point.id : null); };
     let t = tool();
@@ -156,9 +157,9 @@ a.free();
     t.down([60, 0], { kind: "point", id: "p1", index: 1 }, {});
     const picked = t.up([60, 0], { kind: "point", id: "p1", index: 1 }, {});
     assert.deepEqual(picked.pointSel, [1]);
-    send(tool({ pointSel: picked.pointSel }).key("c"));
+    send(keyOf(tool({ pointSel: picked.pointSel }), "c"));
     assert.ok(isCurvePoint(outline(b), 1));
-    send(tool({ pointSel: [1] }).key("C"));
+    send(keyOf(tool({ pointSel: [1] }), "C"));
     assert.ok(!isCurvePoint(outline(b), 1));
     // the menu's "Make curve point" on point 2 and "Make corner" back; Delete on points 1 to 3 of
     // the five: the third removal would leave two sides, so the batch is refused whole
@@ -166,13 +167,13 @@ a.free();
     assert.ok(isCurvePoint(outline(b), 2));
     send({ point: pointMenuOp({ kind: "point", id: "p1", index: 2 }, false) });
     const before = b.save();
-    const del = tool({ pointSel: [1, 2, 3] }).key("Delete");
+    const del = keyOf(tool({ pointSel: [1, 2, 3] }), "Delete");
     assert.deepEqual(del.point, { id: "p1", op: "remove", indices: [1, 2, 3] });
     assert.throws(() => send(del), /^Error: point 2: /);
     assert.equal(b.save(), before, "the refused batch changed nothing");
-    send(tool({ pointSel: [1] }).key("Backspace"));
+    send(keyOf(tool({ pointSel: [1] }), "Backspace"));
     samePath(outline(b), m.rectPath(0, 0, 100, 50));
-    assert.deepEqual(tool().key("Delete"), {}, "nothing selected: no point op");
+    assert.deepEqual(keyOf(tool(), "Delete"), {}, "nothing selected: no point op");
     b.free();
 }
 console.log("points-kernel: ok");

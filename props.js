@@ -5,6 +5,14 @@ import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fa
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
+// The notch kinds the kernel draws (spec §5), in its order, as the panel names them.
+export const NOTCH_KINDS = [["slit", "Slit"], ["v", "V"], ["t", "T"], ["castle", "Castle"], ["u", "U"]];
+// The Notch tool's next kind and depth after a selected notch's panel edit of `key` to `value`.
+export function nextNotch(prev, key, value) {
+    if (key === "kind") return { ...prev, kind: value };
+    if (key === "depth") return { ...prev, depth: value };
+    return prev;
+}
 export const DEFAULT_MESH = 20;   // the kernel's default particle_distance (cloth_default_options()[0])
 
 // A number as a field shows it: seven significant digits (an integer as it is).
@@ -39,6 +47,16 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
     }
     const n = find(nodes, selection.id);
     if (!n) return [];
+    if (selection.kind === "notch") {
+        const nt = n.notches?.[selection.index];
+        if (!nt) return [];
+        return [
+            { key: "kind", label: "Kind", unit: "", type: "select", value: nt.kind ?? "slit", options: NOTCH_KINDS.map(([value, label]) => ({ value, label })) },
+            { key: "depth", label: "Depth", unit: "mm", type: "number", value: nt.depth ?? 6 },
+            { key: "at", label: "At", unit: "mm", type: "number", value: nt.at, tip: "Where the notch stands: its arc length along the outline from the outline's start." },
+            { key: "remove", label: "Remove notch", unit: "", type: "action", value: null },
+        ];
+    }
     if (selection.kind === "pattern") {
         const fabrics = nodes.filter((x) => x.kind === "garment.fabric").map((f) => ({ value: f.id, label: f.label ?? f.id }));
         const placed = nodes.filter((x) => x.kind === "garment.pattern" && x.id !== n.id && x.frame && x.frame !== "xy");
@@ -120,6 +138,10 @@ export function validate(selection, nodes, key, value) {
             const [lo, hi] = DISPLAY[key].range;
             if (value < lo || value > hi) return `${DISPLAY[key].label} must be from ${lo} to ${hi}`;
         }
+    } else if (selection.kind === "notch") {
+        if (key === "kind" && !NOTCH_KINDS.some(([k]) => k === value)) return `a notch is one of ${NOTCH_KINDS.map(([, l]) => l).join(", ")}`;
+        if (key === "depth" && !(num(value) && value > 0)) return "a notch's depth is above 0 mm";
+        if (key === "at" && !(num(value) && value >= 0)) return "a notch stands at 0 mm or more along the outline";
     } else if (selection.kind === "seam") {
         if (["a_from", "a_to", "b_from", "b_to"].includes(key) && !(num(value) && value >= 0)) return "a seam position is a number of 0 mm or more";
     }
@@ -195,6 +217,16 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         if (key === "remove") return model.removePattern(nodes, id);
         if (TRANSFORM_KEYS.has(key) || key === "duplicate") throw new Error(`${key} goes through the kernel (atelier.js transformSelected / duplicate)`);
         return model.setPattern(nodes, id, { [key]: value });
+    }
+    if (selection.kind === "notch") {
+        const list = find(nodes, id)?.notches ?? [], i = selection.index;
+        if (!list[i]) throw new Error("the notch is gone");
+        if (key === "remove") return model.setPattern(nodes, id, { notches: list.filter((_, j) => j !== i) });
+        if (key === "at") {
+            const P = ctx.drawings?.get(id)?.sides?.at(-1);
+            if (P > 0 && value >= P) throw new Error(`the outline is ${P.toFixed(1)} mm round: at must be less`);
+        }
+        return model.setPattern(nodes, id, { notches: list.map((nt, j) => (j === i ? { ...nt, [key]: value } : nt)) });
     }
     if (selection.kind === "seam") {
         if (key === "remove") return model.removeSeam(nodes, id);
