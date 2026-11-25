@@ -18,6 +18,7 @@
 //     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the drape
 //     ATELIER_SHOT_HOLES=holes.png ...                   # also one of the holed piece in 2D
 //     ATELIER_SHOT_MAP=map.png ATELIER_SHOT_TAPE=tape.png  # the drape with the Strain map, a girth on the avatar
+//     ATELIER_SHOT_MAP_OFF=off.png ...                  # also the drape with the map back off
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -735,6 +736,14 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok(`the strain map: legend ${legend.lo}-${legend.hi} ${legend.unit}, under the pointer "${read}"`);
                 await evaluate(`(() => { const s = document.getElementById("map-select"); s.value = "off"; s.dispatchEvent(new Event("change")); })()`);
+                if (!(await evaluate(`document.getElementById("map-legend").hidden`))) throw new Error("the legend stays with the map off");
+                if (process.env.ATELIER_SHOT_MAP_OFF) {
+                    await sleep(500);
+                    await frames();
+                    const shot = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_MAP_OFF, Buffer.from(shot.data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_MAP_OFF}`);
+                }
 
                 // the Tape: a girth on the avatar's hips, below the shirt
                 await evaluate(`document.getElementById("tape-toggle").click()`);
