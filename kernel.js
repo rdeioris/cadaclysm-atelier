@@ -749,7 +749,31 @@ export class Atelier {
         const label = m.byId(this.nodes()).get(id).label ?? "Piece";
         const out = m.replacePattern(this.nodes(), id, r.pieces.map((p, k) => ({ ...p, label: `${label} ${"AB"[k]}` })),
             { seamMoves: r.seamMoves, dropped: r.dropped, sew: sew ? { a: r.cutEdges[0], b: r.cutEdges[1], reversed: r.reversed } : null });
+        // a graded piece's halves are graded too (A3): each new vertex takes the rule at its place
+        const g = G.gradeOf(m.byId(this.nodes()).get(id));
+        if (g) out.ids.forEach((pid, k) => {
+            const node = out.ops.find((o) => o.node?.id === pid)?.node, path = bare(r.pieces[k].path);
+            if (node) node.meta = m.atelierMeta(node.meta, "grade", { base: path, rules: this.carryGrade(g, path) });
+        });
         return { ...out, dropped: r.dropped };
+    }
+    // The rules of grade `g` carried onto outline `path` cut from its base: a vertex on a base
+    // vertex takes its rule, one on a base side the rules interpolated along it, one inside (a
+    // cutter's bend) the piece's affine fit (grading.js rulesAtPlaces).
+    carryGrade(g, path) {
+        const vb = G.vertices(g.base);
+        const places = this.withPath(g.base, (p) => {
+            const samples = this.samplesOf(p), sides = this.sideStarts(p, this.f("profile_length")(p, ACC)[0], g.base.segments.length);
+            return G.vertices(path).map((q) => {
+                const k = vb.findIndex((v) => Math.hypot(v[0] - q[0], v[1] - q[1]) <= 1e-4);
+                if (k >= 0) return { vertex: k };
+                const at = arcAt(samples, sides, q);
+                if (at.d > 0.05) return { point: q };
+                const len = sides[at.side + 1] - sides[at.side];
+                return { side: at.side, t: len > 0 ? Math.min(1, Math.max(0, (at.s - sides[at.side]) / len)) : 0 };
+            });
+        });
+        return G.rulesAtPlaces(g.rules, g.base, places);
     }
 
     // Internal closed shape `index` of piece `id` as a new piece, moved by the kernel beside the

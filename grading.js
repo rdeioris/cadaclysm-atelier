@@ -315,3 +315,25 @@ export function notchesByFraction(notches, from, to) {
         return { ...nt, at: to[k] + t * (to[k + 1] - to[k]) };
     });
 }
+
+// ---- a cut's pieces ----
+// The rules of a new outline's vertices, each placed on the graded outline `base` (with `rules`):
+// {vertex: k} on its vertex k takes its rule; {side: k, t} at arc fraction t along its side k
+// (vertex k to k + 1) the two ends' rules interpolated at t; {point: [x, y]} inside the piece
+// (a cutter's bend) the move of the affine fit of the piece's vertices in each size. -> rules
+export function rulesAtPlaces(rules, base, places) {
+    const vb = vertices(base), n = vb.length, sizes = [...new Set(Object.values(rules ?? {}).flatMap((r) => Object.keys(r)))];
+    const fits = new Map();
+    const fit = (s) => { if (!fits.has(s)) fits.set(s, affineFit(vb, vertices(gradedPath(base, rules, s)))); return fits.get(s); };
+    const out = {};
+    places.forEach((pl, i) => {
+        const r = {};
+        for (const s of sizes) {
+            if (pl.vertex != null) r[s] = [...ruleOf(rules, pl.vertex, s)];
+            else if (pl.side != null) r[s] = mix(ruleOf(rules, pl.side, s), ruleOf(rules, (pl.side + 1) % n, s), pl.t);
+            else { const q = applyAffine(fit(s), pl.point); r[s] = [q[0] - pl.point[0], q[1] - pl.point[1]]; }
+        }
+        out[i] = r;
+    });
+    return normalRules(out);
+}

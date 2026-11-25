@@ -133,6 +133,13 @@ const nearPt = (p, q, e = 1e-9) => { near(p[0], q[0], e); near(p[1], q[1], e); }
     assert.deepEqual([c[1], c[2], c[3]], [{ L: [3, 0] }, { L: [3, 0] }, { L: [5, 0] }], "both arc ends take the corner's rule");
 }
 
+// ---- a cut's pieces: rules at their places (vertex, side fraction, affine fit inside) ----
+{
+    const rect = rectPath(0, 0, 100, 50), rules = { 1: { L: [10, 0] }, 2: { L: [10, 0] } };
+    const r = G.rulesAtPlaces(rules, rect, [{ vertex: 0 }, { side: 0, t: 0.5 }, { point: [50, 25] }, { vertex: 2 }]);
+    assert.deepEqual(r, { 1: { L: [5, 0] }, 2: { L: [5, 0] }, 3: { L: [10, 0] } });
+}
+
 // ---- notches at their side fraction ----
 {
     const at = G.notchesByFraction([{ at: 25, kind: "slit" }, { at: 125, kind: "v" }], [0, 100, 150, 250, 300], [0, 120, 170, 290, 340]);
