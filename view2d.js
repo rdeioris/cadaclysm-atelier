@@ -83,8 +83,9 @@ export function pointsOf(nodes, id) {
 /** A pick answer, resolved through the item map's entry `what`, as the tools' hit. A label's
  *  text runs past its piece's edge and the View picks text over the fill under it, so a label
  *  answers `pieceAt(point)` -- the highest piece whose outline holds the point (the kernel's,
- *  Atelier.pieceAt) -- and its own piece only where that is none. */
-export function hitOf(what, pick, drawings, pieceAt = null) {
+ *  Atelier.pieceAt) -- and its own piece only where that is none. `cursor` is the world under the
+ *  pointer, which a label asks about: a glyph's pick point need not be under the pointer. */
+export function hitOf(what, pick, drawings, pieceAt = null, cursor = null) {
     if (!what || !pick) return null;
     const at = pick.point ? [pick.point[0], pick.point[1]] : null;
     const edge = (id, extra) => {
@@ -102,7 +103,7 @@ export function hitOf(what, pick, drawings, pieceAt = null) {
         case "internal": return { kind: "internal", id: what.id, index: what.index };
         case "hole": return { kind: "hole", id: what.id, index: what.index };
         case "tack": return { kind: "tack", id: what.id };
-        case "label": return { kind: "pattern", id: (at && pieceAt?.(at)) ?? what.id };
+        case "label": { const q = cursor ?? at; return { kind: "pattern", id: (q && pieceAt?.(q)) ?? what.id }; }
         case "fill": case "grain": case "notch": case "cut": return { kind: "pattern", id: what.id };
         default: return null;
     }

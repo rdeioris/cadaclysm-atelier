@@ -59,8 +59,8 @@ export class Pointer2d {
         // the camera the pick ran with (a zoom, a pan or a rects change may have landed meanwhile)
         const r = v.frameReport()[1];
         if (!shown(r)) { none(); return; }
-        const hit = p ? hitOf(items().what(p.item), p, drawings(), pieceAt) : null;
         let world = pxToWorld(r, px), snapped = null;
+        const hit = p ? hitOf(items().what(p.item), p, drawings(), pieceAt, world) : null;
         if (snapping() && snap) {
             const s = await within(v.snap(1, px[0], px[1]), ms, timers);
             if (s === TIMED_OUT) post({ kind: "status", text: "the 2D window did not answer a snap: the point is not snapped" });
