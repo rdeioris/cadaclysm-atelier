@@ -20,6 +20,8 @@ import { unionBounds, boxPiece } from "./view2d.js";
 import { Pointer2d } from "./pointer2d.js";
 import { GpuDrapeHost, gpuClothOk } from "./gpu-drape.js";
 import { filmCommand } from "./film.js";
+import { valueAt, recolourMeshes, BurstCache } from "./fitmap.js";
+import { TapeMeasures } from "./tape3d.js";
 
 const ready = (async () => {
     const module = await load();
@@ -70,6 +72,9 @@ const sim = {
     drawn: null,                         // film: the View's framesDrawn after it drew the last stop
 };
 let dragging = null;                     // { vertex, start, x, y, basis } while a cloth drag is on
+let fitmap = null;                       // the fit map ({key, code, min, max}) the engines draw, or null
+const mapCache = new BurstCache();       // the GPU cloth's map values, read once per hover burst
+let tapes = null;                        // the Tape tool's measures (tape3d.js)
 
 async function createViewer(canvas) {
     await ready;
@@ -238,7 +243,7 @@ function refresh3d() {
 function paintSelection() {
     for (const [id, s] of slabs) viewer.setColour(s.item, selected("pattern", id) ? ACCENT : s.colour);
     for (const [id, s] of seamLines) viewer.setColour(s.item, selected("seam", id) ? ACCENT : s.colour);
-    for (const m of sim.meshes) if (!m.gpu) viewer.setColour(m.item, selected("pattern", m.id) ? ACCENT : m.colour);
+    for (const m of sim.meshes) if (!m.gpu && !sim.mapColours) viewer.setColour(m.item, selected("pattern", m.id) ? ACCENT : m.colour);
 }
 
 // The flat slabs and seam lines, shown while there is no cloth.
@@ -270,6 +275,7 @@ function removeCloth() {
     sim.meshes = [];
     if (sim.pinsItem) { viewer.remove(sim.pinsItem); sim.pinsItem = 0; }
     sim.positions = null; sim.pins = null; sim.health = null; sim.status = null; sim.lastMs = null;
+    sim.mapColours = sim.mapValues = sim.triangles = null;
     dragging = null;
     flatVisible(true);
 }
@@ -291,14 +297,14 @@ function onTopology(t) {
     const colours = fabricColours(nodes);
     const fabricOf = new Map(nodes.filter((n) => n.kind === "garment.pattern").map((n) => [n.id, n.fabric]));
     // the GPU cloth: one item, shown by the host; the vertex patterns kept for picks
-    sim.vertexPatterns = t.vertexPatterns; sim.patterns = t.patterns;
+    sim.vertexPatterns = t.vertexPatterns; sim.patterns = t.patterns; sim.triangles = t.triangles;
     if (t.gpu) sim.meshes.push({ item: t.gpu.item, id: null, verts: null, gpu: true, colour: null });
     else for (const [p, g] of splitByPattern(t.triangles, t.vertexPatterns)) {
         const id = t.patterns[p];
         const colour = colours.get(fabricOf.get(id)) ?? "#cccccc";
         const buf = gather(t.positions, g.verts);
         const item = viewer.showMesh({ positions: buf, indices: g.indices, colour: selected("pattern", id) ? ACCENT : colour });
-        sim.meshes.push({ item, id, verts: g.verts, buf, colour });
+        sim.meshes.push({ item, id, verts: g.verts, indices: g.indices, buf, colour });
         items.set(item, { kind: "pattern", id });
     }
     sim.positions = t.positions; sim.pins = t.pins; sim.status = t.status; sim.phase = t.phase;
@@ -325,6 +331,7 @@ function onCloth({ data: m }) {
             case "hello": if (avatarCollider) clothPort.postMessage({ kind: "avatar", avatar: avatarCollider }); break;
             case "topology": onTopology(m); break;
             case "frame": onFrame(m); break;
+            case "colours": onColours(m); break;
             case "pinned": post({ kind: "status", text: m.on ? "pinned" : "unpinned" }); break;
             case "state":
                 sim.running = m.running; sim.stale = m.stale ?? sim.stale;
@@ -390,6 +397,41 @@ async function tool3d(data) {
     }
 }
 
+// ---- the fit map and the Tape tool (fitmap.js, tape3d.js) ---------------------------------------
+// The CPU cloth's map colours: its pattern meshes re-shown with them (or their fabric colours).
+function onColours(m) {
+    sim.mapColours = m.colours; sim.mapValues = m.values;
+    recolourMeshes(viewer, sim.meshes, m.colours, (old, next, mesh) => { items.items.delete(old); items.set(next, { kind: "pattern", id: mesh.id }); });
+    if (!m.colours) paintSelection();
+}
+const at3d = (data) => [data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0)];
+// The map's value under the pointer: the nearest sim vertex's.
+async function mapHover(data) {
+    const p = await viewer.pick(0, ...at3d(data));
+    const hit = fitmap && p?.point ? sim.meshes.find((m) => m.item === p.item) : null;
+    let value = null;
+    if (hit?.gpu) {
+        const r = await mapCache.get(`${fitmap.code}:${sim.meshGen}`, performance.now(), () => clothPort.strain(fitmap.code).catch(() => null));
+        value = valueAt(r?.values, r?.positions, p.point);
+    } else if (hit) value = valueAt(sim.mapValues, sim.positions, p.point, hit.verts);
+    post({ kind: "mapValue", seq: data.seq, value: hit ? value : null });
+}
+// What a tape click landed on: "avatar", "cloth" or null (the tape itself, a flat slab, nothing).
+function tapeTarget(p) {
+    if (!p?.point || tapes.owns(p.item)) return null;
+    if (avatar && p.item === avatar.id) return "avatar";
+    return sim.live && sim.meshes.some((m) => m.item === p.item) ? "cloth" : null;
+}
+async function tapeOp(data) {
+    if (data.op === "clear") { tapes.clear(); return; }
+    if (data.op === "remove") { tapes.remove(data.id); return; }
+    let mesh;
+    if (data.target === "avatar") mesh = avatarCollider;
+    else if (sim.live && sim.triangles) mesh = { positions: clothEngine === "gpu" ? await clothPort.positions() : sim.positions, indices: sim.triangles };
+    if (!mesh?.positions) throw new Error(`tape: no ${data.target === "avatar" ? "avatar" : "cloth"} to measure`);
+    post({ kind: "taped", id: data.id, op: data.op, length: tapes.measure(data, mesh) });
+}
+
 // `seq` echoes the request's own `seq`, so the page knows which change a `doc` answers.
 // A live cloth hears every change: it re-meshes what an outline edit touched, or goes stale.
 function changed(seq) {
@@ -435,13 +477,14 @@ const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open",
 self.onmessage = async ({ data }) => {
     try {
         if (data.cadaclysm) return;      // forwarded input: receiveControls hears it
-        if (data.kind === "clothPort") { if (clothEngine === "cpu") { clothPort = data.port; clothPort.onmessage = onCloth; } return; }
+        if (data.kind === "clothPort") { if (clothEngine === "cpu") { clothPort = data.port; clothPort.onmessage = onCloth; if (fitmap) clothPort.postMessage({ kind: "map", map: fitmap }); } return; }
         if (data.kind === "canvas") {
             canvasRef = data.canvas;
             sim.film = !!data.film;
             try {
                 viewer = await createViewer(data.canvas);
                 atelier = new Atelier(await ready);
+                tapes = new TapeMeasures(viewer, await ready);
                 if (gpuClothOk(viewer) && !data.cpuCloth) {
                     clothEngine = "gpu";
                     clothPort = new GpuDrapeHost(viewer, await ready);
@@ -532,6 +575,8 @@ self.onmessage = async ({ data }) => {
             case "select": selection = data.selection ?? null; pointSel = []; paintSelection(); refresh2d(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
+                // the Tape tool's click: the point and what it is on
+                if (data.tape) { post({ kind: "picked", tape: true, target: tapeTarget(p), point: p?.point ?? null }); break; }
                 let selection = p ? items.resolve(p.item) : null;
                 // the GPU cloth is one item: the piece is the nearest vertex's
                 if (p?.point && sim.meshes.some((m) => m.gpu && m.item === p.item)) {
@@ -547,6 +592,10 @@ self.onmessage = async ({ data }) => {
             // GIA on the GPU cloth (the CPU worker always runs it): the host re-shows a live cloth with it
             case "gia": if (clothEngine === "gpu") clothPort.postMessage({ kind: "gia", on: !!data.on }); break;
             case "tool3d": await tool3d(data); break;
+            case "fitmap": fitmap = data.map ?? null; mapCache.clear(); clothPort?.postMessage({ kind: "map", map: fitmap }); break;
+            // always answered: the page keeps one hover in flight
+            case "mapHover": await mapHover(data).catch(() => post({ kind: "mapValue", seq: data.seq, value: null })); break;
+            case "tape": await tapeOp(data); break;
             case "rects": setRects(data.rects); break;
             case "pointer2d": pointers2d.event(data); break;
             case "snapping":
