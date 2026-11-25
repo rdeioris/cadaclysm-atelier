@@ -213,7 +213,7 @@ async function check(cdp, base) {
     const patternCount = () => count("patterns", "pattern");
     const seamCount = () => count("seams", "seam");
     const field = (key) => `document.querySelector('#props [data-key="${key}"]')`;
-    const setField = (key, value) => evaluate(`(() => { const e = ${field(key)}; e.value = ${JSON.stringify(String(value))}; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    const setField = (key, value) => evaluate(`(() => { const e = ${field(key)}; if (!e) throw new Error("no field ${key}: the panel has " + [...document.querySelectorAll("#props [data-key]")].map((x) => x.dataset.key).join(", ")); e.value = ${JSON.stringify(String(value))}; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
     // real typing: focus the field, select its text, insert the new text as the keyboard would
     const typeInto = async (key, text) => {
         await evaluate(`(() => { const e = ${field(key)}; e.focus(); e.select(); })()`);
@@ -292,7 +292,12 @@ async function check(cdp, base) {
                 if (hoodie) {
                     await pickInto("menu-open", hoodie, ".json");
                     await until("the opened garment", async () => (await patternCount()) > 0, 30000);
-                } else await evaluate(`document.getElementById("menu-sample").click()`);
+                } else {
+                    // earlier steps leave pieces: wait for the sample itself (its open clears the selection)
+                    await evaluate(`document.getElementById("status-text").textContent = ""`);
+                    await evaluate(`document.getElementById("menu-sample").click()`);
+                    await until("the sample", () => evaluate(`document.getElementById("status-text").textContent === "opened the sample: a T-shirt"`), 30000);
+                }
                 await until("a garment", async () => (await patternCount()) > 0, 30000);
                 await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
                 await until("the Body panel", () => evaluate(`!!${field("build")}`), 30000);
