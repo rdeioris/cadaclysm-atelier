@@ -33,6 +33,7 @@ let formLoading = null;       // the form the Form select asked for, until it la
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
+let toolKeep = {};            // what a tool keeps while it stays armed (the Ruler's measures): fresh tools share it
 let previewing = false, previewPattern = null;
 let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
 let seq = 0;                  // the `seq` of the last doc-changing message sent
@@ -344,6 +345,7 @@ function freshTool() {
         get selection() { return selection; },
         get pointSel() { return pointSel; },
         get pxToWorld() { return mmPerPx * dprNow(); },
+        keep: toolKeep,
     };
     tool = makeTool(toolName, ctx);
     toolStale = false;
@@ -356,6 +358,7 @@ function setTool(name) {
     $("well").classList.toggle("tool2d", name !== "edit");
     cancelPreview();
     overlay = null;
+    toolKeep = {};                            // a tool change drops the Ruler's measures
     if (!typed.box.hidden) closeTyped();      // no last point to type from any more
     freshTool();
     draw2d();
@@ -414,7 +417,7 @@ function handle(r) {
     if (r.trace) change("trace", r.trace);
     // and a fillet
     if (r.fillet) change("fillet", r.fillet);
-    if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse ? r.overlay : null;
+    if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse || r.overlay.labels?.length ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);
     // a click-placed shape asks for its size; the answer goes to the tool that asked, if still armed
@@ -516,7 +519,8 @@ new ResizeObserver(() => {
 function draw2d() {
     const t = readout(tool?.lastPoint?.() ?? null, lastWorld);
     document.body.dataset.readout = t ?? "";
-    post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, text: t ? { at: lastWorld, text: t } : null });
+    post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, labels: overlay?.labels ?? [], text: t ? { at: lastWorld, text: t } : null });
+    document.body.dataset.labels2d = (overlay?.labels ?? []).map((l) => l.text).join("|");
 }
 
 // Typed lengths: while a tool has a last point, a digit opens the box at the pointer; Tab goes to
@@ -708,7 +712,7 @@ function onAt2d(m) {
     try { at2dAnswer(m); } finally { settle2d(); }
 }
 function at2dAnswer(m) {
-    const { mods = {}, xy = null } = pending2d.get(m.seq) ?? {};
+    let { mods = {}, xy = null } = pending2d.get(m.seq) ?? {};
     pending2d.delete(m.seq);
     // the keys typed after this release run once the tool has heard it (below), before the next answer
     if (m.phase === "up") { ups2d = Math.max(0, ups2d - 1); keyHold.answered(m.seq); queueMicrotask(() => keyHold.flush()); }
@@ -724,6 +728,7 @@ function at2dAnswer(m) {
     document.body.dataset.world = m.world.map((v) => v.toFixed(3)).join(",");
     document.body.dataset.worldAt = xy ? xy.join(",") : "";   // the canvas point (device px) that world answers: the tests wait on it
     if (!tool) return;
+    mods = { ...mods, snap: m.snap?.kind ?? null };
     if (m.phase === "down") apply(tool.down(m.world, m.hit, mods));
     else if (m.phase === "up") apply(tool.up(m.world, m.hit, mods));
     else apply(tool.move(m.world, m.hit, mods));

@@ -10,6 +10,7 @@ export const SHORTCUTS = {
     N: { tool: "segment" },
     E: { tool: "ellipse" },
     M: { tool: "free" },
+    R: { tool: "ruler" },
     "Ctrl+Z": { command: "undo" },
     "Ctrl+Y": { command: "redo" },
     "Ctrl+S": { command: "save" },

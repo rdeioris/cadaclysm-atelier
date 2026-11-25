@@ -1391,6 +1391,31 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok("curved internal line: a drag places a curve point; Edit drags its handle");
+
+                // ---- Ruler (A1 task A9): Edit's hover names a side's length; R arms the Ruler; two clicks, an edge click, Escape ----
+                const statusText = () => evaluate(`document.getElementById("status-text").textContent`);
+                await worldOf(screenAt([o[0] + 60, o[1]]));               // the bottom side, a third along (off its midpoint)
+                await until("the hover read-out", async () => /side \d: 200\.0 mm/.test(await statusText()), 10000);
+                await key("r", "KeyR", 82);
+                await until("the Ruler armed", () => evaluate(`document.querySelector('#tools2d [data-tool=ruler]').classList.contains("on")`), 10000);
+                const labels = () => evaluate(`document.body.dataset.labels2d ?? ""`);
+                // each click's point as the worker answered it (snapped: the measure is between those)
+                const clickAt = async (p) => { await click(p); return (await until(`the click at ${p}`, () => answeredAt(p), 10000)).split(",").map(Number); };
+                const r1 = await clickAt(screenAt([o[0] + 20, o[1] + 85]));
+                const r2 = await clickAt(screenAt([o[0] + 80, o[1] + 85]));
+                const two = await until("a two-click measure", async () => { const l = await labels(); return l ? l : null; }, 10000);
+                const want = Math.hypot(r2[0] - r1[0], r2[1] - r1[1]);
+                if (!/^\d+\.\d mm$/.test(two) || Math.abs(parseFloat(two) - want) > 0.051 || want < 30) throw new Error(`the two-click measure reads "${two}", not ${want.toFixed(1)} mm (${r1} to ${r2})`);
+                await click(screenAt([o[0] + 200, o[1] + 30]));         // the right side, off its midpoint
+                const both = await until("the side measure", async () => { const l = (await labels()).split("|"); return l.length === 2 ? l : null; }, 10000)
+                    .catch(async (e) => { throw new Error(`${e.message}: hit ${await evaluate(`document.body.dataset.hit`)}, snap ${await evaluate(`document.body.dataset.snap`)}, labels "${await labels()}", status "${await statusText()}"`); });
+                if (both[1] !== "100.0 mm") throw new Error(`the right side measures "${both[1]}" (status "${await statusText()}"), not 100.0 mm`);
+                if ((await saveJson()).nodes.some((n) => /ruler|measure/i.test(JSON.stringify(n)))) throw new Error("a measure was saved");
+                if ((await labels()).split("|").length !== 2) throw new Error("a save dropped the measures");
+                await key("Escape", "Escape", 27);
+                await until("the measures cleared, Edit armed", async () => (await labels()) === "" && await evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on")`), 10000);
+                failIfErrors();
+                ok(`ruler: hover read-out 200.0 mm; two clicks ${two}; a side 100.0 mm; Escape clears`);
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

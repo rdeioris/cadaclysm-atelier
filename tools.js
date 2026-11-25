@@ -284,11 +284,46 @@ export function typedValues(lengthText, angleText = "") {
     return { length, angle };
 }
 // The length read-out while drawing (a label until the View's dimensions, spec section 1).
-export const readout = (last, cursor) => (last && cursor ? `${Math.hypot(cursor[0] - last[0], cursor[1] - last[1]).toFixed(1)} mm` : null);
+export const readout = (last, cursor) => (last && cursor ? mmText(Math.hypot(cursor[0] - last[0], cursor[1] - last[1])) : null);
+export const mmText = (v) => `${v.toFixed(1)} mm`;
+
+// The Ruler's measures (spec §7), each {length, text, line (the polyline drawn), at (its
+// label's point), ends (the points marked)}. Between two points: the straight distance.
+export function measureBetween(a, b) {
+    const length = dist(a, b);
+    return { length, text: mmText(length), line: [[...a], [...b]], at: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], ends: [[...a], [...b]] };
+}
+// Side `side`'s arc length, from drawing `d`'s side table (`sides`: the kernel's arc length at
+// each side's start, the perimeter last); null for no such side.
+export function sideLength(d, side) {
+    const s = d?.sides;
+    return s && Number.isInteger(side) && side >= 0 && side + 1 < s.length ? s[side + 1] - s[side] : null;
+}
+// A side measured: its arc length, drawn along the kernel's outline samples over its arc
+// range (the last side closes on the first sample); the label at its middle sample (`near`
+// when the side is too short for one).
+export function measureSide(d, side, near = null) {
+    const length = sideLength(d, side);
+    if (length === null) return null;
+    const s0 = d.sides[side], s1 = d.sides[side + 1], smp = d.samples ?? [], line = [];
+    for (let i = 0; i + 2 < smp.length; i += 3) if (smp[i] >= s0 - 1e-9 && smp[i] <= s1 + 1e-9) line.push([smp[i + 1], smp[i + 2]]);
+    if (side + 2 === d.sides.length && smp.length >= 3) line.push([smp[1], smp[2]]);
+    const at = line.length ? line[line.length >> 1] : near ? [...near] : null;
+    return { length, text: mmText(length), line, at, ends: [], side };
+}
+// The Edit tool's hover read-out over an edge: "‹label› side n: 123.4 mm"; null off an edge.
+export function sideReadout(drawings, h) {
+    if (h?.kind !== "edge") return null;
+    const d = drawings?.get?.(h.id), length = sideLength(d, h.side);
+    return length === null ? null : `${d.label ? `${d.label} ` : ""}side ${h.side + 1}: ${mmText(length)}`;
+}
+
+// The snaps that make a Ruler click on an edge a point (a two-click measure's end), not the side.
+const POINT_SNAPS = new Set(["end", "vertex", "point", "intersection"]);
 
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
-    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain", "ruler"]);
 
 const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
@@ -376,6 +411,7 @@ const TOOLS = {
         const box = boxGesture(ctx, "points");
         let chosen = new Set();
         let lines0 = null;        // an internal point's or handle's drag: the piece's internal list when it began
+        let said = null;          // the hover read-out last put on the status line
         const preview = (w) => {
             const d = [w[0] - start[0], w[1] - start[1]];
             if (lines0) {
@@ -415,10 +451,17 @@ const TOOLS = {
                 }
                 return {};
             },
-            // less travel than a drag is still a click: no preview yet
-            move(w) {
+            // less travel than a drag is still a click: no preview yet. A hover over an edge
+            // names its side's arc length on the status line (spec §7), once per side.
+            move(w, h) {
                 if (box.on) return box.move(w);
-                if (!hit || (!sent && dist(w, start) < DRAG)) return {};
+                if (!hit) {
+                    const t = sideReadout(ctx.drawings, h);
+                    if (t === said) return {};
+                    said = t;
+                    return t ? { status: t, error: false } : {};
+                }
+                if (!sent && dist(w, start) < DRAG) return {};
                 if (locked) { if (sent) return {}; sent = true; return { status: LOCKED }; }
                 sent = true;
                 return preview(w);
@@ -651,6 +694,47 @@ const TOOLS = {
             },
             key() { return {}; },
             lastPoint() { return a ? [...a] : null; },
+        };
+    },
+
+    // Ruler (spec §7): two clicks measure the straight distance, snapping on and Shift locking
+    // 45 degree steps as in drawing; a first click on an edge (not snapped to a vertex, an end or
+    // an intersection, which start a two-click measure) measures that side's arc length. The measures stay drawn, a line and a label each, until
+    // the tool changes or Escape; they live in ctx.keep (the app keeps it while the tool stays
+    // armed, across the fresh tools a document change makes) and are never saved.
+    ruler(ctx) {
+        const keep = ctx.keep ?? {};
+        const measures = (keep.measures ??= []);
+        let a = null;
+        const overlay = (cursor = null) => ({
+            lines: [...measures.map((q) => q.line), ...(a && cursor ? [[a, cursor]] : [])].filter((l) => l.length >= 2),
+            points: [...measures.flatMap((q) => q.ends), ...(a ? [a] : [])],
+            labels: measures.filter((q) => q.at).map((q) => ({ at: q.at, text: q.text })),
+        });
+        const said = (q, what) => ({ overlay: overlay(), status: `${what}: ${q.text}`, error: false });
+        return {
+            down() { return {}; },
+            move(w) { return a ? { overlay: overlay(w) } : {}; },
+            up(w, h, mods) {
+                if (!a) {
+                    const onEdge = h?.kind === "edge" && !POINT_SNAPS.has(mods?.snap);
+                    const q = onEdge ? measureSide(ctx.drawings?.get?.(h.id), h.side, w) : null;
+                    if (q) { measures.push(q); return said(q, `side ${h.side + 1}`); }
+                    a = [...w];
+                    return { overlay: overlay(w) };
+                }
+                const from = a; a = null;
+                if (dist(from, w) < TINY) return { overlay: overlay() };
+                const q = measureBetween(from, w);
+                measures.push(q);
+                return said(q, "ruler");
+            },
+            lastPoint() { return a ? [...a] : null; },
+            key(k) {
+                if (k === "Escape") { a = null; measures.length = 0; return { overlay: { lines: [] }, done: true }; }
+                if (k === "Backspace" && a) { a = null; return { overlay: overlay() }; }
+                return {};
+            },
         };
     },
 };

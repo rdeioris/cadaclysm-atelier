@@ -71,6 +71,11 @@ The tools, with their keys where they have one:
   and the status names it). **Cut & sew** also sews the two new edges.
 - **Trace** copies an internal closed shape out as a new piece.
 - **Fillet** rounds a corner: click it, then drag or type the radius.
+- **Ruler** (R) measures in 2D: two clicks (snapping on, **Shift** for 45° steps) give the
+  straight distance, drawn as a line with its length (mm, to 0.1 mm); a click on an edge gives
+  that side's arc length (a click snapped to a vertex, an end or an intersection starts a
+  two-click measure instead). The measures stay until **Escape** or another tool, and are never
+  saved. In **Edit**, hovering an edge names its side's length on the status line.
 - **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
   the whole piece: its internal lines, notches and grain go with the outline. With pieces
   selected, **Move** draws their bounds box: a corner handle scales uniformly about the opposite

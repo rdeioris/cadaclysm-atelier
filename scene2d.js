@@ -263,9 +263,21 @@ export class Items2d {
 }
 
 // What a tool draws while it works: dashed lines, points, a curve (the ellipse being dragged) and
-// a read-out text, one item each, made on first use, hidden when empty, always on top.
+// a read-out text, one item each, made on first use, hidden when empty, always on top; and the
+// Ruler's labels, a text each over a box of the background, shown again when they change.
 export class Overlay2d {
-    constructor(viewer, layer = LAYER_2D) { this.v = viewer; this.layer = layer; this.items = {}; this.text = null; }
+    constructor(viewer, layer = LAYER_2D) { this.v = viewer; this.layer = layer; this.items = {}; this.text = null; this.labels = []; this.labelSig = "[]"; }
+    setLabels(labels) {
+        const sig = JSON.stringify(labels);
+        if (sig === this.labelSig) return;
+        this.labelSig = sig;
+        for (const id of this.labels) this.v.remove(id);
+        this.labels = labels.map((l) => {
+            const id = this.v.showText(l.text, { at: [l.at[0], l.at[1], 0], size: 12, colour: ACCENT, align: "centre", offset: [0, 10], box: BG, padding: 1, onTop: true });
+            this.v.setItemLayer(id, this.layer);
+            return id;
+        });
+    }
     put(kind, data, show, set) {
         const v = this.v;
         let id = this.items[kind];
@@ -277,8 +289,9 @@ export class Overlay2d {
             if (kind !== "points") v.setLineStyle(id, { dash: 5, gap: 3 });
         } else { v[set](id, data); v.setItemVisible(id, true); }
     }
-    set({ lines = [], points = [], curves = null, text = null } = {}) {
+    set({ lines = [], points = [], curves = null, labels = [], text = null } = {}) {
         const v = this.v;
+        this.setLabels(labels);
         this.put("lines", lines.flatMap((pl) => segs(pl.flat())), (d) => v.showLines(d, ACCENT), "setLines");
         this.put("points", xyz(points), (d) => v.showPoints(d, ACCENT, 8), "setPoints");
         this.put("curves", curves ? Array.from(curves) : [], (d) => v.showCurves(d, ACCENT), "setCurves");

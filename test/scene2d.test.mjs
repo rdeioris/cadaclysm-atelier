@@ -146,6 +146,15 @@ assert.ok(v.calls.some((c) => c[0] === "remove") && v.calls.some((c) => c[0] ===
 v.calls.length = 0;
 o.set({});
 assert.ok(v.calls.some((c) => c[0] === "remove"), "no text: removed");
+// the Ruler's labels: a text each, left alone while unchanged, shown again when they change
+v.calls.length = 0;
+o.set({ labels: [{ at: [0, 0], text: "50.0 mm" }, { at: [10, 0], text: "20.0 mm" }] });
+assert.deepEqual(v.calls.filter((c) => c[0] === "showText").map((c) => c[1]), ["50.0 mm", "20.0 mm"]);
+v.calls.length = 0;
+o.set({ labels: [{ at: [0, 0], text: "50.0 mm" }, { at: [10, 0], text: "20.0 mm" }] });
+assert.ok(!v.calls.some((c) => c[0] === "showText" || c[0] === "remove"), "unchanged labels: no call");
+o.set({});
+assert.equal(v.calls.filter((c) => c[0] === "remove").length, 2, "no labels: both removed");
 // holes, internal lines: a holed piece's items
 const holeCut = [430, 10, 470, 10, 470, 40, 430, 40];
 const holed = drawing("p3", 400, {
