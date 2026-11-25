@@ -16,8 +16,11 @@ kernel and checks that every seam's two sides match within 2 %. Its front and ba
 about 50 mm clear of the form and its sleeves are wrapped round the form's arms, so the cloth
 sews it shut before it drapes.
 
-**Forms.** The Avatar's Form select offers the dress forms in `assets/forms.json`: f-M and
-f-M with head (`tools/dressform.py --head`). The file also carries each form's landmarks (body
+**Forms.** The Avatar's Form select offers the dress forms in `assets/forms.json`: f-M,
+f-M with head (`tools/dressform.py --head`), and the graded sizes Women's XS, S, L, XL and
+Men's XS, S, M, L, XL (f-XS ... m-XL), each graded from its size chart by `tools/dressform.py
+--body {female,male} --size ...`. Their landmarks come from the same script with
+`--forms-only --forms assets/forms.json`, never typed by hand. The file also carries each form's landmarks (body
 top, shoulder line, arms, head), which the slots place pieces by. The form is the session's,
 not the garment's: Save does not write it, and Open keeps the avatar that is loaded.
 
