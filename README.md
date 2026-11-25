@@ -68,7 +68,11 @@ The tools, with their keys where they have one:
 - **Trace** copies an internal closed shape out as a new piece.
 - **Fillet** rounds a corner: click it, then drag or type the radius.
 - **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
-  the whole piece: its internal lines, notches and grain go with the outline.
+  the whole piece: its internal lines, notches and grain go with the outline. With pieces
+  selected, **Move** draws their bounds box: a corner handle scales uniformly about the opposite
+  corner, a side handle scales one axis about the opposite side, and the round handle above the
+  top side rotates about the box centre (**Shift**: 15° steps). Each drag is one undo step, the
+  seams re-anchored.
 - The pattern panel's **Rotate** (degrees, counter-clockwise), **Scale** (%), **Flip H** and
   **Flip V** turn the selected pieces about their bounds' centre (a multi-selection's union), one
   undo step each, the seams re-anchored to the new sides; a scale keeps the allowances.

@@ -2,7 +2,7 @@
 // nothing again, that a moved piece is updated in place, that the item map answers picks.
 import assert from "node:assert/strict";
 import { specs2d, Items2d, Overlay2d, fillColour, LAYER_2D, bandOf, TICK_TURN } from "../scene2d.js";
-import { hitOf, pointsOf } from "../view2d.js";
+import { hitOf, pointsOf, xformHandles } from "../view2d.js";
 
 function fakeViewer() {
     let next = 1;
@@ -206,4 +206,30 @@ p.handles.forEach((h, k) => assert.deepEqual(hitOf(handles.what, { node: k }, dm
 // a pick on a tangent line grabs its handle: the conic's tangent from its end (100, 50) to (120, 25)
 assert.deepEqual(hitOf(tangents.what, { node: 0, point: [110, 37.5, 3] }, dmap), { kind: "handle", id: "p1", index: 1, which: "control" });
 assert.deepEqual(hitOf(tangents.what, { node: 0, point: [15, -5, 3] }, dmap), { kind: "handle", id: "p1", index: 0, which: "c1" });
+
+// A3: the Move tool's box and handles round the selection's union bounds, above every piece
+{
+    assert.deepEqual(xformHandles([0, 0, 100, 50], 10).map((h) => [h.handle, h.at]), [
+        ["nw", [0, 50]], ["n", [50, 50]], ["ne", [100, 50]], ["e", [100, 25]], ["se", [100, 0]], ["s", [50, 0]], ["sw", [0, 0]], ["w", [0, 25]], ["rot", [50, 60]]]);
+    const multi = { kind: "pattern", id: "p1", ids: ["p1", "p2"] };
+    assert.ok(!specs2d(state({ selection: multi })).some((s) => s.key.startsWith("xform/")), "no box without the Move tool");
+    assert.ok(!specs2d(state({ selection: null, xform: true })).some((s) => s.key.startsWith("xform/")), "no box without a selection");
+    const xs = specs2d(state({ selection: multi, xform: true, mmPerPx: 0.5 }));
+    const top = bandOf(2).seam;
+    const frame = xs.find((s) => s.key === "xform/box"), scale = xs.find((s) => s.key === "xform/scale"), rot = xs.find((s) => s.key === "xform/rot");
+    assert.equal(frame.show, "lines"); assert.deepEqual(frame.what, { kind: "xformBox", id: "p1" });
+    assert.deepEqual([...new Set(zOf(frame))], [top], "the frame above every piece's band");
+    assert.equal(scale.show, "points"); assert.equal(scale.onTop, true);
+    assert.deepEqual(Array.from(scale.data), [[0, 50], [150, 50], [300, 50], [300, 25], [300, 0], [150, 0], [0, 0], [0, 25]].flatMap((p) => [...p, top]), "the union [0, 0, 300, 50]");
+    assert.deepEqual(Array.from(rot.data), [150, 50 + 28 * 0.5, top], "28 px above the top side");
+    // the pick answers which handle; a press on the frame is the selection
+    ["nw", "n", "ne", "e", "se", "s", "sw", "w"].forEach((h, k) => assert.deepEqual(hitOf(scale.what, { node: k }, dmap), { kind: "xform", id: "p1", handle: h }));
+    assert.deepEqual(hitOf(rot.what, { node: 0 }, dmap), { kind: "xform", id: "p1", handle: "rot" });
+    assert.equal(hitOf(rot.what, { node: 3 }, dmap), null);
+    assert.deepEqual(hitOf(frame.what, { node: 0, point: [0, 10, top] }, dmap), { kind: "pattern", id: "p1" });
+    // the edit points stand down under the Move tool (a rectangle's corners are the box's)
+    assert.ok(!specs2d(state({ selection: { kind: "pattern", id: "p1" }, xform: true })).some((s) => s.key === "p1/points"));
+    // no scale known: a 20 mm offset
+    assert.deepEqual(Array.from(specs2d(state({ selection: { kind: "pattern", id: "p1" }, xform: true })).find((s) => s.key === "xform/rot").data).slice(0, 2), [50, 70]);
+}
 console.log("scene2d: ok");

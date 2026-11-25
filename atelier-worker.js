@@ -16,7 +16,7 @@ import { Atelier, forPage } from "./kernel.js";
 import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, WrappedMeshCache } from "./arrange.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
-import { unionBounds, boxPiece } from "./view2d.js";
+import { unionBounds, boxPiece, mmPerPx } from "./view2d.js";
 import { Pointer2d } from "./pointer2d.js";
 import { GpuDrapeHost, gpuClothOk } from "./gpu-drape.js";
 import { filmCommand } from "./film.js";
@@ -49,6 +49,7 @@ const slabBoxes = new Map();             // pattern id -> its slab's world box [
 const wrappedMeshes = new WrappedMeshCache();   // a wrapped piece's mesh, kept while its drawing, frame and wrap stay
 let canvasRef = null;                    // the OffscreenCanvas: its height is the drag's pixel scale
 let items2d = null, overlay2d = null, rects = null, hover2d = null, pointSel = [];
+let tool2d = "edit";           // the page's 2D tool: Move ("transform") draws its box and handles
 
 // ---- the live drape ---------------------------------------------------------------------------
 const PIN_COLOUR = "#ff4d6d";
@@ -142,7 +143,8 @@ function setRects(r) {
 function refresh2d() {
     if (!viewer || !atelier || !items2d) return;
     const nodes = atelier.nodes();
-    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, hover: hover2d, colours: fabricColours(nodes) }));
+    const r = viewer.frameReport?.()[1], scale = r && r.rect[2] > 0 ? mmPerPx(r) : null;
+    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale }));
     post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d });
 }
 
@@ -571,6 +573,7 @@ self.onmessage = async ({ data }) => {
                 break;
             }
             case "pointSel": pointSel = data.indices ?? []; refresh2d(); break;
+            case "tool2d": tool2d = data.name; refresh2d(); break;
             case "fit2d": if (rects) fit2d(); break;
         }
     } catch (e) {

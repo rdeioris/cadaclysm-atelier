@@ -38,6 +38,63 @@ function movePoint(path, i, d) {
     if (starts?.type === "bezier") starts.c1 = add(starts.c1, d);
 }
 
+// The Move tool's handle drags (spec §2) as the kernel's row-major 2x3 m6 (x' = m0 x + m1 y + m2,
+// y' = m3 x + m4 y + m5). `box` is the selection's [x0, y0, x1, y1] when the drag began, `start`
+// the press and `pointer` where it is now. A corner ("nw", "ne", "se", "sw") scales uniformly
+// about the opposite corner, by how far the corner, moved with the pointer, now lies along the
+// diagonal; a side ("n", "e", "s", "w") scales that one axis about the opposite side; "rot" turns
+// about the box centre by the angle the pointer swept round it, in 15 degree steps with Shift.
+// A scale never goes below MIN_SCALE (no collapse, no flip through the anchor). null where the
+// drag means nothing: a box of no size along the axis, a pointer on the centre.
+export const MIN_SCALE = 0.02, ROT_SNAP = 15;
+export function handleMatrix(start, pointer, box, handle, shift = false) {
+    const m = handleM(start, pointer, box, handle, shift);
+    return m && m.map((v) => v + 0);                  // no -0 in the matrix
+}
+function handleM(start, pointer, box, handle, shift) {
+    const [x0, y0, x1, y1] = box;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    if (handle === "rot") {
+        if (Math.hypot(start[0] - cx, start[1] - cy) < TINY || Math.hypot(pointer[0] - cx, pointer[1] - cy) < TINY) return null;
+        const a0 = Math.atan2(start[1] - cy, start[0] - cx), a1 = Math.atan2(pointer[1] - cy, pointer[0] - cx);
+        let deg = ((a1 - a0) * 180) / Math.PI;
+        if (shift) deg = Math.round(deg / ROT_SNAP) * ROT_SNAP;
+        const a = (deg * Math.PI) / 180;
+        // exact quarter turns (and none): no 6e-17 in the matrix
+        const exact = (v) => (Math.abs(v) < 1e-15 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-15 ? Math.sign(v) : v);
+        const c = exact(Math.cos(a)), s = exact(Math.sin(a));
+        return [c, -s, cx - c * cx + s * cy, s, c, cy - s * cx - c * cy];
+    }
+    const hx = handle.includes("w") ? x0 : handle.includes("e") ? x1 : null;
+    const hy = handle.includes("s") ? y0 : handle.includes("n") ? y1 : null;
+    if (hx === null && hy === null) throw new Error(`no handle ${handle}`);
+    const ax = handle.includes("w") ? x1 : x0, ay = handle.includes("s") ? y1 : y0;   // the opposite corner or side
+    const d = [pointer[0] - start[0], pointer[1] - start[1]];
+    const k = (v) => Math.max(v, MIN_SCALE);
+    if (hx !== null && hy !== null) {
+        const vx = hx - ax, vy = hy - ay, l2 = vx * vx + vy * vy;
+        if (!(l2 > TINY)) return null;
+        const s = k(((hx + d[0] - ax) * vx + (hy + d[1] - ay) * vy) / l2);
+        return [s, 0, ax * (1 - s), 0, s, ay * (1 - s)];
+    }
+    if (hx !== null) {
+        if (!(Math.abs(hx - ax) > TINY)) return null;
+        const s = k((hx + d[0] - ax) / (hx - ax));
+        return [s, 0, ax * (1 - s), 0, 1, 0];
+    }
+    if (!(Math.abs(hy - ay) > TINY)) return null;
+    const s = k((hy + d[1] - ay) / (hy - ay));
+    return [1, 0, 0, 0, s, ay * (1 - s)];
+}
+const IDENTITY = [1, 0, 0, 0, 1, 0];
+const sameM = (a, b) => !!a && !!b && a.every((v, i) => v === b[i]);
+// The union of pieces `ids`' kernel bounds (ctx.drawings: id -> drawing); null for none.
+function boundsOf(ctx, ids) {
+    const bs = ids.map((id) => ctx.drawings?.get?.(id)?.bounds).filter(Boolean);
+    if (!bs.length) return null;
+    return [Math.min(...bs.map((b) => b[0])), Math.min(...bs.map((b) => b[1])), Math.max(...bs.map((b) => b[2])), Math.max(...bs.map((b) => b[3]))];
+}
+
 // A box drag on nothing: the rectangle as overlay lines while dragging; on release the worker's
 // pickRect over viewport-1 pixels (left to right a window, right to left a crossing box).
 function boxGesture(ctx, kind) {
@@ -351,20 +408,26 @@ const TOOLS = {
     },
 
     transform(ctx) {
-        const fresh = () => ({ id: null, ids: [], start: null, want: null, asked: null, busy: null, result: null, live: true });
+        // want/asked: the matrix wanted and the one last sent; handle/box: a handle drag's handle
+        // and the selection's box when it began (none: a translation)
+        const fresh = () => ({ id: null, ids: [], start: null, want: null, asked: null, busy: null, result: null, live: true, handle: null, box: null });
         let st = fresh();
         const box = boxGesture(ctx, "pieces");
         // g.result is always {[id]: piece}, each the kernel's whole moved piece (kernel.js
         // transformedPiece): the outline, internal lines, notches and grain all move together
         const preview = (g) => (g.result ? { preview: g.ids.flatMap((id) => (g.result[id] ? pieceOps(ctx.nodes, id, g.result[id]) : [])) } : {});
-        // One request in flight; the latest wanted delta is sent when it returns. A request that
+        // The matrix for the pointer at w: a handle's (handleMatrix; the last one where this one
+        // means nothing), else the translation.
+        const wanted = (g, w, mods) => (g.handle
+            ? handleMatrix(g.start, w, g.box, g.handle, !!mods?.shift) ?? g.want
+            : [1, 0, w[0] - g.start[0], 0, 1, w[1] - g.start[1]]);
+        // One request in flight; the latest wanted matrix is sent when it returns. A request that
         // rejects ends the loop and keeps the last good path; a cancelled gesture resolves to {}.
         const pump = (g) => {
             const run = (async () => {
                 try {
-                    while (g.live && g.want && !(g.asked && g.want[0] === g.asked[0] && g.want[1] === g.asked[1])) {
-                        const d = g.want; g.asked = d;
-                        const matrix = [1, 0, d[0], 0, 1, d[1]];
+                    while (g.live && g.want && !sameM(g.want, g.asked)) {
+                        const matrix = g.want; g.asked = matrix;
                         // one piece: the single transform (one piece back); a multi-selection: transformAll ({[id]: piece})
                         const r = g.ids.length === 1
                             ? { [g.id]: await ctx.request("transform", { id: g.id, matrix }) }
@@ -383,16 +446,23 @@ const TOOLS = {
                 st.live = false; st = fresh();
                 // a press on nothing always starts the box: a drag from empty space never moves a piece
                 if (!h) { box.start(w, mods); return {}; }
-                st.id = h.kind !== "handle" && h.kind !== "seam" ? h.id : selectedId(ctx);
+                st.id = h.kind !== "handle" && h.kind !== "seam" && h.kind !== "xform" ? h.id : selectedId(ctx);
                 st.start = st.id ? w : null;
                 st.ids = st.id ? (ctx.selection?.ids?.includes(st.id) ? [...ctx.selection.ids] : [st.id]) : [];
+                // a handle scales or turns the whole selection about its box as it is now
+                if (h.kind === "xform") {
+                    st.box = st.id ? boundsOf(ctx, st.ids) : null;
+                    if (!st.box) { st = fresh(); return {}; }
+                    st.handle = h.handle;
+                    return {};
+                }
                 // a press on a piece of the multi-selection keeps it
                 return h.kind === "pattern" && st.ids.length === 1 ? { select: { kind: "pattern", id: st.id } } : {};
             },
-            move(w) {
+            move(w, h, mods) {
                 if (box.on) return box.move(w);
                 if (!st.start) return {};
-                st.want = [w[0] - st.start[0], w[1] - st.start[1]];
+                st.want = wanted(st, w, mods);
                 return st.busy ? {} : pump(st);
             },
             async up(w, h, mods) {
@@ -403,15 +473,16 @@ const TOOLS = {
                 }
                 const g = st;
                 if (!g.start) return {};
-                g.want = [w[0] - g.start[0], w[1] - g.start[1]];
+                g.want = wanted(g, w, mods);
                 g.start = null;
                 await g.busy;
-                const still = !g.asked && g.want[0] === 0 && g.want[1] === 0;    // a click: nothing to move
-                if (g.live && !still && (!g.asked || g.want[0] !== g.asked[0] || g.want[1] !== g.asked[1])) await pump(g);
+                const still = !g.asked && (!g.want || sameM(g.want, IDENTITY));    // a click: nothing to move
+                if (g.live && !still && g.want && !sameM(g.want, g.asked)) await pump(g);
                 g.live = false;
                 // the preview is committed only when one went out
                 const p = preview(g);
-                return p.preview ? { ...p, endPreview: true } : {};
+                // every moved piece's seams re-anchored in the commit
+                return p.preview ? { ...p, endPreview: true, reanchor: g.ids } : {};
             },
             key(k) {
                 if (k === "Escape" && box.on) { box.cancel(); return { overlay: { lines: [] } }; }

@@ -350,6 +350,8 @@ function freshTool() {
 }
 function setTool(name) {
     toolName = name;
+    // the worker draws the Move tool's box and handles round the selection while it is on
+    post({ kind: "tool2d", name });
     for (const b of document.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === name);
     $("well").classList.toggle("tool2d", name !== "edit");
     cancelPreview();
@@ -401,7 +403,7 @@ function handle(r) {
     if (r.preview) { previewing = true; previewPattern = patternOfOps(r.preview) ?? previewPattern; change("preview", { ops: r.preview }); }
     // the commit re-anchors the edited pattern's seams in the same undo step (the worker does it)
     if (r.endPreview) {
-        change("endPreview", { commit: true, reanchor: previewPattern });
+        change("endPreview", { commit: true, reanchor: r.reanchor ?? previewPattern });
         previewing = false;
         previewPattern = null;
     }

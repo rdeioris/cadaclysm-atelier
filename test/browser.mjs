@@ -425,6 +425,48 @@ async function check(cdp, base) {
             failIfErrors();
             ok(`Move: the piece moved by exactly the drag (${moved.map((v) => v.toFixed(1)).join(", ")} mm)`);
 
+            // A3: the Move tool's rotate handle, above the selection's box: a Shift drag from straight
+            // above the box centre round to (nearly) straight left of it turns Piece 2 an exact
+            // quarter about its centre (88 degrees snapped to 90), its seam kept; Ctrl+Z undoes it
+            {
+                const boxOf = (path) => { const ps = [path.start, ...path.segments.map((s) => s.to)];
+                    return [Math.min(...ps.map((q) => q[0])), Math.min(...ps.map((q) => q[1])), Math.max(...ps.map((q) => q[0])), Math.max(...ps.map((q) => q[1]))]; };
+                const b0 = boxOf(after);
+                await evaluate(`document.querySelectorAll('#browser-patterns li[data-kind=pattern]')[1].click()`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
+                const mid = [from[0] + by[0], from[1] + by[1]];      // the piece's centre on screen, after the move
+                const halfH = (b0[3] - b0[1]) / 2 / worldPerPx;
+                let rotAt = null;
+                for (let up = 8; up <= 70 && !rotAt; up += 3) { const q = [mid[0], mid[1] - halfH - up]; if ((await hoverInfo(q)).hit === "xform") rotAt = q; }
+                if (!rotAt) throw new Error("no rotate handle above the selection's box");
+                const r = mid[1] - rotAt[1], end = (88 * Math.PI) / 180;
+                const shift = (type) => send("Input.dispatchKeyEvent", { type, key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: type === "keyUp" ? 0 : 8 });
+                await shift("rawKeyDown");
+                await mouse("mouseMoved", rotAt[0], rotAt[1], { buttons: 0, modifiers: 8 });
+                await mouse("mousePressed", rotAt[0], rotAt[1], { modifiers: 8 });
+                // screen y runs down: a turn of `t` from straight up, counter-clockwise on the pattern
+                const on = (t) => [mid[0] - r * Math.sin(t), mid[1] - r * Math.cos(t)];
+                for (let i = 1; i <= 8; i++) { const q = on((end * i) / 8); await mouse("mouseMoved", q[0], q[1], { modifiers: 8 }); await sleep(60); }
+                const q = on(end);
+                await mouse("mouseReleased", q[0], q[1], { modifiers: 8 });
+                await shift("keyUp");
+                const turned = await saveNow();                      // the save waits for the drag's last step
+                const b1 = boxOf(outlineOf(turned, "Piece 2"));
+                const centre = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+                const sizes = (b) => [b[2] - b[0], b[3] - b[1]];
+                const off = Math.hypot(centre(b1)[0] - centre(b0)[0], centre(b1)[1] - centre(b0)[1]);
+                if (off > 1e-6 || Math.abs(sizes(b1)[0] - sizes(b0)[1]) > 1e-6 || Math.abs(sizes(b1)[1] - sizes(b0)[0]) > 1e-6)
+                    throw new Error(`the rotate handle gave ${b1.map((v) => v.toFixed(3))} from ${b0.map((v) => v.toFixed(3))}: not a quarter turn about its centre`);
+                if (turned.nodes.filter((n) => n.kind === "garment.seam").length !== 1) throw new Error("the turned piece lost its seam");
+                await key("z", "KeyZ", 90, 2);
+                const back = boxOf(outlineOf(await saveNow(), "Piece 2"));
+                if (back.some((v, i) => Math.abs(v - b0[i]) > 1e-6)) throw new Error(`Ctrl+Z after the turn left ${back}, not ${b0}`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                await noStatusError();
+                failIfErrors();
+                ok("Move: the rotate handle turned the piece a Shift-snapped quarter about its centre, seam kept; one Ctrl+Z undid it");
+            }
+
             // 4. type an allowance into the field and press Ctrl+S at once: the save holds the typed value
             await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
             await until("the Bodice's fields", () => evaluate(`!!${field("allowance")}`), 30000);

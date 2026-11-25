@@ -103,6 +103,9 @@ export function hitOf(what, pick, drawings, pieceAt = null) {
         case "hole": return { kind: "hole", id: what.id, index: what.index };
         case "label": return { kind: "pattern", id: (at && pieceAt?.(at)) ?? what.id };
         case "fill": case "grain": case "notch": case "cut": return { kind: "pattern", id: what.id };
+        // the Move tool's handles (scene2d.js): which one; a press on the box's frame moves the selection
+        case "xform": { const handle = what.handles?.[pick.node]; return handle ? { kind: "xform", id: what.id, handle } : null; }
+        case "xformBox": return { kind: "pattern", id: what.id };
         default: return null;
     }
 }
@@ -133,6 +136,17 @@ function segDist([x, y], a, b) {
  *  the piece), a seam or an edit handle. */
 const BOX_KINDS = new Set(["fill", "sew", "cut", "hole", "internal", "notch", "grain"]), WINDOW_KINDS = new Set(["fill", "sew"]);
 export const boxPiece = (what, crossing = true) => (what && (crossing ? BOX_KINDS : WINDOW_KINDS).has(what.kind) ? what.id : null);
+
+/** The Move tool's handles round the selection's box [x0, y0, x1, y1] (y up): the four corners
+ *  (uniform scale about the opposite corner), the four sides' middles (one-axis scale about the
+ *  opposite side) and "rot", `rotOffset` mm above the top side's middle (rotate about the box
+ *  centre). -> [{handle, at}] */
+export const XFORM_SCALE = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+export function xformHandles([x0, y0, x1, y1], rotOffset) {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const at = { nw: [x0, y1], n: [cx, y1], ne: [x1, y1], e: [x1, cy], se: [x1, y0], s: [cx, y0], sw: [x0, y0], w: [x0, cy] };
+    return [...XFORM_SCALE.map((handle) => ({ handle, at: at[handle] })), { handle: "rot", at: [cx, y1 + rotOffset] }];
+}
 
 /** The box around every drawing's bounds; null for none. */
 export function unionBounds(drawings) {

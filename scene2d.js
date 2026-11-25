@@ -10,7 +10,7 @@
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
 import { seamColour } from "./sewing.js";
-import { pointsOf, notchNormals } from "./view2d.js";
+import { pointsOf, notchNormals, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
@@ -83,7 +83,33 @@ function midOut(pts, ring) {
     return { at: [pts[0], pts[1]], normal: [0, 0] };
 }
 
-export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], hover = null, colours = new Map() }) {
+const ROT_PX = 28, ROT_MM = 20;   // the rotate handle stands this far above the box's top side
+
+// The Move tool's box round the selected pieces (their kernel bounds' union): its frame as lines
+// above every piece, and its handles as points on top (view2d.js xformHandles, picked as
+// {kind: "xform"}). mmPerPx (the 2D window's scale when drawn) sets the rotate handle's offset.
+function xformSpecs(drawings, selection, mmPerPx, z) {
+    if (selection?.kind !== "pattern") return [];
+    const ids = new Set(selection.ids ?? [selection.id]);
+    const bs = drawings.filter((d) => ids.has(d.id) && d.bounds).map((d) => d.bounds);
+    if (!bs.length) return [];
+    const b = [Math.min(...bs.map((q) => q[0])), Math.min(...bs.map((q) => q[1])), Math.max(...bs.map((q) => q[2])), Math.max(...bs.map((q) => q[3]))];
+    const hs = xformHandles(b, mmPerPx > 0 && Number.isFinite(mmPerPx) ? ROT_PX * mmPerPx : ROT_MM);
+    const rot = hs.at(-1), top = hs.find((h) => h.handle === "n");
+    const frame = [...segs([b[0], b[1], b[2], b[1], b[2], b[3], b[0], b[3]], true, z), top.at[0], top.at[1], z, rot.at[0], rot.at[1], z];
+    const sig = JSON.stringify(b) + rot.at[1];
+    const what = { kind: "xform", id: selection.id };
+    return [
+        { key: "xform/box", show: "lines", data: frame, colour: ACCENT, dash: { dash: 4, gap: 3 }, what: { kind: "xformBox", id: selection.id }, sig },
+        { key: "xform/scale", show: "points", data: xyz(hs.slice(0, -1).map((h) => h.at), z), colour: ACCENT, size: 9, pointStyle: { shape: "square", hollow: true },
+            onTop: true, what: { ...what, handles: hs.slice(0, -1).map((h) => h.handle) }, sig },
+        { key: "xform/rot", show: "points", data: xyz([rot.at], z), colour: ACCENT, size: 10, pointStyle: { shape: "disc", hollow: false },
+            onTop: true, what: { ...what, handles: ["rot"] }, sig },
+    ];
+}
+
+// xform: the Move tool is on (its box and handles round the selection); mmPerPx the 2D scale.
+export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null }) {
     const out = [];
     const picked = (id) => selection?.kind === "pattern" && (selection.id === id || selection.ids?.includes(id));
     const ordered = [...drawings].sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0));
@@ -113,7 +139,8 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], z.line], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig });
         }
         if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
-        if (selection?.kind === "pattern" && selection.id === id) {
+        // the edit points: not under the Move tool, whose handles would share a rectangle's corners
+        if (!xform && selection?.kind === "pattern" && selection.id === id) {
             const p = pointsOf(nodes, id);
             const chosen = new Set(pointSel);
             out.push({ key: `${id}/points`, show: "points", data: xyz(p.points, z.seam), colour: "#ffffff", size: 8, pointStyle: { shape: "square", hollow: false },
@@ -126,6 +153,7 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             }
         }
     }
+    if (xform) out.push(...xformSpecs(drawings, selection, mmPerPx, bandOf(ordered.length).seam));
     const byId = new Map(drawings.map((d) => [d.id, d]));
     seams.forEach((s, i) => {
         // seams are select-only for colour this round: no hover recolour (hover2d is a piece id)

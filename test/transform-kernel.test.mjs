@@ -7,6 +7,7 @@ import { loadKernel } from "./package.mjs";
 import { Atelier } from "../kernel.js";
 import * as m from "../model.js";
 import { transformMatrix, unionBounds } from "../props.js";
+import { makeTool } from "../tools.js";
 
 const k = await loadKernel();
 const params = Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1]));
@@ -148,5 +149,49 @@ const transform = (a, ids, key, value) => {
     assert.equal(node(a, again.ids[0]).label, "A copy 2", "A copy is taken by p3");
     assert.deepEqual(a.problems(), []);
     a.free();
+}
+// A3: the Move tool's handles through the kernel, as the page runs them: each preview frame the
+// tool returns goes to Atelier.preview, the release to endPreview with the tool's re-anchor list
+{
+    const drag = async (a, selection, hit, from, path, to, mods = {}) => {
+        const request = async (kind, p) => (kind === "transform" ? a.transformedPiece(p.id, p.matrix)
+            : Object.fromEntries(p.ids.map((id) => [id, a.transformedPiece(id, p.matrix)])));
+        const t = makeTool("transform", { nodes: a.nodes(), drawings: drawingsOf(a), selection, fabric: "f_x", request });
+        t.down(from, hit, {});
+        for (const w of path) { const r = await t.move(w, null, mods); if (r.preview) a.preview(r.preview); }
+        const up = await t.up(to, null, mods);
+        if (up.preview) a.preview(up.preview);
+        return { up, out: a.endPreview(!!up.endPreview, up.reanchor) };
+    };
+    // A's top-right corner to (200, 100): twice the size about (0, 0); its seam re-anchored
+    {
+        const a = fresh();
+        const { up, out } = await drag(a, { kind: "pattern", id: "p1" }, { kind: "xform", id: "p1", handle: "ne" }, [100, 50], [[150, 75]], [200, 100]);
+        assert.deepEqual(up.reanchor, ["p1"]); assert.deepEqual(out.removed, []);
+        nearAll(a.drawing("p1").bounds, [0, 0, 200, 100]);
+        const s = node(a, "s1");
+        near(s.a_from, 200, 1e-4); near(s.a_to, 300, 1e-4);
+        nearAll(a.drawing("p1").internal[0].points, [20, 20, 80, 20]);
+        assert.deepEqual(a.problems(), []);
+        a.undo();
+        nearAll(a.drawing("p1").bounds, [0, 0, 100, 50], 1e-9);
+        a.free();
+    }
+    // both pieces turned a quarter about the union's centre (150, 25) by the rotate handle, with
+    // Shift (the pointer's 88 degrees snapped to 90): one undo step
+    {
+        const a = fresh();
+        const a88 = Math.PI / 2 + (88 * Math.PI) / 180, r = 60;
+        const { out } = await drag(a, { kind: "pattern", id: "p1", ids: ["p1", "p2"] }, { kind: "xform", id: "p1", handle: "rot" },
+            [150, 25 + r], [[140, 80]], [150 + r * Math.cos(a88), 25 + r * Math.sin(a88)], { shift: true });
+        assert.deepEqual(out.removed, []);
+        // (x, y) -> (175 - y, x - 125)
+        nearAll(a.drawing("p1").bounds, [125, -125, 175, -25]);
+        nearAll(a.drawing("p2").bounds, [125, 75, 175, 175]);
+        assert.deepEqual(a.problems(), []);
+        a.undo();
+        nearAll(a.drawing("p2").bounds, [200, 0, 300, 50], 1e-9);
+        a.free();
+    }
 }
 console.log("transform-kernel: ok");
