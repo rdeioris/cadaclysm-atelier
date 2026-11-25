@@ -65,6 +65,7 @@ export function slotFrame(slot, avatarBounds, patternBounds) {
 // The bounds the slot fractions scale with: the body's, the head left out (a head lifts the
 // bounds' top 150 mm, which would lift every slot with it).
 export function bodyBounds(bounds, lm) {
+    if (lm?.slot_bounds) bounds = lm.slot_bounds;   // a built form's pose-independent box (form-pose.js)
     if (!lm?.body_top) return bounds;
     return [bounds[0], bounds[1], bounds[2], bounds[3], Math.min(bounds[4], lm.body_top), bounds[5]];
 }
