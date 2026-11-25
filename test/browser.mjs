@@ -17,6 +17,8 @@
 //     node test/browser.mjs                              # npm run test:browser
 //     ATELIER_SHOT=out.png node test/browser.mjs         # also a screenshot of the drape
 //     ATELIER_SHOT_HOLES=holes.png ...                   # also one of the holed piece in 2D
+//     ATELIER_SHOT_MAP=map.png ATELIER_SHOT_TAPE=tape.png  # the drape with the Strain map, a girth on the avatar
+//     ATELIER_SHOT_MAP_OFF=off.png ...                  # also the drape with the map back off
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -752,6 +754,67 @@ async function check(cdp, base) {
                 ok(`screenshot ${process.env.ATELIER_SHOT}`);
             }
             ok(`the sample drapes: ${await health()}`);
+
+            // the fit map: Strain on the draping cloth, its legend in %, the value under the pointer
+            await evaluate(`(() => { const s = document.getElementById("map-select"); s.value = "strain"; s.dispatchEvent(new Event("change")); })()`);
+            const legend = await evaluate(`(() => { const l = document.getElementById("map-legend"); return { hidden: l.hidden, title: l.querySelector(".map-title").textContent, unit: l.querySelector(".map-unit").textContent, lo: document.getElementById("map-lo").value, hi: document.getElementById("map-hi").value }; })()`);
+            if (legend.hidden || legend.title !== "Strain" || legend.unit !== "%" || legend.lo !== "0" || legend.hi !== "10") throw new Error(`the legend: ${JSON.stringify(legend)}`);
+            {
+                const [mx, my, mw, mh] = await windowBox("rect3d");
+                let read = null;
+                for (const [fx, fy] of [[0.5, 0.45], [0.5, 0.55], [0.47, 0.4], [0.53, 0.5], [0.5, 0.35]]) {
+                    await evaluate(`document.body.dataset.mapValue = "__"`);
+                    await mouse("mouseMoved", mx + mw * fx, my + mh * fy, { buttons: 0 });
+                    const v = await until("the map's hover answered", async () => { const d = await evaluate(`document.body.dataset.mapValue ?? "__"`); return d === "__" ? null : { d }; }, 30000);
+                    if (v.d !== "") { read = await evaluate(`document.getElementById("map-value").textContent`); break; }
+                }
+                if (!read || !/^Strain (-?\d+(\.\d+)? %|: no value here)$/.test(read)) throw new Error(`the hover read-out: ${read}`);
+                await sleep(500);
+                await frames();
+                if (process.env.ATELIER_SHOT_MAP) {
+                    const shot = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_MAP, Buffer.from(shot.data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_MAP}`);
+                }
+                failIfErrors();
+                ok(`the strain map: legend ${legend.lo}-${legend.hi} ${legend.unit}, under the pointer "${read}"`);
+                await evaluate(`(() => { const s = document.getElementById("map-select"); s.value = "off"; s.dispatchEvent(new Event("change")); })()`);
+                if (!(await evaluate(`document.getElementById("map-legend").hidden`))) throw new Error("the legend stays with the map off");
+                if (process.env.ATELIER_SHOT_MAP_OFF) {
+                    await sleep(500);
+                    await frames();
+                    const shot = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_MAP_OFF, Buffer.from(shot.data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_MAP_OFF}`);
+                }
+
+                // the Tape: a girth on the avatar's hips, below the shirt
+                await evaluate(`document.getElementById("tape-toggle").click()`);
+                await evaluate(`document.querySelector('[data-tape-mode=girth]').click()`);
+                if ((await evaluate(`document.body.dataset.tape`)) !== "girth") throw new Error("the Tape is not on in Girth");
+                let girth = null;
+                for (const [fx, fy] of [[0.48, 0.53], [0.52, 0.53], [0.47, 0.55], [0.53, 0.55], [0.5, 0.51], [0.5, 0.165]]) {
+                    await evaluate(`document.body.dataset.tapeTarget = ""; document.getElementById("status-text").textContent = ""`);
+                    await click([mx + mw * fx, my + mh * fy]);
+                    await until("the tape's answer", async () => (await evaluate(`document.body.dataset.tapeTarget || document.getElementById("status-text").textContent`)) || null, 30000);
+                    // on the avatar's body: not the stand's pole
+                    if ((await evaluate(`document.body.dataset.tapeTarget`)) === "avatar" && Number(await evaluate(`document.body.dataset.tapeLength`)) > 300) { girth = Number(await evaluate(`document.body.dataset.tapeLength`)); break; }
+                    await sleep(450);           // the next click is not a double click
+                }
+                if (!(girth > 300 && girth < 2000)) throw new Error(`no girth on the avatar (${await statusText()})`);
+                if (!/^girth: \d+\.\d cm$/.test(await statusText())) throw new Error(`the girth's status: ${await statusText()}`);
+                await sleep(300);
+                await frames();
+                if (process.env.ATELIER_SHOT_TAPE) {
+                    const shot = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_TAPE, Buffer.from(shot.data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_TAPE}`);
+                }
+                failIfErrors();
+                ok(`a girth on the avatar: ${await statusText()}`);
+                await evaluate(`document.getElementById("tape-clear").click()`);
+                await evaluate(`document.getElementById("tape-toggle").click()`);
+            }
             await evaluate(`document.getElementById("sim-toggle").click()`);
             await until("paused", async () => (await simState()) === "paused", 30000);
             if ((await evaluate(`document.getElementById("fps").textContent`)) !== "paused") throw new Error("#fps does not say paused");

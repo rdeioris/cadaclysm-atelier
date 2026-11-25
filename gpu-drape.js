@@ -5,6 +5,7 @@
 // keeps one code path:
 //   in:  avatar, build {text, ops, run}, update {text, ops}, run, pause, reset, pin {vertex},
 //        drag {vertex, target}, gia {on} (a live cloth is re-shown with it after a positions read)
+//        map {map: {key, code, min, max} | null} (the fit map: View.setClothMap, fitmap.js)
 //   out: hello, topology (+ gpu: {item}), frame (positions: null), state, pinned
 // Edits go through the View (pinCloth, dragCloth, setClothOptions), never straight to the
 // kernel cloth: its state is stale between the View's round trips.
@@ -101,6 +102,7 @@ export class GpuDrape extends Drape {
         // thickness: the View draws each fabric's thickness (two faces and a rim along open edges)
         this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, this.topology()), gia: !!gia, thickness: true });
         this.shownGia = !!gia;
+        if (this.map) this.viewer.setClothMap(this.id, this.map);     // the fit map, kept across a re-show
         this.unstall();
         return this.id;
     }
@@ -165,6 +167,7 @@ export class GpuDrapeHost {
         this.health = null;           // the last clothHealth answer
         this.pinPoints = new Float32Array(0);
         this.colour = "#cccccc";
+        this.map = null;              // the fit map (setClothMap's { map, min, max }), or null
         this.yieldTask = taskYielder();
         this.inbox = Promise.resolve();
         Promise.resolve().then(() => this.send({ kind: "hello" }));
@@ -180,6 +183,13 @@ export class GpuDrapeHost {
     async positions() {
         if (!this.drape?.id) return null;
         return this.viewer.clothPositions(this.drape.id);
+    }
+    // The fit map `code` (cloth_strain's) per sim vertex, from the positions read now. -> { positions, values } or null
+    async strain(code) {
+        const p = await this.positions();
+        if (!p || !this.drape?.h) return null;
+        const positions = Float64Array.from(p);
+        return { positions, values: this.k.cadaclysm_blacksmith_cloth_strain(this.drape.h, code, positions) };
     }
 
     status() {
@@ -303,6 +313,7 @@ export class GpuDrapeHost {
                     d.build(data.text, data.ops);             // drops the old item and cloth
                     this.colour = clothColour(d.nodes);
                     this.frames = 0; this.health = null;
+                    d.map = this.map;
                     d.show(this.colour, this.gia);
                     this.topology();
                     this.budget = Infinity;
@@ -319,6 +330,11 @@ export class GpuDrapeHost {
                 case "gia":
                     this.gia = !!data.on;
                     if (this.drape?.id && this.drape.shownGia !== this.gia) { this.reshow = true; if (!this.running) await this.applyPending(); }
+                    break;
+                // the fit map: drawn by the View on the GPU, once per change
+                case "map":
+                    this.map = data.map ? { map: data.map.key, min: data.map.min, max: data.map.max } : null;
+                    if (this.drape) { this.drape.map = this.map; if (this.drape.id) this.viewer.setClothMap(this.drape.id, this.map); }
                     break;
                 case "reset": this.running = false; this.pending = null; this.reshow = false; this.drape?.freeCloth(); this.health = null; this.state(); break;
                 case "pin": {
