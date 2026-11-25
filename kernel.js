@@ -16,6 +16,15 @@ const HOLE_GAP = 0.05;    // mm: a hole nearer the outline or another hole than 
 const HOLE_TOL = 0.01;    // mm: profile_deviation's accuracy for that gap (1e-4 costs 50 times more)
 const OUTSIDE = 0, INSIDE = 1, ON = 2;   // profile_contains
 const LAND = 0.5;                        // mm: how near a point must lie to land on an outline
+// Reflection across the line through axis [x0, y0, x1, y1] (the arithmetic of a mirror axis;
+// the shapes themselves go through profile_mirror).
+export function reflector([x0, y0, x1, y1]) {
+    const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy), ux = dx / len, uy = dy / len;
+    return ([x, y]) => { const k = 2 * ((x - x0) * ux + (y - y0) * uy); return [x0 + k * ux - (x - x0), y0 + k * uy - (y - y0)]; };
+}
+const SHAPE_FIELDS = new Set(["internal", "notches", "grain", "allowance"]);   // a piece's shape besides its outline
+// A piece's link to its partner {partner, axis} (spec §6), or null.
+export const linkOf = (n) => n?.meta?.atelier?.link ?? null;
 const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
 
 // A drawing without what only the worker draws (posted to the page with every `doc`).
@@ -90,12 +99,17 @@ export class Atelier {
     commit(ops, message, reanchorId = null, before = this.problems()) {
         const out = { removed: [] };
         if (!ops.length) return out;
+        const prior = this.nodes();
         this.f("document_batch_begin")(this.d, message ?? null);
         try {
             this.f("document_apply")(this.d, batch(ops), null);
             this.evaluate();
+            // a linked partner rebuilt from what the ops changed (spec §6), in the same batch; its
+            // seams re-anchored with the rest
+            const sym = this.symmetryOps(prior, ops, true);
+            if (sym.ops.length) { this.f("document_apply")(this.d, batch(sym.ops), null); this.evaluate(); }
             // several pieces (a transform of a multi-selection): each one's seams in turn
-            for (const rid of [reanchorId ?? []].flat()) {
+            for (const rid of [...new Set([reanchorId ?? [], sym.reanchor].flat())]) {
                 if (!m.byId(this.nodes()).has(rid) || this.newProblems(before)) continue;
                 const r = reanchor(this.nodes(), new Map([[rid, { sides: this.sidesOf(rid) }]]), rid);
                 if (r.ops.length) { this.f("document_apply")(this.d, batch(r.ops), null); this.evaluate(); }
@@ -115,21 +129,26 @@ export class Atelier {
     // none) is put back, the preview stays open, and the error says why.
     preview(ops) {
         if (!this.open) {
-            this.open = { nodes: this.nodes(), problems: this.problems(), ops: null };
+            // `ops`: the last good frame as applied (a rebuilt partner's ops too: the cloth previews
+            // it); `user`: that frame's own ops, which endPreview commits (the commit rebuilds again)
+            this.open = { nodes: this.nodes(), problems: this.problems(), ops: null, user: null };
             this.f("document_preview_begin")(this.d);
         }
         const p = this.open;
-        let bad;
+        let bad, full = ops;
         try {
             this.f("document_preview")(this.d, batch(ops));
             this.evaluate();
+            // each frame rebuilds a linked partner too: both pieces move live
+            const sym = this.symmetryOps(p.nodes, ops, false);
+            if (sym.ops.length) { full = [...ops, ...sym.ops]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
             bad = this.newProblems(p.problems);
         } catch (e) { bad = text(e); }
         if (bad) {
             try { this.f("document_preview")(this.d, batch(p.ops ?? [])); } finally { this.evaluate(); }
             throw new Error(bad);
         }
-        p.ops = ops;
+        p.ops = full; p.user = ops;
     }
     // Ends an open preview. With `commit` its last good frame is one commit, the seams
     // re-anchored to `reanchorId`'s new sides inside it. -> {removed: seam ids}
@@ -138,7 +157,7 @@ export class Atelier {
         if (!p) return { removed: [] };
         this.open = null;
         try { this.f("document_end_preview")(this.d); } finally { this.evaluate(); }
-        return commit && p.ops ? this.commit(p.ops, "edit", reanchorId, p.problems) : { removed: [] };
+        return commit && p.user ? this.commit(p.user, "edit", reanchorId, p.problems) : { removed: [] };
     }
     // false when there is nothing to take back (New and Open start a fresh history).
     undo() {
@@ -239,6 +258,7 @@ export class Atelier {
                 sew, cut: Array.from(this.f("garment_cut_line")(this.g, pid, TOL)),
                 samples, sides, notches, notchLines, internal, grain, bounds,
                 beziers: this.beziersOf(outlineNode.path), holes, fill,
+                link: linkOf(node)?.partner ?? null,
                 sig: JSON.stringify([node, outlineNode.path]),
             };
         });
@@ -479,7 +499,12 @@ export class Atelier {
         }));
         const [gx, gy] = node.grain ?? [0, 1], tx = m6[0] * gx + m6[1] * gy, ty = m6[3] * gx + m6[4] * gy, gl = Math.hypot(tx, ty);
         if (!(gl > 0)) throw new Error("the transform collapses the piece");
-        return { path: out, internal, notches, grain: [tx / gl, ty / gl] };
+        const r = { path: out, internal, notches, grain: [tx / gl, ty / gl] };
+        // spec §6: a link's axis through the same matrix (model.pieceOps keeps it only when the
+        // partner moves too)
+        const axisThrough = ([x0, y0, x1, y1]) => [...map([x0, y0]), ...map([x1, y1])];
+        if (linkOf(node)) r.linkAxis = axisThrough(linkOf(node).axis);
+        return r;
     }
     // Clipboard pieces ([{node, path}]) through m6: what a paste places. -> [{path, internal, notches, grain}]
     piecesThrough(pieces, m6) { return pieces.map((p) => this.pieceThrough(p.node, p.path, m6)); }
@@ -489,24 +514,29 @@ export class Atelier {
     // The Mirror tool's new piece, in one call: the outline (holes kept) as mirrored(), the source's
     // internal lines and shapes through the same profile_mirror, and its notches re-placed at the
     // reflected points on the mirrored outline. All from the committed piece during a preview.
-    // -> {path, internal, notches}
+    // -> {path, internal, notches, grain}
     mirroredPiece(id, axis) {
-        const f = this.f, [x0, y0, x1, y1] = axis, dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
         const byId = m.byId(this.open ? this.open.nodes : this.nodes()), node = byId.get(id), src = byId.get(`${id}_outline`)?.path;
         if (!node || !src) throw new Error(`no pattern ${id}`);
-        const path = this.mirrored(id, axis);
+        return this.mirrorPieceOf(node, src, axis);
+    }
+    // The same for a piece given as its node and outline path (a linked partner's rebuild reads
+    // them from the batch being made). The grain is the node's reflected across the axis.
+    mirrorPieceOf(node, src, axis) {
+        const f = this.f, [x0, y0, x1, y1] = axis, dx = x1 - x0, dy = y1 - y0;
         const mirror = (q) => f("profile_mirror")(q, x0, y0, dx, dy);
+        const path = this.withPath(src, (q) => this.pathOf(mirror(q)));
         const internal = (node.internal ?? []).map((l) => {
             const p = this.withPath(l.path, (q) => this.pathOf(mirror(q)));
             return { ...l, path: { start: p.start, segments: p.segments } };
         });
-        const ux = dx / len, uy = dy / len;
-        const reflect = ([x, y]) => { const k = 2 * ((x - x0) * ux + (y - y0) * uy); return [x0 + k * ux - (x - x0), y0 + k * uy - (y - y0)]; };
+        const reflect = reflector(axis);
         const notches = !node.notches?.length ? [] : this.withPath({ start: src.start, segments: src.segments }, (old) => this.withPath({ start: path.start, segments: path.segments }, (p) => {
             const samples = this.samplesOf(p), sides = this.sideStarts(p, f("profile_length")(p, ACC)[0], path.segments.length);
             return node.notches.map((nt) => { const at = f("profile_point_at_length")(old, nt.at, ACC); return { ...nt, at: arcAt(samples, sides, reflect([at[0], at[1]])).s }; });
         }));
-        return { path, internal, notches };
+        const [gx, gy] = node.grain ?? [0, 1], g = reflect([x0 + gx, y0 + gy]);
+        return { path, internal, notches, grain: [g[0] - x0, g[1] - y0] };
     }
 
     // The two pieces an open `cutter` (path JSON) cuts pattern `id` into, all from kernel calls
@@ -671,6 +701,96 @@ export class Atelier {
     filletOps(id, corner, radius) {
         const r = this.filletPath(id, corner, radius);
         return m.filletOps(this.nodes(), id, r.path, r.insertAt, r.notches);
+    }
+
+    // ---- linked pairs (spec §6) ----
+    // The pieces a batch's own ops changed the shape of: an outline, or the internal lines,
+    // notches, grain or allowance (a label, layer, fabric or meta is not the shape).
+    // -> Map id -> {outline: whether its outline changed}
+    touchedPieces(ops, after) {
+        const out = new Map();
+        const mark = (id, outline) => {
+            if (after.get(id)?.kind !== "garment.pattern") return;
+            const t = out.get(id) ?? { outline: false };
+            t.outline ||= outline;
+            out.set(id, t);
+        };
+        for (const o of ops) {
+            if (o.op !== "set" || typeof o.id !== "string") continue;
+            if (o.id.endsWith("_outline")) mark(o.id.slice(0, -"_outline".length), true);
+            else if (Object.keys(o.fields ?? {}).some((key) => SHAPE_FIELDS.has(key))) mark(o.id, false);
+        }
+        return out;
+    }
+    // The ops that keep the symmetric pieces whole after a batch's own `ops` (`priorList` the
+    // nodes before them; the document holds them applied): a linked piece the ops changed rebuilds
+    // its partner (mirrorPieceOf across the link's axis), and a link whose partner is gone or no
+    // longer links back is dropped. Only the pieces the ops touched are read: a rebuilt one
+    // never rebuilds its source back. With `seams`, the rebuilt pieces' seams follow (followSides).
+    // -> {ops, reanchor: the pieces whose seams the commit re-anchors}
+    symmetryOps(priorList, ops, seams) {
+        const prior = m.byId(priorList), nodes = this.nodes(), after = m.byId(nodes);
+        const out = [], reanchor = [];
+        for (const n of nodes) {
+            const L = linkOf(n);
+            if (L && linkOf(after.get(L.partner))?.partner !== n.id) out.push(...m.setPattern(nodes, n.id, { meta: m.atelierMeta(n.meta, "link") }));
+        }
+        const touched = this.touchedPieces(ops, after);
+        const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+        for (const id of touched.keys()) {
+            const n = after.get(id), L = linkOf(n), path = after.get(`${id}_outline`)?.path;
+            if (!path) continue;
+            // both pieces in the batch (a move of the pair): the axis went through the same matrix
+            if (L && !touched.has(L.partner) && same(L, linkOf(prior.get(id)))) {
+                const partner = after.get(L.partner), old = after.get(`${L.partner}_outline`)?.path;
+                if (linkOf(partner)?.partner === id && old) {
+                    const r = this.mirrorPieceOf(n, path, L.axis);
+                    out.push(...m.setOutline(nodes, partner.id, r.path),
+                        ...m.setPattern(nodes, partner.id, { internal: r.internal, notches: r.notches, grain: r.grain, allowance: n.allowance ?? partner.allowance ?? [10] }));
+                    if (seams) out.push(...this.followSides(partner.id, old, r.path, nodes, reanchor));
+                }
+            }
+        }
+        return { ops: out, reanchor };
+    }
+    // Piece `id`'s seams after its outline went from `from` to `to`: with as many sides, their
+    // anchors still name the same sides (the commit re-anchors `id` from the fractions); with a
+    // side more or fewer, each anchor is moved onto `to` by position (anchorsOnto).
+    followSides(id, from, to, nodes, reanchor) {
+        reanchor.push(id);
+        return from.segments.length === to.segments.length ? [] : this.anchorsOnto(id, from, to, nodes);
+    }
+    // The anchors of piece `id`'s seams moved from outline `from` onto outline `to`: each end's
+    // point on `from` (from its anchor) to the nearest arc length on `to` (a side start within
+    // LAND exactly that), written as anchorOf writes it.
+    anchorsOnto(id, from, to, nodes) {
+        const f = this.f, ops = [];
+        const seams = nodes.filter((n) => n.kind === "garment.seam" && n.meta?.atelier && (n.a === id || n.b === id));
+        if (!seams.length) return ops;
+        this.withPath({ start: from.start, segments: from.segments }, (pf) => this.withPath({ start: to.start, segments: to.segments }, (pt) => {
+            const sf = this.sideStarts(pf, f("profile_length")(pf, ACC)[0], from.segments.length);
+            const P = f("profile_length")(pt, ACC)[0], st = this.sideStarts(pt, P, to.segments.length), samples = this.samplesOf(pt);
+            const arcOn = (s) => {
+                const r = f("profile_point_at_length")(pf, s, ACC), a = arcAt(samples, st, [r[0], r[1]]).s;
+                return st.find((c) => Math.abs(c - a) < LAND) ?? a;
+            };
+            for (const n of seams) {
+                const anchor = { ...n.meta.atelier };
+                let moved = false;
+                for (const end of ["a", "b"]) {
+                    if (n[end] !== id || !anchor[end]) continue;
+                    const [a, ta, tb, b = a] = anchor[end];
+                    if (a >= sf.length - 1 || b >= sf.length - 1) continue;
+                    let s0 = arcOn(sf[a] + ta * (sf[a + 1] - sf[a])), s1 = arcOn(sf[b] + tb * (sf[b + 1] - sf[b]));
+                    if (s0 >= P - 1e-9) s0 = 0;
+                    if (s1 < s0 && s1 < LAND) s1 = P;
+                    anchor[end] = anchorOf(st, s0, s1);
+                    moved = true;
+                }
+                if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
+            }
+        }));
+        return ops;
     }
 
     // ---- point editing (spec §3): the kernel's profile_insert/remove/smooth_vertex ----

@@ -263,11 +263,17 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
 // Piece `id` set to a transformed piece r = {path, internal, notches, grain} (kernel.js
 // transformedPiece): its outline, and its internal lines, notches and grain where it has them
 // or the transform gives them. The caller re-anchors the seams in the same commit.
-export function pieceOps(nodes, id, r) {
+// `ids`: every piece the same matrix moves. A linked piece's axis moves only when its partner is among `ids` (spec §6: moving one piece
+// keeps the axis, and the partner is rebuilt the mirrored way).
+export function pieceOps(nodes, id, r, ids = [id]) {
     const n = byId(nodes).get(id), fields = {};
     if (n?.internal || r.internal?.length) fields.internal = r.internal ?? [];
     if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
     if (r.grain) fields.grain = r.grain;
+    let meta = n?.meta;
+    const link = meta?.atelier?.link;
+    if (r.linkAxis && link && ids.includes(link.partner)) meta = atelierMeta(meta, "link", { ...link, axis: r.linkAxis });
+    if (meta !== n?.meta) fields.meta = meta;
     return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : [])];
 }
 
@@ -299,6 +305,8 @@ export function pasteOps(nodes, clip, placed) {
         if (meta) {
             const atelier = { ...(meta.atelier ?? {}) };
             delete atelier.slot;
+            // a copy is linked to nothing (spec §6)
+            delete atelier.link;
             const m2 = { ...meta, atelier };
             if (!Object.keys(atelier).length) delete m2.atelier;
             if (Object.keys(m2).length) add.node.meta = m2;
@@ -322,6 +330,41 @@ export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anc
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };
     if (anchor) node.meta = { atelier: anchor };
     return { id, ops: [{ op: "add", node }, ...garmentOps(nodes, listOf(nodes, "patterns"), [...listOf(nodes, "seams"), id])] };
+}
+
+// `meta` with meta.atelier[key] set to `value` (undefined: removed; an empty atelier goes too).
+export function atelierMeta(meta, key, value) {
+    const atelier = { ...(meta?.atelier ?? {}) };
+    if (value === undefined) delete atelier[key]; else atelier[key] = value;
+    const out = { ...(meta ?? {}) };
+    if (Object.keys(atelier).length) out.atelier = atelier; else delete out.atelier;
+    return out;
+}
+
+// Spec §6, the Sym tool: piece `id`'s mirrored copy `piece` ({path, internal, notches, grain}:
+// kernel.js mirroredPiece across `axis`) added as its linked partner, "‹label› (sym)" with the
+// source's fabric, layer and allowance list (the kernel keeps the side order); both pieces get
+// meta.atelier.link = {partner, axis}. One batch. -> {id, ops}
+export function linkedCopyOps(nodes, id, piece, axis) {
+    const src = byId(nodes).get(id);
+    if (!src) throw new Error(`no pattern ${id}`);
+    if (src.meta?.atelier?.link) throw new Error("sym: the piece is linked already");
+    const r = addPattern(nodes, { label: freeLabel(nodes, `${src.label ?? "Piece"} (sym)`), path: piece.path, fabric: src.fabric, layer: src.layer ?? 0, allowance: src.allowance ?? [10], grain: piece.grain ?? src.grain ?? [0, 1] });
+    const node = r.ops.find((o) => o.op === "add" && o.node?.kind === "garment.pattern").node;
+    if (piece.internal?.length) node.internal = piece.internal;
+    if (piece.notches?.length) node.notches = piece.notches;
+    node.meta = { atelier: { link: { partner: id, axis: [...axis] } } };
+    return { id: r.id, ops: [...r.ops, ...setPattern(nodes, id, { meta: atelierMeta(src.meta, "link", { partner: r.id, axis: [...axis] }) })] };
+}
+// Unlink (spec §6): piece `id` without its link, and its partner without the link back. One
+// batch; [] when it has none.
+export function unlinkOps(nodes, id) {
+    const map = byId(nodes), n = map.get(id), link = n?.meta?.atelier?.link;
+    if (!link) return [];
+    const ops = setPattern(nodes, id, { meta: atelierMeta(n.meta, "link") });
+    const partner = link && map.get(link.partner);
+    if (partner?.meta?.atelier?.link?.partner === id) ops.push(...setPattern(nodes, partner.id, { meta: atelierMeta(partner.meta, "link") }));
+    return ops;
 }
 
 export const removeSeam = (nodes, id) =>

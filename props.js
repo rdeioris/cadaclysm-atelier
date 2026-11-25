@@ -80,6 +80,9 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             { key: "flipV", label: "Flip V", unit: "", type: "action", value: null },
             { key: "duplicate", label: "Duplicate", unit: "", type: "action", value: null },
             { key: "remove", label: "Remove piece", unit: "", type: "action", value: null },
+            // spec §6: a linked pair's action
+            ...(n.meta?.atelier?.link ? [{ key: "unlink", label: "Unlink", unit: "", type: "action", value: null,
+                tip: `Linked to ${find(nodes, n.meta.atelier.link.partner)?.label ?? n.meta.atelier.link.partner}: unlinked, each piece is edited on its own.` }] : []),
         ];
     }
     if (selection.kind === "seam") {
@@ -215,6 +218,7 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
             return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds, d?.bounds, { landmarks: ctx.landmarks ?? null, host }));
         }
         if (key === "remove") return model.removePattern(nodes, id);
+        if (key === "unlink") return model.unlinkOps(nodes, id);
         if (TRANSFORM_KEYS.has(key) || key === "duplicate") throw new Error(`${key} goes through the kernel (atelier.js transformSelected / duplicate)`);
         return model.setPattern(nodes, id, { [key]: value });
     }

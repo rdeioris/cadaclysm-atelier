@@ -221,7 +221,9 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     a.apply(m.newDocumentOps({ slug: "x", label: "X", params: Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1])) }), "new");
     a.apply(m.addPattern(a.nodes(), { label: "F", path: m.rectPath(0, 0, 100, 50), fabric: "f_x" }).ops, "r");
     assert.deepEqual(await a.mirrored("p1", [0, 0, 0, 1]), reply);
-    assert.deepEqual(a.mirroredPiece("p1", [0, 0, 0, 1]), { path: reply, internal: [], notches: [] }, "the piece the worker answers");
+    const { grain, ...piece } = a.mirroredPiece("p1", [0, 0, 0, 1]);
+    assert.deepEqual(piece, { path: reply, internal: [], notches: [] }, "the piece the worker answers");
+    assert.deepEqual(grain.map((v) => Math.round(v * 1e9) / 1e9 + 0), [0, 1], "and its grain reflected");
 }
 // fix round 1: allowance takes one dot; internal double-click drops the duplicate point
 {

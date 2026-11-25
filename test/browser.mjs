@@ -1478,6 +1478,40 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok("notches: placed a slit, selected its mark, set it to V in the panel; the next notch is a V");
+                // ---- linked pair (A1 task A7): Sym across the top side; an Edit drag on the partner
+                // moves the source's mirrored corner; Ctrl+Z takes both back; Unlink ----
+                const pathOf = async (id) => (await saveJson()).nodes.find((n) => n.id === `${id}_outline`).path;
+                const hasPoint = (path, [x, y], e = 2) => [path.start, ...path.segments.map((g) => g.to)].some((q) => Math.abs(q[0] - x) < e && Math.abs(q[1] - y) < e);
+                const inWindow = ([x, y]) => x > ux && x < ux + uw && y > uy && y < uy + uh;
+                if (!inWindow(screenAt([o[0] + 220, o[1] + 210]))) throw new Error("the linked partner above the piece does not fit the 2D window");
+                await evaluate(`document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]').click()`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=sym]').click()`);
+                await click(screenAt([o[0] + 30, o[1] + 100]));
+                await click(screenAt([o[0] + 170, o[1] + 100]));
+                const dSym = await until("the linked partner", async () => { const d = await saveJson(); return d.nodes.filter((n) => n.kind === "garment.pattern").length === 2 ? d : null; }, 30000);
+                await noStatusError();
+                const partner = dSym.nodes.find((n) => n.kind === "garment.pattern" && n.id !== pid);
+                if (partner.meta?.atelier?.link?.partner !== pid || dSym.nodes.find((n) => n.id === pid).meta?.atelier?.link?.partner !== partner.id) throw new Error(`the pair is not linked: ${JSON.stringify(partner.meta)}`);
+                await until("Edit armed, the partner selected", () => evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on") && !!document.querySelector('#browser li[data-kind=pattern][data-id="${partner.id}"]')?.classList.contains("on")`), 10000);
+                const corner = screenAt([o[0] + 200, o[1] + 200]);
+                await worldOf(corner);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error(`the partner's corner hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await drag(corner, screenAt([o[0] + 220, o[1] + 210]));
+                await until("the source follows the partner", async () => hasPoint(await pathOf(pid), [o[0] + 220, o[1] - 10], 5), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await pathOf(pid))}`); });
+                if (!hasPoint(await pathOf(partner.id), [o[0] + 220, o[1] + 210], 5)) throw new Error("the partner's corner did not move");
+                await key("z", "KeyZ", 90, 2);
+                const before = (id) => JSON.stringify(dSym.nodes.find((n) => n.id === `${id}_outline`).path);
+                await until("one undo takes both back", async () => JSON.stringify(await pathOf(pid)) === before(pid) && JSON.stringify(await pathOf(partner.id)) === before(partner.id), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await pathOf(pid))} / ${JSON.stringify(await pathOf(partner.id))} (were ${before(pid)} / ${before(partner.id)})`); });
+                await evaluate(`document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]').click()`);
+                await until("the Unlink button", () => evaluate(`!!${field("unlink")}`), 10000);
+                await evaluate(`${field("unlink")}.click()`);
+                await until("unlinked", async () => !(await saveJson()).nodes.some((n) => n.meta?.atelier?.link), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("linked pair: Sym added a linked partner; an Edit drag on it moved the source's corner; Ctrl+Z took both back; Unlink");
+
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

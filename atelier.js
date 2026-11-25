@@ -279,7 +279,7 @@ async function transformSelected(key, value, label) {
     try {
         cancelPreview();
         const pieces = await request("transformAll", { ids, matrix });
-        const ops = ids.flatMap((id) => model.pieceOps(nodes, id, pieces[id]));
+        const ops = ids.flatMap((id) => model.pieceOps(nodes, id, pieces[id], ids));
         change("ops", { ops, message: label.toLowerCase(), reanchor: ids });
         status(`${label}: ${ids.length === 1 ? "the piece" : `${ids.length} pieces`}`, false);
     } catch (e) { status(`${label}: ${e?.message ?? e}`, true); renderProps(); }

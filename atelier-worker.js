@@ -12,7 +12,7 @@
 import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
-import { Atelier, forPage } from "./kernel.js";
+import { Atelier, forPage, linkOf } from "./kernel.js";
 import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, WrappedMeshCache } from "./arrange.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
@@ -487,12 +487,16 @@ self.onmessage = async ({ data }) => {
             }
             // a cut (and sew): one batch; a refusal changes nothing and says why (the error)
             case "cut": {
+                // a linked piece is unlinked first (spec §6): the cut's pieces are linked to nothing,
+                // and the partner's link goes in the same batch (kernel.js symmetryOps)
+                const partner = linkOf(atelier.nodes().find((n) => n.id === data.id))?.partner;
                 const r = atelier.cutOps(data.id, data.cutter, { sew: data.sew, consume: data.consume });
                 atelier.apply(r.ops, data.sew ? "cut & sew" : "cut");
                 changed(data.seq);
                 const notes = [];
                 if (r.dropped.length) notes.push(`dropped seam${r.dropped.length === 1 ? "" : "s"} ${r.dropped.join(", ")}: the cut split its range`);
                 if (r.collapsed) notes.push("the per-side allowance is now one width");
+                if (partner) notes.push(`unlinked from ${atelier.nodes().find((n) => n.id === partner)?.label ?? partner} first`);
                 post({ kind: "status", text: [data.sew ? "cut and sewn" : "cut", ...notes].join("; ") });
                 break;
             }

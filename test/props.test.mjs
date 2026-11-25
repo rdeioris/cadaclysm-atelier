@@ -206,4 +206,15 @@ console.log("props: ok");
     assert.deepEqual(unionBounds(two, ["p1", "p2"]), [0, -10, 300, 50]);
     assert.equal(unionBounds(two, []), null);
 }
+// spec §6: a linked piece's panel has Unlink
+{
+    const pair = [...nodes.filter((n) => n.id !== "p1"),
+        { id: "p1", kind: "garment.pattern", label: "Front", meta: { atelier: { link: { partner: "p2", axis: [0, 0, 0, 1] } } } },
+        { id: "p2", kind: "garment.pattern", label: "Back", meta: { atelier: { slot: "front", link: { partner: "p1", axis: [0, 0, 0, 1] } } } }];
+    const keys = (id, list) => fieldsFor({ kind: "pattern", id }, list, drawings).map((f) => f.key);
+    assert.ok(keys("p1", pair).includes("unlink"));
+    assert.ok(!keys("p1", nodes).includes("unlink"));
+    const ops = opsFor({ kind: "pattern", id: "p1" }, pair, "unlink", null);
+    assert.deepEqual(ops, [{ op: "set", id: "p1", fields: { meta: {} } }, { op: "set", id: "p2", fields: { meta: { atelier: { slot: "front" } } } }]);
+}
 console.log("props transforms: ok");

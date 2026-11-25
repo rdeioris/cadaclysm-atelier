@@ -5,7 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
+import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 
 export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
@@ -354,7 +354,7 @@ const POINT_SNAPS = new Set(["end", "vertex", "point", "intersection"]);
 
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
-    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain", "ruler"]);
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler"]);
 
 const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
@@ -544,7 +544,7 @@ const TOOLS = {
         const box = boxGesture(ctx, "pieces");
         // g.result is always {[id]: piece}, each the kernel's whole moved piece (kernel.js
         // transformedPiece): the outline, internal lines, notches and grain all move together
-        const preview = (g) => (g.result ? { preview: g.ids.flatMap((id) => (g.result[id] ? pieceOps(ctx.nodes, id, g.result[id]) : [])) } : {});
+        const preview = (g) => (g.result ? { preview: g.ids.flatMap((id) => (g.result[id] ? pieceOps(ctx.nodes, id, g.result[id], g.ids) : [])) } : {});
         // The matrix for the pointer at w: a handle's (handleMatrix; the last one where this one
         // means nothing), else the translation.
         const wanted = (g, w, mods) => (g.handle
@@ -715,6 +715,31 @@ const TOOLS = {
         };
     },
 
+    // Sym (spec §6): two clicks give an axis, as Mirror; the selected piece's mirrored copy is
+    // added linked to it (meta.atelier.link on both): an edit of either rebuilds the other.
+    sym(ctx) {
+        const { DRAG } = tols(ctx);
+        const pts = [];
+        return {
+            down() { return {}; },
+            move(w) { return pts.length === 1 ? { overlay: line([pts[0], w]) } : {}; },
+            up(w) {
+                const id = selectedId(ctx);
+                if (!id) return pts.length ? {} : { status: "select the piece first" };
+                if (pts.length && dist(pts[0], w) < DRAG) return {};
+                pts.push(w);
+                if (pts.length < 2) return { overlay: line(pts) };
+                const axis = [...pts[0], ...pts[1]];
+                pts.length = 0;
+                return Promise.resolve(ctx.request("mirror", { id, axis })).then((piece) => {
+                    const r = linkedCopyOps(ctx.nodes, id, piece, axis);
+                    return { ops: r.ops, select: { kind: "pattern", id: r.id }, overlay: { lines: [] }, status: "linked: an edit of either piece rebuilds the other", error: false, done: true };
+                }).catch((e) => ({ status: `${e?.message ?? e}`.replace(/^(?!sym: )/, "sym: "), overlay: { lines: [] } }));
+            },
+            key(k) { if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; } return {}; },
+            lastPoint() { return pts.length ? [...pts[0]] : null; },
+        };
+    },
     allowance(ctx) {
         let hit = null, digits = "";
         return {
