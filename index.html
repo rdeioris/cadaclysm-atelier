@@ -31,6 +31,8 @@
         <span class="sep"></span>
         <button data-tool3d="pin" title="Pin: click the cloth to pin or unpin a point">Pin</button>
         <button data-tool3d="drag" title="Drag: pull the cloth with the mouse while it runs">Drag</button>
+        <button id="tape-toggle" title="Tape: measure on the avatar or the garment">Tape</button><span class="tape-opts"><button data-tape-mode="path" title="Path: click points on the surface; double click or Enter ends, Escape drops it">Path</button><button data-tape-mode="girth" title="Girth: one click, the horizontal loop through it">Girth</button><label title="Hull: a real tape's girth over the hollows (the loop's convex hull); remembered for the avatar and the garment"><input type="checkbox" id="tape-hull" checked> Hull</label><button id="tape-clear" title="Clear every measure">Clear</button></span>
+        <select id="map-select" title="Fit map: colour the cloth by its strain or stress"></select>
         <span class="sep"></span>
         <button data-command="arrange" title="Place the pieces around the avatar">Arrange</button>
         <span id="sim-engine" title="which engine steps the cloth"></span>
@@ -60,7 +62,7 @@
         <button data-toggle="grid" title="Snap to the 10 mm grid">Grid</button>
         <button data-command="fit" title="Fit the pieces (F)">Fit</button>
     </div>
-    <div class="well" id="well"><canvas id="view" tabindex="0"></canvas><div id="typed" tabindex="-1" hidden><input id="typed-length" inputmode="decimal" title="Length, mm"> mm <input id="typed-angle" inputmode="decimal" title="Angle, degrees (blank: toward the pointer)"> °</div></div>
+    <div class="well" id="well"><canvas id="view" tabindex="0"></canvas><div id="map-legend" hidden><span class="map-title"></span><div class="map-bar"></div><div class="map-range"><input class="map-lo" id="map-lo" inputmode="decimal" title="The map's minimum (blue)"> <span class="map-unit"></span><span class="map-dash">to</span><input class="map-hi" id="map-hi" inputmode="decimal" title="The map's maximum (red)"> <span class="map-unit"></span></div><div id="map-value"></div></div><div id="typed" tabindex="-1" hidden><input id="typed-length" inputmode="decimal" title="Length, mm"> mm <input id="typed-angle" inputmode="decimal" title="Angle, degrees (blank: toward the pointer)"> °</div></div>
     <aside id="dock">
         <div id="browser">
             <h2>Fabrics</h2><ul id="browser-fabrics"></ul>

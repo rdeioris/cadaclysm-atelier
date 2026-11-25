@@ -17,6 +17,8 @@ import { fieldsFor, opsFor, validate, fieldText } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
+import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
+import { TapeTool, cmText } from "./tape3d.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -506,10 +508,42 @@ function fit2d() { post({ kind: "fit2d" }); }
 let tool3d = null;
 function setTool3d(name) {
     tool3d = tool3d === name ? null : name;
+    if (tool3d && tape.on) tapeDo(tape.toggle());
     for (const b of document.querySelectorAll("[data-tool3d]")) b.classList.toggle("on", b.dataset.tool3d === tool3d);
     $("well").classList.toggle("tool3d", !!tool3d);
 }
 for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("click", () => setTool3d(b.dataset.tool3d));
+
+// The fit map (fitmap.js): the select, the legend over the 3D window's corner, the value under
+// the pointer (one hover pick in flight). The Tape tool (tape3d.js): its clicks are 3D picks
+// (pick3d with `tape`), its measures the worker's.
+const fit = new FitMap(), tape = new TapeTool();
+let hoverSeq = 0;
+const mapHovers = new Latest((ev) => post({ kind: "mapHover", x: ev.x, y: ev.y, seq: ++hoverSeq }));
+function showMap() {
+    renderLegend($("map-legend"), fit.legend());
+    $("map-select").value = fit.key;
+    document.body.dataset.map = fit.key;
+}
+for (const m of MAPS) { const o = document.createElement("option"); o.value = m.key; o.textContent = m.key === "off" ? "Map: off" : `Map: ${m.label}`; $("map-select").append(o); }
+$("map-select").addEventListener("change", (e) => { post(fit.set(e.target.value, nodes)); $("map-value").textContent = ""; showMap(); });
+for (const input of [$("map-lo"), $("map-hi")]) {
+    input.addEventListener("change", () => { const r = fit.setRange($("map-lo").value, $("map-hi").value); if (r.error) status(r.error, true); else post(r); showMap(); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+}
+function tapeDo(r) {
+    for (const m of r?.post ?? []) post(m);
+    if (r?.status) status(r.status, !!r.error);
+    $("tape-toggle").classList.toggle("on", tape.on);
+    for (const b of document.querySelectorAll("[data-tape-mode]")) b.classList.toggle("on", b.dataset.tapeMode === tape.mode);
+    $("tape-hull").checked = tape.hullOn;
+    document.body.dataset.tape = tape.on ? tape.mode : "";
+}
+$("tape-toggle").addEventListener("click", () => { if (tool3d) setTool3d(tool3d); tapeDo(tape.toggle()); });
+for (const b of document.querySelectorAll("[data-tape-mode]")) b.addEventListener("click", () => tapeDo(tape.setMode(b.dataset.tapeMode)));
+$("tape-hull").addEventListener("change", (e) => tapeDo(tape.setHull(e.target.checked)));
+$("tape-clear").addEventListener("click", () => tapeDo(tape.clear()));
+showMap(); tapeDo(null);
 
 // ---- the pointer router (plan ruling 5) ---------------------------------------------------
 // Every canvas event comes here first. A left press in the 2D window with a tool on (and Space
@@ -547,7 +581,7 @@ function leave2d() {
 cv.addEventListener("pointerleave", leave2d);
 // The cursor of the window under the pointer: a crosshair in 2D (grabbing while it pans), a
 // crosshair in 3D while Pin or Drag is on.
-function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && tool3d ? "crosshair" : ""; }
+function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && (tool3d || tape.on) ? "crosshair" : ""; }
 // Tab leaves the canvas (listen would keep it there; the app binds no Tab on the canvas)
 $("well").addEventListener("keydown", (e) => { if (e.key === "Tab" && !e.target.closest?.("#typed")) e.stopPropagation(); }, true);
 function flushMove() {
@@ -609,9 +643,13 @@ listen(cv, (ev) => {
         if (vpNow === 1 && pan2d === null) move2d(ev);
         else if (vpNow !== 1) leave2d();
         if (pan2d === null) cursorAt(vpNow);
+        if (fit.on && vpNow === 0 && !down3d) mapHovers.push(ev);
     }
     if (ev.kind === "up" && down3d) {                                    // a click without a drag picks in 3D
-        if (Math.hypot(ev.x - down3d[0], ev.y - down3d[1]) < CLICK_PX * dprNow()) post({ kind: "pick3d", x: ev.x, y: ev.y, seq: selSeq });
+        const click = Math.hypot(ev.x - down3d[0], ev.y - down3d[1]) < CLICK_PX * dprNow();
+        // the Tape's click: a point, or the second click of a double click ending the path
+        if (click && tape.on) { if (tape.press(performance.now(), [ev.x / dprNow(), ev.y / dprNow()]) === "end") tapeDo(tape.end()); else post({ kind: "pick3d", x: ev.x, y: ev.y, tape: true }); }
+        else if (click) post({ kind: "pick3d", x: ev.x, y: ev.y, seq: selSeq });
         down3d = null;
     }
     post({ cadaclysm: "input", event: ev });
@@ -730,6 +768,8 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Shift" && !e.repeat) { shiftHeld = true; syncSnapBase(); }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === " ") { space = true; e.preventDefault(); return; }
+    // the Tape's path being drawn: Enter keeps it, Escape drops it
+    if (tape.current && (e.key === "Enter" || e.key === "Escape")) { e.preventDefault(); tapeDo(e.key === "Enter" ? tape.end() : tape.escape()); return; }
     if (e.key === "Escape") {
         // the tool hears it first (a drag cancels), then back to edit
         afterUps(() => {
@@ -858,7 +898,13 @@ worker.onmessage = ({ data: m }) => {
         case "sim": onSim(m); break;
         case "at2d": onAt2d(m); break;
         case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;
-        case "picked": if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
+        case "picked": if (m.tape) tapeDo(tape.click(m.target, m.point)); else if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
+        case "mapValue":
+            mapHovers.done();
+            $("map-value").textContent = m.value == null ? "" : valueText(fit.key, m.value);
+            document.body.dataset.mapValue = m.value == null ? "" : String(m.value);
+            break;
+        case "taped": status(`${m.op === "girth" ? "girth" : "tape"}: ${cmText(m.length)}`); document.body.dataset.tapeLength = String(m.length); break;
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved":
             if (film?.onSaved(m.text)) break;
