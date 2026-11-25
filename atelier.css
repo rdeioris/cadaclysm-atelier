@@ -98,3 +98,11 @@ body[data-tape=path] .tape-opts, body[data-tape=girth] .tape-opts { display: inl
 #map-legend .map-dash { color: var(--dim); margin: 0 4px; }
 #map-legend input { width: 4.5em; background: #1b1d21; color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 1px 3px; font: inherit; }
 #map-value { margin-top: 3px; font-variant-numeric: tabular-nums; min-height: 1.4em; }
+/* the Simulation panel (simpanel.js), at the foot of the browser */
+#simpanel { border-top: 1px solid var(--line); margin-top: 8px; padding: 0 10px 6px; }
+#simpanel summary { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 8px 0 4px; font-weight: 600; cursor: pointer; }
+#simpanel dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0 0 6px; font-size: 12px; align-items: center; }
+#simpanel dt { color: var(--dim); white-space: nowrap; }
+#simpanel dt.set { color: var(--text); }
+#simpanel dd { margin: 0; }
+#simpanel input, #simpanel select { width: 100%; box-sizing: border-box; background: #1b1d21; color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 2px 4px; font: inherit; }

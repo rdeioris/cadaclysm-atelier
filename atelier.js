@@ -19,6 +19,7 @@ import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
 import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
 import { TapeTool, cmText } from "./tape3d.js";
+import { SimPanel } from "./simpanel.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -27,7 +28,7 @@ const DEFAULT_FABRIC = "cotton_jersey";
 
 // ---- state --------------------------------------------------------------------------------
 let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
-let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id, ids?}: ids a box selection
+let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar"|"internal"|"tack", id, ids?, index?}: ids a box selection, index an internal line's
 let pointSel = [];            // the selected piece's box-selected point indices (the Edit tool)
 let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
 let forms = [];               // the dress forms in assets/forms.json, as the worker read them
@@ -117,10 +118,11 @@ function renderIssues() {
 function exists(sel) {
     if (!sel) return true;
     if (sel.kind === "avatar") return !!avatar;
+    if (sel.kind === "internal") return !!nodes.find((n) => n.id === sel.id)?.internal?.[sel.index];
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
-    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}) } : null;
+    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}), ...(sel.index !== undefined ? { index: sel.index } : {}) } : null;
     pointSel = [];                // the worker drops its own on `select`
     selSeq++;
     if (selection?.kind === "fabric") pickedFabric = selection.id;
@@ -175,7 +177,7 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar" };
+const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar", internal: "Internal line on", tack: "Tack" };
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
@@ -251,8 +253,15 @@ function renderProps() {
     if (target) { target.focus(); target.select?.(); }
 }
 
-// The selected pieces (with their seams) or seam out of the document: one undo step.
+// The selected pieces (with their seams), seam, tack or internal line out of the document: one undo step.
 function removeSelected() {
+    if (selection && (selection.kind === "tack" || selection.kind === "internal") && exists(selection)) {
+        cancelPreview();
+        change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${selection.kind === "tack" ? "tack" : "line"}` });
+        status(selection.kind === "tack" ? "removed the tack" : "removed the line");
+        setSelection(null);
+        return true;
+    }
     if (!selection || (selection.kind !== "pattern" && selection.kind !== "seam") || !nodes.some((n) => n.id === selection.id)) return false;
     cancelPreview();
     const kind = selection.kind;
@@ -928,7 +937,7 @@ function onDoc(m) {
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection
-    const kept = survivingSelection(selection, (id) => exists({ kind: selection.kind, id }));
+    const kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
     if (kept !== selection) setSelection(kept);
     else if (pointSel.length && pointCount() !== points0) { pointSel = []; post({ kind: "pointSel", indices: [] }); }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
@@ -937,7 +946,12 @@ function onDoc(m) {
     renderBrowser();
     renderProps();
     renderIssues();
+    simPanel.render(nodes);
     draw2d();
 }
+
+// The Simulation panel (simpanel.js): its edits are ops on the garment, applied to a live cloth
+// by the drape as any change is.
+const simPanel = new SimPanel($("simpanel"), { commit: (ops, message) => change("ops", { ops, message }), status });
 
 setTool("edit");
