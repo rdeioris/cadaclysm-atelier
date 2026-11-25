@@ -15,7 +15,8 @@ import { groupOf, groupSelection, membersOf } from "./seamgroup.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, avatarFormat, fabricColours, isSelected, survivingSelection } from "./arrange.js";
-import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch } from "./props.js";
+import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch,
+    sizeTable, gradeRows, gradeRuleAction, gradeCopyAction, gradeDistributeAction, gradeProportionalAction } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
@@ -98,14 +99,23 @@ function status(text, error = false) {
 }
 // The size a click-placed shape asks for: [width, height] in mm, or null when cancelled.
 function askSize(shape) {
+    return askPair(`${shape === "ellipse" ? "Ellipse" : "Rectangle"}: width and height`, ["Width", "Height"], (w, h) => w > 0 && h > 0);
+}
+// Two numbers by the size dialog: [a, b], or null when cancelled or `ok(a, b)` refuses them.
+// The fields keep what was typed last (the rectangle's size), unless `values` are given.
+function askPair(title, labels, ok, values = null) {
     const d = $("size-dialog");
-    $("size-title").textContent = `${shape === "ellipse" ? "Ellipse" : "Rectangle"}: width and height`;
+    $("size-title").textContent = title;
+    $("size-wl").textContent = labels[0]; $("size-hl").textContent = labels[1];
+    const keep = [$("size-w").value, $("size-h").value];
+    if (values) { $("size-w").value = String(values[0]); $("size-h").value = String(values[1]); }
     d.returnValue = "";
     d.showModal();
     $("size-w").focus(); $("size-w").select();
     return new Promise((resolve) => d.addEventListener("close", () => {
-        const w = Number($("size-w").value), h = Number($("size-h").value);
-        resolve(d.returnValue === "ok" && w > 0 && h > 0 ? [w, h] : null);
+        const raw = [$("size-w").value, $("size-h").value], [w, h] = raw.map(Number);
+        if (values) { $("size-w").value = keep[0]; $("size-h").value = keep[1]; }
+        resolve(d.returnValue === "ok" && raw.every((t) => t.trim() !== "") && Number.isFinite(w) && Number.isFinite(h) && ok(w, h) ? [w, h] : null);
     }, { once: true }));
 }
 // Cancel is not a submit button: Enter in a field submits OK, the form's only one
@@ -299,11 +309,117 @@ function renderProps() {
         const d = drawings.get(selection.id);
         if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides${d.holes?.length ? `, ${d.holes.length} hole${d.holes.length === 1 ? "" : "s"}` : ""}, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
     }
+    if (selection.kind === "pattern") kids.push(...gradeSection());
     el.replaceChildren(...kids);
     const inputs = [...el.querySelectorAll("[data-key]")];
     if (!focusKey && tab) { const i = inputs.findIndex((x) => x.dataset.key === tab.key); focusKey = inputs[i + tab.dir]?.dataset.key ?? null; }
     const target = focusKey && inputs.find((x) => x.dataset.key === focusKey);
     if (target) { target.focus(); target.select?.(); }
+}
+
+// ---- grading (A3 spec §2-§5): the size select, the Sizes dialog, the grade table, Show sizes ----
+const make = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+// a grading change: after the gesture in flight, an open preview dropped first
+const gradeChange = (kind, payload) => afterGesture(() => { cancelPreview(); change(kind, payload); });
+function renderSizes() {
+    const t = sizeTable(nodes), sel = $("size-select"), sig = JSON.stringify(t?.sizes ?? null) + (t?.base ?? "");
+    if (sel.dataset.sig !== sig) {
+        sel.dataset.sig = sig;
+        sel.replaceChildren(...(t ? t.sizes.map((s) => make("option", { value: s, textContent: s === t.base ? `${s} (base)` : s })) : [make("option", { value: "", textContent: "one size" })]));
+    }
+    sel.disabled = !t;
+    sel.value = t?.current ?? "";
+    document.body.dataset.size = t?.current ?? "";
+    if ($("sizes-dialog").open) renderSizesDialog();
+}
+$("size-select").addEventListener("change", (e) => { const size = e.target.value; status(`size ${size}`, false); gradeChange("size", { size }); });
+// The Sizes dialog: each change one batch (the worker's `sizes`), the list drawn again from the doc
+function renderSizesDialog() {
+    const t = sizeTable(nodes), list = $("sizes-list"), sig = JSON.stringify(t);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    const sizes = t?.sizes ?? [];
+    list.replaceChildren(...sizes.map((s, i) => {
+        const name = make("input", { type: "text", value: s, title: "Rename: type and press Enter" });
+        name.dataset.size = s;
+        name.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); name.blur(); } });
+        name.addEventListener("change", () => { const to = name.value.trim(); if (to && to !== s) gradeChange("sizes", { action: { op: "rename", from: s, to } }); else name.value = s; });
+        const base = make("input", { type: "radio", name: "size-base", checked: s === t.base, title: "The base: the size drafted; the others are graded from it" });
+        base.dataset.base = s;
+        base.addEventListener("change", () => gradeChange("sizes", { action: { op: "base", name: s } }));
+        const move = (k) => { const order = [...sizes]; [order[i], order[i + k]] = [order[i + k], order[i]]; gradeChange("sizes", { action: { op: "reorder", sizes: order } }); };
+        const up = make("button", { type: "button", textContent: "↑", title: "Earlier", disabled: i === 0 }), down = make("button", { type: "button", textContent: "↓", title: "Later", disabled: i === sizes.length - 1 });
+        up.addEventListener("click", () => move(-1)); down.addEventListener("click", () => move(1));
+        const remove = make("button", { type: "button", textContent: "Remove", title: s === t.base ? "The base cannot go: choose another base first" : "Remove the size and its rules", disabled: s === t.base });
+        remove.addEventListener("click", () => gradeChange("sizes", { action: { op: "remove", name: s } }));
+        return make("li", {}, name, make("label", {}, base, " base"), up, down, remove);
+    }));
+}
+function addSize() {
+    const name = $("sizes-name").value.trim();
+    if (!name) { status("a size needs a name", true); return; }
+    $("sizes-name").value = "";
+    gradeChange("sizes", { action: { op: "add", name } });
+}
+$("sizes-open").addEventListener("click", () => { $("sizes-list").dataset.sig = ""; renderSizesDialog(); $("sizes-dialog").showModal(); $("sizes-name").focus(); });
+$("sizes-add").addEventListener("click", addSize);
+$("sizes-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addSize(); } });
+// Show sizes: the worker draws the selected pieces' outlines in every size. Not saved.
+let showSizes = false;
+$("show-sizes").addEventListener("click", () => {
+    showSizes = !showSizes;
+    $("show-sizes").classList.toggle("on", showSizes);
+    document.body.dataset.showSizes = showSizes ? "1" : "";
+    post({ kind: "showSizes", on: showSizes });
+});
+// The panel's grading part for a selected piece in a graded garment: one selected outline point's
+// table (dx, dy per size; typing a row sets its rule), Copy rule to… and Distribute with several
+// points, Proportional… for the selected pieces.
+function gradeSection() {
+    const t = sizeTable(nodes);
+    if (!t || selection?.kind !== "pattern") return [];
+    const id = selection.id, single = !selection.ids || selection.ids.length === 1, out = [];
+    const tools = make("div", { className: "grade-tools" });
+    const button = (key, text, title, fn, disabled = false) => { const b = make("button", { type: "button", textContent: text, title, disabled }); b.dataset.key = key; b.addEventListener("click", fn); tools.append(b); return b; };
+    const fail = (e) => status(e.message ?? String(e), true);
+    if (single && pointSel.length === 1) {
+        const v = pointSel[0], rows = gradeRows(nodes, id, v);
+        out.push(make("h4", { textContent: `Grade: point ${v + 1}` }));
+        const cell = (row, axis) => {
+            const input = make("input", { type: "text", value: String(Number(row.d[axis].toPrecision(7))), disabled: row.base, title: row.base ? "The base size is drafted: its rule is 0" : `${"xy"[axis]} move in ${row.size} from the base, mm` });
+            input.dataset.key = `grade-d${"xy"[axis]}-${row.size}`;
+            input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+            input.addEventListener("change", () => {
+                try {
+                    const typed = (a) => $("props").querySelector(`[data-key="grade-d${a}-${row.size}"]`).value;
+                    gradeChange("grade", { action: gradeRuleAction(nodes, id, v, row.size, typed("x"), typed("y")) });
+                } catch (e) { fail(e); renderProps(); }
+            });
+            return make("td", {}, input);
+        };
+        out.push(make("table", { className: "grade" }, make("tr", {}, make("th", { textContent: "Size" }), make("th", { textContent: "dx (mm)" }), make("th", { textContent: "dy (mm)" })),
+            ...rows.map((row) => make("tr", { className: row.current ? "current" : "" }, make("td", { textContent: row.base ? `${row.size} (base)` : row.size }), cell(row, 0), cell(row, 1)))));
+    } else if (single && pointSel.length > 1) {
+        out.push(make("h4", { textContent: `Grade: ${pointSel.length} points` }));
+        const from = make("select", { title: "The point whose rules Copy rule to… copies" }, ...pointSel.map((v) => make("option", { value: String(v), textContent: `from point ${v + 1}` })));
+        from.dataset.key = "grade-from";
+        tools.append(from);
+        button("grade-copy", "Copy rule to…", "Copy the From point's rules (every size) to the other selected points", () => {
+            try { gradeChange("grade", { action: gradeCopyAction(id, Number(from.value), pointSel) }); } catch (e) { fail(e); }
+        });
+        const n = nodes.find((x) => x.id === `${id}_outline`)?.path?.segments?.length ?? 0;
+        button("grade-distribute", "Distribute", "The points between the two selected (the shorter way round) get rules interpolated by length, every size", () => {
+            try { gradeChange("grade", { action: gradeDistributeAction(id, pointSel, n) }); } catch (e) { fail(e); }
+        }, pointSel.length !== 2);
+    } else out.push(make("h4", { textContent: "Grade" }));
+    button("grade-proportional", "Proportional…", "Every point of the selected pieces graded from a width and height change per size step", async () => {
+        const ids = liveIds(), wh = await askPair("Proportional: the change per size step", ["Width step", "Height step"], () => true, [20, 10]);
+        if (!wh) return;
+        try { gradeChange("grade", { action: gradeProportionalAction(ids, ...wh) }); status(`proportional: ${wh[0]} mm wide, ${wh[1]} mm high a size`, false); } catch (e) { fail(e); }
+    });
+    out.push(tools);
+    if (single && !pointSel.length) out.push(make("p", { className: "dim", textContent: "Select a point (Edit) for its grade table; in a size other than the base, a point dragged sets its rule." }));
+    return out;
 }
 
 // ---- the pattern transforms and the in-app clipboard (spec §2) -----------------------------
@@ -501,7 +617,7 @@ function handle(r) {
         });
     }
     if (r.select !== undefined) setSelection(r.select);
-    if (r.pointSel || r.ipointSel) { pointSel = r.pointSel ?? pointSel; ipointSel = r.ipointSel ?? ipointSel; postPointSel(); }
+    if (r.pointSel || r.ipointSel) { pointSel = r.pointSel ?? pointSel; ipointSel = r.ipointSel ?? ipointSel; postPointSel(); renderProps(); }
     if (r.done) setTool("edit");
     else if (toolStale && !previewing && !gesture2d()) freshTool();
     syncSnapBase();                       // done, or the overlay emptied: no last point, no lock
@@ -1119,7 +1235,7 @@ worker.onmessage = ({ data: m }) => {
         case "formFailed": formAskedAt = null; break;
         case "sim": onSim(m); break;
         case "at2d": onAt2d(m); break;
-        case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;
+        case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; document.body.dataset.nest = m.nest ?? ""; break;
         case "picked": if (m.tape) tapeDo(tape.click(m.target, m.point)); else if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "mapValue":
             mapHovers.done();
@@ -1169,6 +1285,7 @@ function onDoc(m) {
     if (previewing || gesture2d()) toolStale = true; else freshTool();
     renderBrowser();
     renderProps();
+    renderSizes();
     renderIssues();
     draw2d();
 }

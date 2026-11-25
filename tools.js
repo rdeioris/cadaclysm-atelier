@@ -8,6 +8,7 @@ import { makeSewingTool } from "./sewing.js";
 import { makeGroupTool } from "./seamgroup.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
+import { gradingOf } from "./grading.js";
 
 export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -17,6 +18,12 @@ const TINY = 1e-9;
 const tols = (ctx) => { const k = ctx.pxToWorld > 0 ? ctx.pxToWorld : 1; return { CLOSE: CLOSE_PX * k, DRAG: DRAG_PX * k }; };
 
 const nodeOf = (ctx, id) => ctx.nodes.find((n) => n.id === id);
+// In a graded size other than the base (A3 spec §3) a drag of an outline point sets its rule; a
+// handle moves only in the base: the refusal's text, or null.
+export function baseOnlyText(nodes) {
+    const t = gradingOf(nodes.find((n) => n.id === "garment"));
+    return t && t.current !== t.base ? `edit the shape in the base size (${t.base})` : null;
+}
 const outlineOf = (ctx, id) => nodeOf(ctx, `${id}_outline`)?.path;
 const selectedId = (ctx) => (ctx.selection?.kind === "pattern" ? ctx.selection.id : null);
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -480,6 +487,9 @@ const TOOLS = {
                     start = w; hit = h; sent = false; locked = isLocked(h);
                     // a seamed edge's press may be the click that selects its seam: refused on the drag
                     if (locked && !h.seam) { hit = null; return { status: LOCKED }; }
+                    // a handle in a graded size: refused at the press, before any preview (A3)
+                    const graded = h.kind === "handle" ? baseOnlyText(ctx.nodes) : null;
+                    if (graded) { hit = null; return { status: graded }; }
                     // the box-selected points belong to the selected piece (read now: the app keeps one tool across them)
                     chosen = new Set(h.id === selectedId(ctx) ? ctx.pointSel ?? [] : []);
                 }

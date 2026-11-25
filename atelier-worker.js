@@ -150,12 +150,23 @@ function setRects(r) {
     if (gizmo) postGizmo();
 }
 
+// Show sizes (A3 spec §5): the selected pieces' outlines in every other size, kept until the
+// garment's grades, its size table or the selection change. Not saved.
+let showSizes = false, nestCache = { key: null, nest: [] };
+function sizeNest(nodes) {
+    if (!showSizes || selection?.kind !== "pattern") return [];
+    const ids = selection.ids ?? [selection.id], byId = new Map(nodes.map((n) => [n.id, n]));
+    const key = JSON.stringify([byId.get("garment")?.meta?.atelier?.grading ?? null, ids, ids.map((id) => byId.get(id)?.meta?.atelier?.grade ?? null)]);
+    if (nestCache.key !== key) nestCache = { key, nest: atelier.sizeNest(ids, nodes) };
+    return nestCache.nest;
+}
 function refresh2d() {
     if (!viewer || !atelier || !items2d) return;
     const nodes = atelier.nodes();
     const r = viewer.frameReport?.()[1], scale = r && r.rect[2] > 0 ? mmPerPx(r) : null;
-    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale }));
-    post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d });
+    const nest = sizeNest(nodes);
+    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale, nest }));
+    post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d, nest: nest.map((g) => `${g.id}:${g.size}`).join(",") });
 }
 
 function fit2d() {
@@ -872,6 +883,7 @@ self.onmessage = async ({ data }) => {
             }
             case "pointSel": pointSel = data.indices ?? []; ipointSel = data.internal ?? []; refresh2d(); break;
             case "tool2d": tool2d = data.name; refresh2d(); break;
+            case "showSizes": showSizes = !!data.on; refresh2d(); break;
             case "fit2d": if (rects) fit2d(); break;
         }
     } catch (e) {

@@ -1383,6 +1383,22 @@ export class Atelier {
         return this.regradeOps(t, grades, nodes);
     }
 
+    // Show sizes (spec §5): the outlines of pieces `ids` in every size but the current one, as the
+    // switch grades them (grading.js gradedPath), not committed. -> [{id, size, k (its place in
+    // the table), n (sizes), beziers}]
+    sizeNest(ids, nodes = this.nodes()) {
+        const t = this.grading(nodes), byId = m.byId(nodes), out = [];
+        if (!t) return out;
+        for (const id of ids) {
+            const g = G.gradeOf(byId.get(id));
+            if (!g) continue;
+            t.sizes.forEach((size, k) => {
+                if (size !== t.current) out.push({ id, size, k, n: t.sizes.length, beziers: this.beziersOf(G.gradedPath(g.base, g.rules, size)) });
+            });
+        }
+        return out;
+    }
+
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }
     // The pieces of an AAMA DXF as ops adding them, in `fabric` (absent or unknown: the first fabric).
     fromDxf(dxf, fabric) {

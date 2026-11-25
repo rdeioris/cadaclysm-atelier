@@ -64,6 +64,8 @@
         <span class="sep"></span>
         <button data-toggle="grid" title="Snap to the 10 mm grid">Grid</button>
         <button data-command="fit" title="Fit the pieces (F)">Fit</button>
+        <span class="sep"></span>
+        <select id="size-select" title="Size: every graded piece in this size (one undo step); the base is drafted, the others graded from it"></select><button id="sizes-open" title="Sizes: add, rename, remove and reorder the sizes; choose the base">Sizes…</button><button id="show-sizes" title="Show sizes: every size's outline of the selected pieces (the graded nest)">Show sizes</button>
     </div>
     <div class="well" id="well"><canvas id="view" tabindex="0"></canvas><div id="map-legend" hidden><span class="map-title"></span><div class="map-bar"></div><div class="map-range"><input class="map-lo" id="map-lo" inputmode="decimal" title="The map's minimum (blue)"> <span class="map-unit"></span><span class="map-dash">to</span><input class="map-hi" id="map-hi" inputmode="decimal" title="The map's maximum (red)"> <span class="map-unit"></span></div><div id="map-value"></div></div><div id="typed" tabindex="-1" hidden><input id="typed-length" inputmode="decimal" title="Length, mm"> mm <input id="typed-angle" inputmode="decimal" title="Angle, degrees (blank: toward the pointer)"> °</div><div id="point-menu" role="menu" hidden><button type="button" id="point-curve" role="menuitem">Make curve point</button><button type="button" id="point-corner" role="menuitem">Make corner</button></div></div>
     <aside id="dock">
@@ -84,9 +86,15 @@
 </footer>
 <dialog id="size-dialog"><form method="dialog">
     <p id="size-title"></p>
-    <label>Width <input id="size-w" inputmode="decimal" value="100"> mm</label>
-    <label>Height <input id="size-h" inputmode="decimal" value="100"> mm</label>
+    <label><span id="size-wl">Width</span> <input id="size-w" inputmode="decimal" value="100"> mm</label>
+    <label><span id="size-hl">Height</span> <input id="size-h" inputmode="decimal" value="100"> mm</label>
     <menu><button id="size-cancel" type="button">Cancel</button><button id="size-ok" value="ok">OK</button></menu>
+</form></dialog>
+<dialog id="sizes-dialog"><form method="dialog">
+    <p>Sizes <span class="dim">(in order; the base is drafted, the others graded from it)</span></p>
+    <ol id="sizes-list"></ol>
+    <p><label>New size <input id="sizes-name" placeholder="L"></label> <button type="button" id="sizes-add">Add</button></p>
+    <menu><button id="sizes-close" value="close">Close</button></menu>
 </form></dialog>
 <script type="module" src="atelier.js"></script>
 </body>

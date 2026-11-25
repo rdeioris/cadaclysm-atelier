@@ -5,6 +5,7 @@ import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fa
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR, AT_LABEL, CUSTOM_LABEL } from "./arrange.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
 import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
+import { gradingOf, gradeOf, ruleOf } from "./grading.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 // The notch kinds the kernel draws (spec §5), in its order, as the panel names them.
@@ -279,4 +280,46 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         return [{ op: "set", id, fields: { [key]: DISPLAY[key].fromShown(value) } }];
     }
     throw new Error(`nothing to edit for ${selection.kind}`);
+}
+
+// ---- grading (A3 spec §3): the grade table of a selected outline point and its shortcuts ----
+// The garment's size table, or null (an ungraded garment).
+export const sizeTable = (nodes) => gradingOf(find(nodes, "garment"));
+// Point `vertex` of piece `id`'s rules as table rows: {size, base, current, d: [dx, dy]} for each
+// size (the base row 0, 0), or null for an ungraded garment.
+export function gradeRows(nodes, id, vertex) {
+    const t = sizeTable(nodes);
+    if (!t) return null;
+    const rules = gradeOf(find(nodes, id))?.rules ?? {};
+    return t.sizes.map((size) => ({ size, base: size === t.base, current: size === t.current, d: size === t.base ? [0, 0] : [...ruleOf(rules, vertex, size)] }));
+}
+// A typed row: the `grade` message's {op: "rule"} (dx, dy as typed text or numbers).
+export function gradeRuleAction(nodes, id, vertex, size, dx, dy) {
+    const t = sizeTable(nodes);
+    if (!t) throw new Error("no sizes: add sizes first");
+    if (size === t.base) throw new Error(`the base size's rule is 0, 0`);
+    const d = [dx, dy].map((v) => (typeof v === "string" ? (v.trim() === "" ? 0 : Number(v)) : v));
+    if (!d.every(Number.isFinite)) throw new Error("a grade rule is two numbers of mm");
+    return { op: "rule", id, vertex, size, d };
+}
+// Copy rule to…: point `from`'s rules onto the other selected points.
+export function gradeCopyAction(id, from, points) {
+    const to = points.filter((v) => v !== from);
+    if (!to.length) throw new Error("copy rule: select the points to copy it to as well");
+    return { op: "copy", id, from, to };
+}
+// Distribute: two selected points; the run between them the shorter way round an outline of
+// `n` points (the fewer points between; a tie forward from the first).
+export function gradeDistributeAction(id, points, n) {
+    if (points.length !== 2) throw new Error("distribute: select two points");
+    const [a, b] = points, fwd = (b - a + n) % n - 1, back = (a - b + n) % n - 1;
+    if (fwd < 1 && back < 1) throw new Error("distribute: no points between these two");
+    return fwd >= 1 && (back < 1 || fwd <= back) ? { op: "distribute", id, from: a, to: b } : { op: "distribute", id, from: b, to: a };
+}
+// Proportional…: a width and height change per size step (mm) for the selected pieces.
+export function gradeProportionalAction(ids, dw, dh) {
+    if (!ids.length) throw new Error("proportional: select a piece");
+    const d = [dw, dh].map(Number);
+    if (!d.every(Number.isFinite)) throw new Error("proportional: a width and a height change in mm");
+    return { op: "proportional", ids: [...ids], dw: d[0], dh: d[1] };
 }

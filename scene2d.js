@@ -29,6 +29,10 @@ const toHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2,
 /** A fabric colour mixed 30 % over the background: opaque, so the lines read over it (ruling 17). */
 export const fillColour = (c, k = 0.3) => { const a = hex(c), b = hex(BG); return toHex(a.map((v, i) => b[i] + (v - b[i]) * k)); };
 
+/** Size k of n's outline colour in Show sizes: the accent mixed over the background, 55 % for the
+ *  first size up to all of it for the last. */
+export const sizeColour = (k, n) => fillColour(ACCENT, n > 1 ? 0.55 + (0.45 * k) / (n - 1) : 1);
+
 // [x0, y0, x1, y1, ...] -> segments x y z x y z, closed when asked
 function segs(ring, closed = false, z = 0) {
     const out = [];
@@ -106,7 +110,8 @@ function xformSpecs(drawings, selection, mmPerPx, z) {
 }
 
 // xform: the Move tool is on (its box and handles round the selection); mmPerPx the 2D scale.
-export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null }) {
+// nest: Show sizes' outlines (kernel.js sizeNest), each drawn in the accent's ramp by its size.
+export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null, nest = [] }) {
     const out = [];
     const picked = (id) => selection?.kind === "pattern" && (selection.id === id || selection.ids?.includes(id));
     const ordered = [...drawings].sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0));
@@ -139,6 +144,10 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });
             out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], z.line], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig });
         }
+        // Show sizes (A3 spec §5): every other size's outline, thin and dashed, in a ramp of the
+        // accent from the smallest size (faint) to the largest; the current size is the outline itself, solid
+        for (const g of nest) if (g.id === id) out.push({ key: `${id}/size/${g.size}`, show: "curves", data: liftBeziers(g.beziers, z.line), colour: sizeColour(g.k, g.n), dash: { dash: 4, gap: 2 }, onTop: true,
+            what: { kind: "sizes", id, size: g.size }, sig: `${Array.from(g.beziers).join(",")}@${r}` });
         if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
         // the edit points: not under the Move tool, whose handles would share a rectangle's corners
         if (!xform && selection?.kind === "pattern" && selection.id === id) {
