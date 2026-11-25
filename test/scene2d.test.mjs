@@ -1,8 +1,8 @@
 // The 2D scene against a fake viewer: what each piece shows, that an unchanged scene shows
 // nothing again, that a moved piece is updated in place, that the item map answers picks.
 import assert from "node:assert/strict";
-import { specs2d, Items2d, Overlay2d, fillColour, LAYER_2D, bandOf, TICK_TURN } from "../scene2d.js";
-import { hitOf, pointsOf } from "../view2d.js";
+import { specs2d, Items2d, Overlay2d, fillColour, LAYER_2D, bandOf, ACCENT } from "../scene2d.js";
+import { hitOf, pointsOf, xformHandles } from "../view2d.js";
 
 function fakeViewer() {
     let next = 1;
@@ -28,7 +28,7 @@ const square = (x) => {
 const drawing = (id, x, extra = {}) => ({
     id, label: id.toUpperCase(), fabric: "f_x", layer: 0, sew: [x, 0, x + 100, 0, x + 100, 50, x, 50, x, 0], cut: [x - 10, -10, x + 110, -10, x + 110, 60, x - 10, 60, x - 10, -10],
     samples: [0, x, 0, 100, x + 100, 0, 150, x + 100, 50, 250, x, 50], sides: [0, 100, 150, 250, 300],
-    notches: [[x + 50, 0, 0]], internal: [], holes: [], grain: [x + 50, 10, x + 50, 40], bounds: [x, 0, x + 100, 50],
+    notches: [[x + 50, 0, 0]], notchLines: [[x + 50, 0, x + 50, 6]], internal: [], holes: [], grain: [x + 50, 10, x + 50, 40], bounds: [x, 0, x + 100, 50],
     beziers: square(x), fill: { positions: Float32Array.of(x, 0, -1, x + 100, 0, -1, x, 50, -1), indices: Uint32Array.of(0, 1, 2) }, sig: `${id}@${x}`, ...extra,
 });
 const nodes = [{ id: "f_x", kind: "garment.fabric" }, { id: "p1_outline", kind: "profile.path", path: { start: [0, 0], segments: [
@@ -40,7 +40,7 @@ const state = (over = {}) => ({ drawings: [drawing("p1", 0), drawing("p2", 200)]
 // what a piece shows
 const specs = specs2d(state());
 const keys = specs.map((s) => s.key);
-for (const k of ["p1/fill", "p1/sew", "p1/cut", "p1/notches", "p1/grain", "p1/grainhead", "p1/label", "seam/s1/a", "seam/s1/b", "seam/s1/no"]) assert.ok(keys.includes(k), `${k} in ${keys}`);
+for (const k of ["p1/fill", "p1/sew", "p1/cut", "p1/notch/0", "p1/grain", "p1/grainhead", "p1/label", "seam/s1/a", "seam/s1/b", "seam/s1/no"]) assert.ok(keys.includes(k), `${k} in ${keys}`);
 assert.ok(!keys.includes("p1/points"), "handles only on the selected piece");
 const sew = specs.find((s) => s.key === "p1/sew");
 assert.equal(sew.show, "curves"); assert.deepEqual(sew.what, { kind: "sew", id: "p1" });
@@ -83,10 +83,13 @@ const against = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 100, 
 assert.deepEqual(against.find((x) => x.key === "seam/s1/no").offset, [8, 0], "a seam range running against the outline: still out of it");
 const top = specs2d(state({ seams: [{ ...seams[0], points_a: [100, 50, 0, 50] }] }));
 assert.deepEqual(top.find((x) => x.key === "seam/s1/no").offset, [0, 8], "on the top side: up the screen (the View's offset y runs up)");
-// a notch tick: its glyph turned so the stroke runs along the outward normal (p1's notch is on its bottom side)
-const ticks = specs.find((x) => x.key === "p1/notches");
-const want = [Math.cos(-Math.PI / 2 + TICK_TURN), Math.sin(-Math.PI / 2 + TICK_TURN), 0];
-Array.from(ticks.glyph.dir).forEach((v, i) => assert.ok(Math.abs(v - want[i]) < 1e-9, `tick dir ${ticks.glyph.dir} vs ${want}`));
+// a notch: the kernel's mark as lines, picked as that notch; the selected one in the accent
+const mark = specs.find((x) => x.key === "p1/notch/0");
+assert.equal(mark.show, "lines");
+assert.deepEqual(mark.data, [50, 0, bandOf(0).line, 50, 6, bandOf(0).line]);
+assert.deepEqual(mark.what, { kind: "notch", id: "p1", index: 0 });
+assert.equal(specs2d(state({ selection: { kind: "notch", id: "p1", index: 0 } })).find((x) => x.key === "p1/notch/0").colour, ACCENT);
+assert.notEqual(specs2d(state({ selection: { kind: "notch", id: "p2", index: 0 } })).find((x) => x.key === "p1/notch/0").colour, ACCENT);
 
 // apply: everything once on layer 1, nothing again for the same scene
 const v = fakeViewer(), items = new Items2d(v);
@@ -104,7 +107,7 @@ assert.deepEqual(v.calls, [], "an unchanged scene calls nothing");
 items.apply(specs2d(state({ hover: "p1" })));
 assert.ok(v.calls.length >= 1 && v.calls.every((c) => c[0] === "setColour"), "the sew line and the notches recoloured, nothing shown again");
 const recoloured = v.calls.map((c) => c[1]);
-for (const k of ["p1/sew", "p1/notches"]) assert.ok(recoloured.includes(items.item(k)), `${k} recoloured on hover`);
+for (const k of ["p1/sew", "p1/notch/0"]) assert.ok(recoloured.includes(items.item(k)), `${k} recoloured on hover`);
 v.calls.length = 0;
 // a moved piece: its curves and lines in place, its fill and glyphs shown again
 const moved = state({ drawings: [drawing("p1", 10), drawing("p2", 200)] });
@@ -146,6 +149,15 @@ assert.ok(v.calls.some((c) => c[0] === "remove") && v.calls.some((c) => c[0] ===
 v.calls.length = 0;
 o.set({});
 assert.ok(v.calls.some((c) => c[0] === "remove"), "no text: removed");
+// the Ruler's labels: a text each, left alone while unchanged, shown again when they change
+v.calls.length = 0;
+o.set({ labels: [{ at: [0, 0], text: "50.0 mm" }, { at: [10, 0], text: "20.0 mm" }] });
+assert.deepEqual(v.calls.filter((c) => c[0] === "showText").map((c) => c[1]), ["50.0 mm", "20.0 mm"]);
+v.calls.length = 0;
+o.set({ labels: [{ at: [0, 0], text: "50.0 mm" }, { at: [10, 0], text: "20.0 mm" }] });
+assert.ok(!v.calls.some((c) => c[0] === "showText" || c[0] === "remove"), "unchanged labels: no call");
+o.set({});
+assert.equal(v.calls.filter((c) => c[0] === "remove").length, 2, "no labels: both removed");
 // holes, internal lines: a holed piece's items
 const holeCut = [430, 10, 470, 10, 470, 40, 430, 40];
 const holed = drawing("p3", 400, {
@@ -206,4 +218,39 @@ p.handles.forEach((h, k) => assert.deepEqual(hitOf(handles.what, { node: k }, dm
 // a pick on a tangent line grabs its handle: the conic's tangent from its end (100, 50) to (120, 25)
 assert.deepEqual(hitOf(tangents.what, { node: 0, point: [110, 37.5, 3] }, dmap), { kind: "handle", id: "p1", index: 1, which: "control" });
 assert.deepEqual(hitOf(tangents.what, { node: 0, point: [15, -5, 3] }, dmap), { kind: "handle", id: "p1", index: 0, which: "c1" });
+
+// A3: the Move tool's box and handles round the selection's union bounds, above every piece
+{
+    assert.deepEqual(xformHandles([0, 0, 100, 50], 10).map((h) => [h.handle, h.at]), [
+        ["nw", [0, 50]], ["n", [50, 50]], ["ne", [100, 50]], ["e", [100, 25]], ["se", [100, 0]], ["s", [50, 0]], ["sw", [0, 0]], ["w", [0, 25]], ["rot", [50, 60]]]);
+    const multi = { kind: "pattern", id: "p1", ids: ["p1", "p2"] };
+    assert.ok(!specs2d(state({ selection: multi })).some((s) => s.key.startsWith("xform/")), "no box without the Move tool");
+    assert.ok(!specs2d(state({ selection: null, xform: true })).some((s) => s.key.startsWith("xform/")), "no box without a selection");
+    const xs = specs2d(state({ selection: multi, xform: true, mmPerPx: 0.5 }));
+    const top = bandOf(2).seam;
+    const frame = xs.find((s) => s.key === "xform/box"), scale = xs.find((s) => s.key === "xform/scale"), rot = xs.find((s) => s.key === "xform/rot");
+    assert.equal(frame.show, "lines"); assert.deepEqual(frame.what, { kind: "xformBox", id: "p1" });
+    assert.deepEqual([...new Set(zOf(frame))], [top], "the frame above every piece's band");
+    assert.equal(scale.show, "points"); assert.equal(scale.onTop, true);
+    assert.deepEqual(Array.from(scale.data), [[0, 50], [150, 50], [300, 50], [300, 25], [300, 0], [150, 0], [0, 0], [0, 25]].flatMap((p) => [...p, top]), "the union [0, 0, 300, 50]");
+    assert.deepEqual(Array.from(rot.data), [150, 50 + 28 * 0.5, top], "28 px above the top side");
+    // the pick answers which handle; a press on the frame is the selection
+    ["nw", "n", "ne", "e", "se", "s", "sw", "w"].forEach((h, k) => assert.deepEqual(hitOf(scale.what, { node: k }, dmap), { kind: "xform", id: "p1", handle: h }));
+    assert.deepEqual(hitOf(rot.what, { node: 0 }, dmap), { kind: "xform", id: "p1", handle: "rot" });
+    assert.equal(hitOf(rot.what, { node: 3 }, dmap), null);
+    assert.deepEqual(hitOf(frame.what, { node: 0, point: [0, 10, top] }, dmap), { kind: "pattern", id: "p1" });
+    // the edit points stand down under the Move tool (a rectangle's corners are the box's)
+    assert.ok(!specs2d(state({ selection: { kind: "pattern", id: "p1" }, xform: true })).some((s) => s.key === "p1/points"));
+    // no scale known: a 20 mm offset
+    assert.deepEqual(Array.from(specs2d(state({ selection: { kind: "pattern", id: "p1" }, xform: true })).find((s) => s.key === "xform/rot").data).slice(0, 2), [50, 70]);
+}
+// an unfolded piece's fold (spec §6): a dashed guide, picked as its piece
+{
+    const specs = specs2d(state({ drawings: [drawing("p1", 0, { fold: [0, 0, 0, 50] })] }));
+    const fold = specs.find((s) => s.key === "p1/fold");
+    assert.deepEqual(Array.from(fold.data), [0, 0, bandOf(0).line, 0, 50, bandOf(0).line]);
+    assert.ok(fold.dash);
+    assert.deepEqual(hitOf(fold.what, { point: [0, 10, 0] }, new Map()), { kind: "pattern", id: "p1" });
+    assert.ok(!specs2d(state()).some((s) => s.key.endsWith("/fold")));
+}
 console.log("scene2d: ok");

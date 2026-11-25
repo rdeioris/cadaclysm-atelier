@@ -24,7 +24,7 @@ const one = (ops) => { assert.equal(ops.length, 1); return ops[0].fields; };
 {
     const sel = { kind: "pattern", id: "p1" };
     const f = fieldsFor(sel, nodes, new Map());
-    assert.deepEqual(keys(f).slice(-4), ["frozen", "strengthen", "pressure", "remove"], "before Remove piece");
+    { const k = keys(f), at = k.indexOf("slot"); assert.deepEqual(k.slice(at + 1, at + 4), ["frozen", "strengthen", "pressure"], "after Slot, before the transforms"); }
     assert.equal(f.find((x) => x.key === "frozen").value, "false");
     assert.equal(f.find((x) => x.key === "strengthen").value, 1);
     assert.equal(f.find((x) => x.key === "pressure").unit, "Pa");

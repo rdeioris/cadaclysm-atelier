@@ -19,6 +19,10 @@
 //     ATELIER_SHOT_HOLES=holes.png ...                   # also one of the holed piece in 2D
 //     ATELIER_SHOT_MAP=map.png ATELIER_SHOT_TAPE=tape.png  # the drape with the Strain map, a girth on the avatar
 //     ATELIER_SHOT_MAP_OFF=off.png ...                  # also the drape with the map back off
+//     ATELIER_SHOT_FORM_XS=xs.png ATELIER_SHOT_FORM_XL=xl.png  # V3: the custom forms built from XS and XL
+//     ATELIER_SHOT_POSED=posed.png ATELIER_HOODIE=<hoodie.json>  # V3: a garment opened, the form at A-pose with
+//                                                        # the left knee bent (ATELIER_KNEE, default 30), draped
+//     ATELIER_V3_ONLY=1 ...                              # only the V3 block (custom forms), after the page is ready
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -212,7 +216,7 @@ async function check(cdp, base) {
     const patternCount = () => count("patterns", "pattern");
     const seamCount = () => count("seams", "seam");
     const field = (key) => `document.querySelector('#props [data-key="${key}"]')`;
-    const setField = (key, value) => evaluate(`(() => { const e = ${field(key)}; e.value = ${JSON.stringify(String(value))}; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    const setField = (key, value) => evaluate(`(() => { const e = ${field(key)}; if (!e) throw new Error("no field ${key}: the panel has " + [...document.querySelectorAll("#props [data-key]")].map((x) => x.dataset.key).join(", ")); e.value = ${JSON.stringify(String(value))}; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
     // real typing: focus the field, select its text, insert the new text as the keyboard would
     const typeInto = async (key, text) => {
         await evaluate(`(() => { const e = ${field(key)}; e.focus(); e.select(); })()`);
@@ -240,6 +244,98 @@ async function check(cdp, base) {
             await send("DOM.setFileInputFiles", { files: [file], objectId: result.objectId });
         };
         try {
+            // V3: "Custom form…" -- the Body panel, Build from XS and XL, the measured girths, then a
+            // garment draped on a posed form. Shots on ATELIER_SHOT_FORM_XS / _XL / ATELIER_SHOT_POSED.
+            async function v3() {
+                const shotTo = async (file) => { await evaluate(`document.querySelector("#props dd.measured")?.scrollIntoView({ block: "center" })`); await sleep(800); await frames(); const { data } = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(file, Buffer.from(data, "base64")); ok(`screenshot ${file}`); };
+                const formKey = () => evaluate(`document.body.dataset.form ?? ""`);
+                const action = (key) => evaluate(`${field(key)}.click()`);
+                const build = async (what, key = "build") => {
+                    const before = await formKey();
+                    await action(key);
+                    await until(`${what} built`, async () => { const k = await formKey(); return k && k !== before; }, 120000);
+                    const ms = Number(await evaluate(`document.body.dataset.formMs ?? -1`)), inWorker = Number(await evaluate(`document.body.dataset.formWorkerMs ?? -1`));
+                    await noStatusError();
+                    failIfErrors();
+                    return { ms, inWorker };
+                };
+                await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
+                await until("the Form select", () => evaluate(`!!${field("form")}`), 30000);
+                const options = await evaluate(`[...${field("form")}.options].map((o) => o.value).join(",")`);
+                if (!options.endsWith(",custom")) throw new Error(`the Form options: ${options}`);
+                await setField("form", "custom");
+                await until("the Body panel", () => evaluate(`!!${field("build")} && !!${field("left_leg.knee")}`), 30000);
+                await setField("start", "XS");
+                const bust = await evaluate(`${field("bust")}.value`);
+                if (bust !== "80") throw new Error(`Start from XS: bust ${bust}`);
+                const xs = await build("XS");
+                // the read-outs: each girth measured on the form within 2 % of the asked-for
+                const readouts = await evaluate(`[...document.querySelectorAll("#props dd.measured")].map((d) => d.textContent)`);
+                const girths = readouts.map((t) => /^([\d.]+) cm \(asked ([\d.]+)\)$/.exec(t)).filter(Boolean);
+                if (girths.length !== 3) throw new Error(`the girth read-outs: ${JSON.stringify(readouts)}`);
+                for (const [t, measured, asked] of girths) if (Math.abs(measured - asked) / asked > 0.02) throw new Error(`a measured girth is off: ${t}`);
+                if (await evaluate(`${field("form")}.value`) !== "custom") throw new Error("the Form select does not show the custom form");
+                ok(`custom XS built: ${xs.ms} ms from Build to the form shown (${xs.inWorker} ms in the form worker); ${readouts.join("; ")}`);
+                if (process.env.ATELIER_SHOT_FORM_XS) await shotTo(process.env.ATELIER_SHOT_FORM_XS);
+                await setField("start", "XL");
+                const xl = await build("XL");
+                ok(`custom XL built: ${xl.ms} ms (${xl.inWorker} ms in the worker)`);
+                if (process.env.ATELIER_SHOT_FORM_XL) await shotTo(process.env.ATELIER_SHOT_FORM_XL);
+                // undo goes back to the XS form, redo to the XL
+                const xlKey = await formKey();
+                await evaluate(`document.activeElement?.blur()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("undo: the XS form back", async () => { const k = await formKey(); return k && k !== xlKey && JSON.parse(k).measurements.bust === 80; }, 60000);
+                await key("y", "KeyY", 89, 2);
+                await until("redo: the XL form back", async () => (await formKey()) === xlKey, 60000);
+                failIfErrors();
+                ok("undo and redo rebuild the form the document names");
+                // a garment on a posed form: open it (when given), Custom M with a head at A-pose, a knee bent, Apply, drape
+                const hoodie = process.env.ATELIER_HOODIE;
+                if (hoodie) {
+                    await pickInto("menu-open", hoodie, ".json");
+                    await until("the opened garment", async () => (await patternCount()) > 0, 30000);
+                } else {
+                    // earlier steps leave pieces: wait for the sample itself (its open clears the selection)
+                    await evaluate(`document.getElementById("status-text").textContent = ""`);
+                    await evaluate(`document.getElementById("menu-sample").click()`);
+                    await until("the sample", () => evaluate(`document.getElementById("status-text").textContent === "opened the sample: a T-shirt"`), 30000);
+                }
+                await until("a garment", async () => (await patternCount()) > 0, 30000);
+                await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
+                await until("the Body panel", () => evaluate(`!!${field("build")}`), 30000);
+                await setField("start", "M");
+                await setField("head", "true");
+                await setField("preset", "A-pose");
+                const knee = Number(process.env.ATELIER_KNEE ?? 30);
+                await setField("left_leg.knee", String(knee));
+                if (await evaluate(`${field("left_leg.knee")}.value`) !== String(knee)) throw new Error("the knee angle did not stay");
+                await setField("left_leg.knee", "141");
+                if (!/left knee must be from 0 to 140°/.test((await statusError()) ?? "")) throw new Error(`a knee of 141°: ${await evaluate(`document.getElementById("status-text").textContent`)}`);
+                if (await evaluate(`${field("left_leg.knee")}.value`) !== String(knee)) throw new Error("a refused angle was kept");
+                const posed = await build("the posed form", "apply");
+                const lm = JSON.parse(await formKey());
+                if (lm.pose.left_leg.knee !== knee || lm.pose.left_arm.abduction !== 45 || !lm.head) throw new Error(`the posed form: ${await formKey()}`);
+                ok(`posed M (A-pose, left knee ${knee}°, head) built: ${posed.ms} ms (${posed.inWorker} ms in the worker)`);
+                const health = () => evaluate(`document.getElementById("health").textContent`);
+                const frameNo = async () => Number(/frame (\d+)/.exec(await health())?.[1] ?? -1);
+                const simState = () => evaluate(`document.body.dataset.sim ?? "off"`);
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("the cloth running", async () => (await simState()) === "running", 120000);
+                const target = Number(process.env.ATELIER_DRAPE_FRAMES ?? 4);
+                await until(`frame ${target}`, async () => (await frameNo()) >= target || (await simState()) !== "running", Math.max(120000, target * 3000));
+                if ((await simState()) !== "running") throw new Error(`the drape stopped: ${await evaluate(`document.getElementById("status-text").textContent`)}`);
+                if (process.env.ATELIER_SHOT_POSED) await shotTo(process.env.ATELIER_SHOT_POSED);
+                ok(`a garment drapes on the posed form: ${await health()}`);
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("paused", async () => (await simState()) !== "running", 60000);
+                // a shipped form picked: the Body panel closes and the document forgets the form
+                await setField("form", "f-M");
+                await until("f-M back", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M" && !${field("build")}`), 60000);
+                if (await formKey()) throw new Error("a shipped form still names a built one");
+                failIfErrors();
+                ok("a shipped form picked: the Body panel closes");
+            }
             // 1. ready: the new document has one fabric, no patterns, and the avatar
             const clothWanted = (process.env.ATELIER_CLOTH ?? "").toLowerCase();
             await send("Page.navigate", { url: clothWanted === "cpu" ? `${base}/?cloth=cpu` : `${base}/` });
@@ -257,6 +353,7 @@ async function check(cdp, base) {
             if (!clothWanted && !adapter) console.log("note - no WebGPU adapter in this browser: the cloth runs on the CPU");
             await until("the default fabric", async () => (await count("fabrics", "fabric")) === 1, 30000);
             await until("the avatar", async () => (await count("avatar", "avatar")) === 1, 60000);
+            if (process.env.ATELIER_V3_ONLY === "1") { await v3(); failIfErrors(); ok("V3 block alone"); return; }
             const robots = await evaluate(`document.querySelector('meta[name=robots]')?.content`);
             if (robots !== "noindex") throw new Error(`robots meta is ${robots}`);
             const fps = await evaluate(`document.getElementById("fps").textContent`);
@@ -429,6 +526,48 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok(`Move: the piece moved by exactly the drag (${moved.map((v) => v.toFixed(1)).join(", ")} mm)`);
+
+            // A3: the Move tool's rotate handle, above the selection's box: a Shift drag from straight
+            // above the box centre round to (nearly) straight left of it turns Piece 2 an exact
+            // quarter about its centre (88 degrees snapped to 90), its seam kept; Ctrl+Z undoes it
+            {
+                const boxOf = (path) => { const ps = [path.start, ...path.segments.map((s) => s.to)];
+                    return [Math.min(...ps.map((q) => q[0])), Math.min(...ps.map((q) => q[1])), Math.max(...ps.map((q) => q[0])), Math.max(...ps.map((q) => q[1]))]; };
+                const b0 = boxOf(after);
+                await evaluate(`document.querySelectorAll('#browser-patterns li[data-kind=pattern]')[1].click()`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=transform]').click()`);
+                const mid = [from[0] + by[0], from[1] + by[1]];      // the piece's centre on screen, after the move
+                const halfH = (b0[3] - b0[1]) / 2 / worldPerPx;
+                let rotAt = null;
+                for (let up = 8; up <= 70 && !rotAt; up += 3) { const q = [mid[0], mid[1] - halfH - up]; if ((await hoverInfo(q)).hit === "xform") rotAt = q; }
+                if (!rotAt) throw new Error("no rotate handle above the selection's box");
+                const r = mid[1] - rotAt[1], end = (88 * Math.PI) / 180;
+                const shift = (type) => send("Input.dispatchKeyEvent", { type, key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, modifiers: type === "keyUp" ? 0 : 8 });
+                await shift("rawKeyDown");
+                await mouse("mouseMoved", rotAt[0], rotAt[1], { buttons: 0, modifiers: 8 });
+                await mouse("mousePressed", rotAt[0], rotAt[1], { modifiers: 8 });
+                // screen y runs down: a turn of `t` from straight up, counter-clockwise on the pattern
+                const on = (t) => [mid[0] - r * Math.sin(t), mid[1] - r * Math.cos(t)];
+                for (let i = 1; i <= 8; i++) { const q = on((end * i) / 8); await mouse("mouseMoved", q[0], q[1], { modifiers: 8 }); await sleep(60); }
+                const q = on(end);
+                await mouse("mouseReleased", q[0], q[1], { modifiers: 8 });
+                await shift("keyUp");
+                const turned = await saveNow();                      // the save waits for the drag's last step
+                const b1 = boxOf(outlineOf(turned, "Piece 2"));
+                const centre = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+                const sizes = (b) => [b[2] - b[0], b[3] - b[1]];
+                const off = Math.hypot(centre(b1)[0] - centre(b0)[0], centre(b1)[1] - centre(b0)[1]);
+                if (off > 1e-6 || Math.abs(sizes(b1)[0] - sizes(b0)[1]) > 1e-6 || Math.abs(sizes(b1)[1] - sizes(b0)[0]) > 1e-6)
+                    throw new Error(`the rotate handle gave ${b1.map((v) => v.toFixed(3))} from ${b0.map((v) => v.toFixed(3))}: not a quarter turn about its centre`);
+                if (turned.nodes.filter((n) => n.kind === "garment.seam").length !== 1) throw new Error("the turned piece lost its seam");
+                await key("z", "KeyZ", 90, 2);
+                const back = boxOf(outlineOf(await saveNow(), "Piece 2"));
+                if (back.some((v, i) => Math.abs(v - b0[i]) > 1e-6)) throw new Error(`Ctrl+Z after the turn left ${back}, not ${b0}`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                await noStatusError();
+                failIfErrors();
+                ok("Move: the rotate handle turned the piece a Shift-snapped quarter about its centre, seam kept; one Ctrl+Z undid it");
+            }
 
             // 4. type an allowance into the field and press Ctrl+S at once: the save holds the typed value
             await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
@@ -710,7 +849,8 @@ async function check(cdp, base) {
             if ((await size()) !== s0) throw new Error(`the move changed the piece: ${s0} -> ${await size()}`);
             await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
             await setField("grain", "0.2, 1");
-            await until("the cloth re-meshed", async () => (await gen()) > g0, 60000);
+            await until("the cloth re-meshed", async () => (await gen()) > g0, 60000)
+                .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}", sim ${await evaluate(`document.body.dataset.sim`)}, health "${await evaluate(`document.getElementById("health").textContent`)}", gen ${await gen()} vs ${g0}`); });
             const f2 = await frameNo();
             await until("frames after the edit", async () => (await frameNo()) >= f2 + 2, 60000);
             if (/Reset/.test(await health())) throw new Error(`the cloth went stale: ${await health()}`);
@@ -767,7 +907,7 @@ async function check(cdp, base) {
                     const v = await until("the map's hover answered", async () => { const d = await evaluate(`document.body.dataset.mapValue ?? "__"`); return d === "__" ? null : { d }; }, 30000);
                     if (v.d !== "") { read = await evaluate(`document.getElementById("map-value").textContent`); break; }
                 }
-                if (!read || !/^Strain (-?\d+(\.\d+)? %|: no value here)$/.test(read)) throw new Error(`the hover read-out: ${read}`);
+                if (!read || !/^Strain( -?\d+(\.\d+)? %|: no value here)$/.test(read)) throw new Error(`the hover read-out: ${read}`);
                 await sleep(500);
                 await frames();
                 if (process.env.ATELIER_SHOT_MAP) {
@@ -1439,6 +1579,192 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok("Tack: two clicks on two pieces, drawn and selected, Delete removes it");
             }
+            // ---- curved internal line (A1 task A5): Internal with a drag places a curve point; Edit drags its handle ----
+            {
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty garment", async () => (await patternCount()) === 0, 30000);
+                const [ux, uy, uw, uh] = await windowBox("rect2d");
+                const Q = [ux + uw * 0.25, uy + uh * 0.85];
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                lastSeen = await evaluate(`document.body.dataset.world ?? ""`);
+                const w1 = await worldOf([Q[0] + 1, Q[1]]), w2 = await worldOf([Q[0] + 51, Q[1]]);
+                const mm = 50 / (w2[0] - w1[0]);
+                if (!(Q[0] + 200 * mm < ux + uw && Q[1] - 100 * mm > uy)) throw new Error("the 200 x 100 piece does not fit the 2D window");
+                const wQ = [w1[0] - 1 / mm, w1[1]];
+                const screenAt = ([x, y]) => [Q[0] + (x - wQ[0]) * mm, Q[1] - (y - wQ[1]) * mm];
+                await byDialog("rectangle", Q, 200, 100);
+                await until("the piece", async () => (await patternCount()) === 1, 30000);
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                const d0 = await saveJson();
+                const pid = d0.nodes.find((n) => n.kind === "garment.pattern").id;
+                const o = d0.nodes.find((n) => n.id === `${pid}_outline`).path.start;
+                await until("the piece selected", () => evaluate(`!!document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]')?.classList.contains("on")`), 30000);
+                await evaluate(`document.querySelector('#tools2d [data-tool=internal]').click()`);
+                await click(screenAt([o[0] + 30, o[1] + 30]));
+                await drag(screenAt([o[0] + 90, o[1] + 65]), screenAt([o[0] + 125, o[1] + 65]));
+                await click(screenAt([o[0] + 170, o[1] + 30]));
+                await key("Enter", "Enter", 13);
+                const d1 = await until("the internal line", async () => { const d = await saveJson(); return d.nodes.find((n) => n.id === pid)?.internal?.length ? d : null; }, 30000);
+                await noStatusError();
+                const line0 = d1.nodes.find((n) => n.id === pid).internal[0].path;
+                if (line0.segments.length !== 2 || !line0.segments.every((g) => g.type === "bezier")) throw new Error(`the internal line is ${JSON.stringify(line0)}, not two cubics`);
+                // Edit (armed by the line's end): the handle out of the curve point answers as an internal handle; a drag moves it
+                const c1 = line0.segments[1].c1;
+                await worldOf(screenAt(c1));
+                {
+                    const hit = await evaluate(`document.body.dataset.hit`);
+                    if (hit !== "ihandle") throw new Error(`the internal handle's hover answered ${hit}, not ihandle`);
+                }
+                await drag(screenAt(c1), screenAt([c1[0], c1[1] + 20]));
+                const d2 = await until("the handle moved", async () => {
+                    const d = await saveJson();
+                    const g = d.nodes.find((n) => n.id === pid).internal[0].path.segments[1];
+                    return Math.abs(g.c1[1] - c1[1] - 20) < 2 ? d : null;
+                }, 30000);
+                const line1 = d2.nodes.find((n) => n.id === pid).internal[0].path;
+                if (JSON.stringify(line1.segments[0]) !== JSON.stringify(line0.segments[0])) throw new Error("the handle's drag moved the other segment");
+                await noStatusError();
+                failIfErrors();
+                ok("curved internal line: a drag places a curve point; Edit drags its handle");
+
+                // ---- Ruler (A1 task A9): Edit's hover names a side's length; R arms the Ruler; two clicks, an edge click, Escape ----
+                const statusText = () => evaluate(`document.getElementById("status-text").textContent`);
+                await worldOf(screenAt([o[0] + 60, o[1]]));               // the bottom side, a third along (off its midpoint)
+                await until("the hover read-out", async () => /side \d: 200\.0 mm/.test(await statusText()), 10000);
+                await key("r", "KeyR", 82);
+                await until("the Ruler armed", () => evaluate(`document.querySelector('#tools2d [data-tool=ruler]').classList.contains("on")`), 10000);
+                const labels = () => evaluate(`document.body.dataset.labels2d ?? ""`);
+                // each click's point as the worker answered it (snapped: the measure is between those)
+                const clickAt = async (p) => { await click(p); return (await until(`the click at ${p}`, () => answeredAt(p), 10000)).split(",").map(Number); };
+                const r1 = await clickAt(screenAt([o[0] + 20, o[1] + 85]));
+                const r2 = await clickAt(screenAt([o[0] + 80, o[1] + 85]));
+                const two = await until("a two-click measure", async () => { const l = await labels(); return l ? l : null; }, 10000);
+                const want = Math.hypot(r2[0] - r1[0], r2[1] - r1[1]);
+                if (!/^\d+\.\d mm$/.test(two) || Math.abs(parseFloat(two) - want) > 0.051 || want < 30) throw new Error(`the two-click measure reads "${two}", not ${want.toFixed(1)} mm (${r1} to ${r2})`);
+                await click(screenAt([o[0] + 200, o[1] + 30]));         // the right side, off its midpoint
+                const both = await until("the side measure", async () => { const l = (await labels()).split("|"); return l.length === 2 ? l : null; }, 10000)
+                    .catch(async (e) => { throw new Error(`${e.message}: hit ${await evaluate(`document.body.dataset.hit`)}, snap ${await evaluate(`document.body.dataset.snap`)}, labels "${await labels()}", status "${await statusText()}"`); });
+                if (both[1] !== "100.0 mm") throw new Error(`the right side measures "${both[1]}" (status "${await statusText()}"), not 100.0 mm`);
+                if ((await saveJson()).nodes.some((n) => /ruler|measure/i.test(JSON.stringify(n)))) throw new Error("a measure was saved");
+                if ((await labels()).split("|").length !== 2) throw new Error("a save dropped the measures");
+                await key("Escape", "Escape", 27);
+                await until("the measures cleared, Edit armed", async () => (await labels()) === "" && await evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on")`), 10000);
+                failIfErrors();
+                ok(`ruler: hover read-out 200.0 mm; two clicks ${two}; a side 100.0 mm; Escape clears`);
+
+                // ---- point editing (A1 task A4): a double click on an edge adds a point; the right click's
+                // menu makes it a curve point; C makes it a corner again; Delete removes it ----
+                const outlineNow = async () => (await saveJson()).nodes.find((n) => n.id === `${pid}_outline`).path;
+                const P = screenAt([o[0] + 60, o[1]]);
+                await worldOf(P);
+                await click(P);
+                await mouse("mousePressed", P[0], P[1], { clickCount: 2 });
+                await mouse("mouseReleased", P[0], P[1], { clickCount: 2 });
+                const p5 = await until("a fifth point", async () => { const p = await outlineNow(); return p.segments.length === 5 ? p : null; }, 30000);
+                await noStatusError();
+                if (Math.abs(p5.segments[0].to[1] - o[1]) > 1e-6 || Math.abs(p5.segments[0].to[0] - o[0] - 60) > 2) throw new Error(`the new point is at ${p5.segments[0].to}`);
+                const Pn = screenAt(p5.segments[0].to);
+                await worldOf(Pn);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error("the new point's hover is not a point");
+                await mouse("mousePressed", Pn[0], Pn[1], { button: "right", buttons: 2 });
+                await mouse("mouseReleased", Pn[0], Pn[1], { button: "right", buttons: 0 });
+                await until("the point menu", () => evaluate(`document.body.dataset.pointMenu === "curve" && !document.getElementById("point-menu").hidden`), 10000);
+                await evaluate(`document.getElementById("point-curve").click()`);
+                const pc = await until("a curve point", async () => { const p = await outlineNow(); return p.segments[0].type === "bezier" && p.segments[1].type === "bezier" ? p : null; }, 30000);
+                await noStatusError();
+                await worldOf([Pn[0] + 1, Pn[1]]);
+                await worldOf(Pn);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error(`the curve point hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await click(Pn);                 // the click selects the point; C, typed at once, waits for it
+                await key("c", "KeyC", 67);
+                await until("a corner again", async () => { const p = await outlineNow(); return p.segments.length === 5 && p.segments.every((g) => g.type === "line") ? p : null; }, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}", ${JSON.stringify(await outlineNow())}`); });
+                await key("Delete", "Delete", 46);
+                const p4 = await until("the point removed", async () => { const p = await outlineNow(); return p.segments.length === 4 ? p : null; }, 30000);
+                if (!p4.segments.every((g) => g.type === "line")) throw new Error(`after the delete: ${JSON.stringify(p4)}`);
+                if (!(await saveJson()).nodes.some((n) => n.id === pid)) throw new Error("Delete removed the piece, not the point");
+                await noStatusError();
+                failIfErrors();
+                ok(`point editing: a double click added a point, the menu made it a curve point (${pc.segments[0].type}), C a corner, Delete removed it`);
+
+                // ---- notches (A1 task A6): the Notch tool places a slit; Edit selects its mark; the panel
+                // makes it a V; the next notch placed is a V ----
+                const notchesNow = async () => (await saveJson()).nodes.find((n) => n.id === pid).notches ?? [];
+                await evaluate(`document.querySelector('#tools2d [data-tool=notch]').click()`);
+                await click(screenAt([o[0] + 100, o[1] + 100]));
+                const n1 = await until("a notch", async () => { const n = await notchesNow(); return n.length === 1 ? n : null; }, 30000);
+                if (n1[0].kind !== "slit" || n1[0].depth !== 6) throw new Error(`the first notch is ${JSON.stringify(n1[0])}`);
+                await key("Escape", "Escape", 27);
+                await until("Edit armed", () => evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on")`), 10000);
+                const mark = screenAt([o[0] + 100, o[1] + 97]);
+                await worldOf(mark);
+                if (await evaluate(`document.body.dataset.hit`) !== "notch") throw new Error(`the notch's mark hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await click(mark);
+                await until("the notch's panel", () => evaluate(`!!${field("kind")}`), 10000);
+                await setField("kind", "v");
+                await until("the notch a V", async () => (await notchesNow())[0]?.kind === "v", 30000);
+                if (await evaluate(`document.body.dataset.notchNext`) !== "v,6") throw new Error(`the Notch tool's next is ${await evaluate(`document.body.dataset.notchNext`)}`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=notch]').click()`);
+                await click(screenAt([o[0] + 150, o[1] + 100]));
+                const n2 = await until("a second notch", async () => { const n = await notchesNow(); return n.length === 2 ? n : null; }, 30000);
+                if (n2[1].kind !== "v" || n2[1].depth !== 6) throw new Error(`the second notch is ${JSON.stringify(n2[1])}`);
+                await key("Escape", "Escape", 27);
+                await noStatusError();
+                failIfErrors();
+                ok("notches: placed a slit, selected its mark, set it to V in the panel; the next notch is a V");
+                // ---- linked pair (A1 task A7): Sym across the top side; an Edit drag on the partner
+                // moves the source's mirrored corner; Ctrl+Z takes both back; Unlink ----
+                const pathOf = async (id) => (await saveJson()).nodes.find((n) => n.id === `${id}_outline`).path;
+                const hasPoint = (path, [x, y], e = 2) => [path.start, ...path.segments.map((g) => g.to)].some((q) => Math.abs(q[0] - x) < e && Math.abs(q[1] - y) < e);
+                const inWindow = ([x, y]) => x > ux && x < ux + uw && y > uy && y < uy + uh;
+                if (!inWindow(screenAt([o[0] + 220, o[1] + 210]))) throw new Error("the linked partner above the piece does not fit the 2D window");
+                await evaluate(`document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]').click()`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=sym]').click()`);
+                await click(screenAt([o[0] + 30, o[1] + 100]));
+                await click(screenAt([o[0] + 170, o[1] + 100]));
+                const dSym = await until("the linked partner", async () => { const d = await saveJson(); return d.nodes.filter((n) => n.kind === "garment.pattern").length === 2 ? d : null; }, 30000);
+                await noStatusError();
+                const partner = dSym.nodes.find((n) => n.kind === "garment.pattern" && n.id !== pid);
+                if (partner.meta?.atelier?.link?.partner !== pid || dSym.nodes.find((n) => n.id === pid).meta?.atelier?.link?.partner !== partner.id) throw new Error(`the pair is not linked: ${JSON.stringify(partner.meta)}`);
+                await until("Edit armed, the partner selected", () => evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on") && !!document.querySelector('#browser li[data-kind=pattern][data-id="${partner.id}"]')?.classList.contains("on")`), 10000);
+                const corner = screenAt([o[0] + 200, o[1] + 200]);
+                await worldOf(corner);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error(`the partner's corner hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await drag(corner, screenAt([o[0] + 220, o[1] + 210]));
+                await until("the source follows the partner", async () => hasPoint(await pathOf(pid), [o[0] + 220, o[1] - 10], 5), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await pathOf(pid))}`); });
+                if (!hasPoint(await pathOf(partner.id), [o[0] + 220, o[1] + 210], 5)) throw new Error("the partner's corner did not move");
+                await key("z", "KeyZ", 90, 2);
+                const before = (id) => JSON.stringify(dSym.nodes.find((n) => n.id === `${id}_outline`).path);
+                await until("one undo takes both back", async () => JSON.stringify(await pathOf(pid)) === before(pid) && JSON.stringify(await pathOf(partner.id)) === before(partner.id), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await pathOf(pid))} / ${JSON.stringify(await pathOf(partner.id))} (were ${before(pid)} / ${before(partner.id)})`); });
+                await evaluate(`document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]').click()`);
+                await until("the Unlink button", () => evaluate(`!!${field("unlink")}`), 10000);
+                await evaluate(`${field("unlink")}.click()`);
+                await until("unlinked", async () => !(await saveJson()).nodes.some((n) => n.meta?.atelier?.link), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("linked pair: Sym added a linked partner; an Edit drag on it moved the source's corner; Ctrl+Z took both back; Unlink");
+
+                // ---- unfold (A1 task A8): a click on the left side makes the piece whole; Fold back ----
+                await evaluate(`document.querySelector('#tools2d [data-tool=unfold]').click()`);
+                const left = screenAt([o[0], o[1] + 40]);
+                await worldOf(left);
+                await click(left);
+                const whole = await until("the whole", async () => { const p = await pathOf(pid); return p.segments.length === 6 ? p : null; }, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); });
+                await noStatusError();
+                if (!hasPoint(whole, [o[0] - 200, o[1]], 1e-6) || !hasPoint(whole, [o[0] - 200, o[1] + 100], 1e-6)) throw new Error(`the whole is ${JSON.stringify(whole)}`);
+                if (whole.segments.some((g, i) => Math.abs(g.to[0] - o[0]) < 1e-9 && Math.abs((i ? whole.segments[i - 1].to : whole.start)[0] - o[0]) < 1e-9)) throw new Error("the fold side is still a side");
+                await until("the Fold back button", () => evaluate(`!!${field("foldBack")}`), 10000);
+                await evaluate(`${field("foldBack")}.click()`);
+                const back = await until("the half again", async () => { const p = await pathOf(pid); return p.segments.length === 4 ? p : null; }, 30000);
+                if (!hasPoint(back, [o[0], o[1]], 1e-6) || !hasPoint(back, [o[0] + 200, o[1] + 100], 1e-6)) throw new Error(`folded back: ${JSON.stringify(back)}`);
+                if ((await saveJson()).nodes.find((n) => n.id === pid).meta?.atelier?.unfold) throw new Error("Fold back kept the unfold");
+                await noStatusError();
+                failIfErrors();
+                ok("unfold: a click on the left side made the piece whole (6 sides, twice as wide); Fold back gave the half");
+            }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
                 await sleep(1000);
@@ -1446,6 +1772,8 @@ async function check(cdp, base) {
                 writeFileSync(process.env.ATELIER_SHOT_HOLES, Buffer.from(data, "base64"));
                 ok(`screenshot ${process.env.ATELIER_SHOT_HOLES}`);
             }
+            // 8b. V3: custom forms and a posed drape
+            await v3();
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);

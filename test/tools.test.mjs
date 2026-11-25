@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { makeTool } from "../tools.js";
+import { makeTool, handleMatrix, MIN_SCALE } from "../tools.js";
 import { SHORTCUTS, toolOfKey } from "../shortcuts.js";
 import * as m from "../model.js";
 
@@ -123,11 +123,12 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const r = await t.up([0, 50], null, {});
     assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.label, "Front (mirror) 3");
 }
-// transform: kernel translate, row-major matrix, one request in flight
+// transform: kernel translate, row-major matrix, one request in flight; the kernel answers
+// whole pieces (kernel.js transformedPiece)
 {
     const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
     const asked = []; let inflight = 0, maxInflight = 0;
-    const request = async (k, p) => { asked.push([k, p]); maxInflight = Math.max(maxInflight, ++inflight); await new Promise((r) => setTimeout(r, 5)); inflight--; return m.rectPath(p.matrix[2], p.matrix[5], 100, 50); };
+    const request = async (k, p) => { asked.push([k, p]); maxInflight = Math.max(maxInflight, ++inflight); await new Promise((r) => setTimeout(r, 5)); inflight--; return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) }); };
     const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
     t.down([5, 5], { kind: "pattern", id: "p1" }, {});
     t.move([10, 5], null, {}); t.move([15, 5], null, {}); const last = t.move([25, 15], null, {});
@@ -188,7 +189,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.deepEqual(await bad.up([10, 0], null, {}), {});
     // Escape cancels; a reply arriving after the cancel is never a preview
     let release;
-    const slow = makeTool("transform", ctx({ nodes, selection: sel, request: () => new Promise((r) => { release = () => r(m.rectPath(10, 0, 100, 50)); }) }));
+    const slow = makeTool("transform", ctx({ nodes, selection: sel, request: () => new Promise((r) => { release = () => r({ path: m.rectPath(10, 0, 100, 50) }); }) }));
     slow.down([0, 0], { kind: "pattern", id: "p1" }, {});
     const pending = slow.move([10, 0], null, {});
     assert.deepEqual(slow.key("Escape"), { cancel: true });
@@ -220,7 +221,9 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     a.apply(m.newDocumentOps({ slug: "x", label: "X", params: Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1])) }), "new");
     a.apply(m.addPattern(a.nodes(), { label: "F", path: m.rectPath(0, 0, 100, 50), fabric: "f_x" }).ops, "r");
     assert.deepEqual(await a.mirrored("p1", [0, 0, 0, 1]), reply);
-    assert.deepEqual(a.mirroredPiece("p1", [0, 0, 0, 1]), { path: reply, internal: [], notches: [] }, "the piece the worker answers");
+    const { grain, ...piece } = a.mirroredPiece("p1", [0, 0, 0, 1]);
+    assert.deepEqual(piece, { path: reply, internal: [], notches: [] }, "the piece the worker answers");
+    assert.deepEqual(grain.map((v) => Math.round(v * 1e9) / 1e9 + 0), [0, 1], "and its grain reflected");
 }
 // fix round 1: allowance takes one dot; internal double-click drops the duplicate point
 {
@@ -237,7 +240,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
 // fix round 2: a duplicate move after the reply, then a new move and up
 {
     const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
-    const request = async (k, p) => m.rectPath(p.matrix[2], p.matrix[5], 100, 50);
+    const request = async (k, p) => ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) });
     const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
     t.down([0, 0], { kind: "pattern", id: "p1" }, {});
     await t.move([10, 0], null, {});
@@ -260,9 +263,9 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const ed = makeTool("edit", ctx({ nodes, selection: sel }));
     ed.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
     assert.deepEqual(ed.move([101, 0], null, {}), {}, "less than a drag: no preview");
-    assert.deepEqual(ed.up([101, 0], null, {}), {});
+    assert.deepEqual(ed.up([101, 0], null, {}), { pointSel: [1], ipointSel: [] }, "no endPreview: the click selects the point");
     let asked = 0;
-    const tr = makeTool("transform", ctx({ nodes, selection: sel, request: async (k, p) => { asked++; return m.rectPath(p.matrix[2], p.matrix[5], 100, 50); } }));
+    const tr = makeTool("transform", ctx({ nodes, selection: sel, request: async (k, p) => { asked++; return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) }); } }));
     tr.down([5, 5], { kind: "pattern", id: "p1" }, {});
     assert.deepEqual(await tr.up([5, 5], null, {}), {});
     assert.equal(asked, 0);
@@ -326,8 +329,8 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const request = async (kind, p) => {
         asked.push([kind, p]);
         if (kind === "pickRect") return { ids: [] };
-        if (kind === "transformAll") return Object.fromEntries(p.ids.map((id) => [id, m.rectPath((id === "p1" ? 0 : 200) + p.matrix[2], p.matrix[5], 100, 50)]));
-        return m.rectPath(p.matrix[2], p.matrix[5], 100, 50);
+        if (kind === "transformAll") return Object.fromEntries(p.ids.map((id) => [id, { path: m.rectPath((id === "p1" ? 0 : 200) + p.matrix[2], p.matrix[5], 100, 50) }]));
+        return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) });
     };
     const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
     t.down([500, 500], null, { px: [10, 10] });
@@ -471,4 +474,110 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
 }
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
+// A2: Move previews the whole piece the kernel answers -- outline, internal lines, notches, grain
+{
+    const line = { kind: "line", path: { start: [10, 10], segments: [{ type: "line", to: [40, 10] }] } };
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
+        { id: "p1", kind: "garment.pattern", outline: "p1_outline", internal: [line], notches: [{ at: 30, kind: "slit", depth: 5 }], grain: [0, 1] }];
+    const request = async (k, p) => ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50), internal: [{ ...line, path: { start: [10 + p.matrix[2], 10], segments: [{ type: "line", to: [40 + p.matrix[2], 10] }] } }], notches: [{ at: 30, kind: "slit", depth: 5 }], grain: [0, 1] });
+    const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t.down([0, 0], { kind: "pattern", id: "p1" }, {});
+    await t.move([7, 0], null, {});
+    const up = await t.up([7, 0], null, {});
+    assert.equal(up.endPreview, true);
+    assert.equal(up.preview[0].id, "p1_outline", "the outline first: the page's preview pattern");
+    const set = up.preview.find((o) => o.id === "p1").fields;
+    assert.deepEqual(set.internal[0].path.start, [17, 10]);
+    assert.deepEqual(set.notches, [{ at: 30, kind: "slit", depth: 5 }]);
+    assert.deepEqual(set.grain, [0, 1]);
+}
+assert.deepEqual(toolOfKey({ key: "c", ctrlKey: true }), { command: "copy" });
+assert.deepEqual(toolOfKey({ key: "v", ctrlKey: true }), { command: "paste" });
+assert.deepEqual(toolOfKey({ key: "d", ctrlKey: true }), { command: "duplicate" });
+// A3: the Move tool's handle matrices (start, pointer, box, handle, shift -> m6)
+{
+    const box = [0, 0, 100, 50];
+    const apply = (mx, [x, y]) => [mx[0] * x + mx[1] * y + mx[2], mx[3] * x + mx[4] * y + mx[5]];
+    const near = (a, b, msg) => a.forEach((v, i) => assert.ok(Math.abs(v - b[i]) < 1e-9, `${msg}: ${a} vs ${b}`));
+    // a corner: uniform about the opposite corner, by the dragged corner's reach along the diagonal
+    const ne = handleMatrix([100, 50], [200, 100], box, "ne");
+    assert.deepEqual(ne, [2, 0, 0, 0, 2, 0]);
+    const sw = handleMatrix([1, 1], [51, 26], box, "sw");          // the press need not be on the corner
+    near(apply(sw, [100, 50]), [100, 50], "sw keeps ne"); near(apply(sw, [0, 0]), [50, 25], "sw corner follows");
+    near(apply(handleMatrix([0, 50], [-100, 100], box, "nw"), [100, 0]), [100, 0], "nw keeps se");
+    near(apply(handleMatrix([100, 0], [150, -25], box, "se"), [0, 50]), [0, 50], "se keeps nw");
+    // a pointer off the diagonal: its projection on it
+    assert.deepEqual(handleMatrix([100, 50], [150, 50], box, "ne").slice(0, 1), [(150 * 100 + 50 * 50) / (100 * 100 + 50 * 50)]);
+    // a side: one axis about the opposite side
+    assert.deepEqual(handleMatrix([100, 25], [150, 40], box, "e"), [1.5, 0, 0, 0, 1, 0]);
+    near(handleMatrix([0, 25], [-100, 0], box, "w"), [2, 0, -100, 0, 1, 0], "w about x = 100");
+    near(handleMatrix([50, 50], [0, 100], box, "n"), [1, 0, 0, 0, 2, 0], "n about y = 0");
+    near(handleMatrix([50, 0], [50, 25], box, "s"), [1, 0, 0, 0, 0.5, 25], "s about y = 50");
+    // past the anchor: held at MIN_SCALE, never a flip
+    assert.equal(handleMatrix([100, 25], [-500, 25], box, "e")[0], MIN_SCALE);
+    assert.equal(handleMatrix([100, 50], [-100, -50], box, "ne")[0], MIN_SCALE);
+    // rotate: about the centre (50, 25) by the angle swept; the centre stays put
+    const q = handleMatrix([50, 60], [15, 25], box, "rot");     // straight up to straight left: +90
+    assert.deepEqual(q, [0, -1, 75, 1, 0, -25]);
+    near(apply(q, [50, 25]), [50, 25], "the centre");
+    const free = handleMatrix([50, 60], [50 + 35 * Math.cos(Math.PI / 2 + 0.3), 25 + 35 * Math.sin(Math.PI / 2 + 0.3)], box, "rot");
+    near([Math.atan2(free[3], free[0])], [0.3], "free angle");
+    // Shift: 15 degree steps (0.3 rad = 17.2 deg -> 15; 25 deg -> 30)
+    const snapped = (deg) => { const a = Math.PI / 2 + (deg * Math.PI) / 180; return handleMatrix([50, 60], [50 + 35 * Math.cos(a), 25 + 35 * Math.sin(a)], box, "rot", true); };
+    near([Math.atan2(snapped(17.2)[3], snapped(17.2)[0]) * 180 / Math.PI], [15], "17.2 -> 15");
+    near([Math.atan2(snapped(25)[3], snapped(25)[0]) * 180 / Math.PI], [30], "25 -> 30");
+    near([Math.atan2(snapped(-97)[3], snapped(-97)[0]) * 180 / Math.PI], [-90], "-97 -> -90");
+    assert.deepEqual(snapped(5), [1, 0, 0, 0, 1, 0], "under 7.5 degrees: none");
+    // degenerate: a box of no size along the axis, a pointer on the centre
+    assert.equal(handleMatrix([0, 0], [10, 0], [0, 0, 0, 0], "ne"), null);
+    assert.equal(handleMatrix([5, 0], [10, 0], [5, 0, 5, 50], "e"), null);
+    assert.equal(handleMatrix([5, 50], [5, 80], [0, 50, 10, 50], "n"), null);
+    assert.deepEqual(handleMatrix([5, 50], [5, 80], [0, 50, 10, 50], "e"), [1, 0, 0, 0, 1, 0], "a flat box still scales across");
+    assert.equal(handleMatrix([50, 60], [50, 25], box, "rot"), null);
+    assert.throws(() => handleMatrix([0, 0], [1, 1], box, "x"), /no handle x/);
+}
+// A3: a handle drag through the tool: the whole selection, one request in flight, the last
+// matrix wanted committed, every moved piece re-anchored; the last good matrix kept where the
+// pointer means nothing
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" },
+        { id: "p2_outline", kind: "profile.path", path: m.rectPath(200, 0, 100, 50) }, { id: "p2", kind: "garment.pattern", outline: "p2_outline" }];
+    const drawings = new Map([["p1", { bounds: [0, 0, 100, 50] }], ["p2", { bounds: [200, 0, 300, 50] }]]);
+    const asked = []; let inflight = 0, maxInflight = 0;
+    const request = async (k, p) => {
+        asked.push([k, p]); maxInflight = Math.max(maxInflight, ++inflight); await new Promise((r) => setTimeout(r, 5)); inflight--;
+        return Object.fromEntries(p.ids.map((id) => [id, { path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) }]));
+    };
+    const sel = { kind: "pattern", id: "p1", ids: ["p1", "p2"] };
+    const t = makeTool("transform", ctx({ nodes, drawings, selection: sel, request }));
+    // the rotate handle above the union [0, 0, 300, 50]'s top side; the centre is (150, 25)
+    assert.deepEqual(t.down([150, 70], { kind: "xform", id: "p1", handle: "rot" }, {}), {});
+    t.move([140, 70], null, { shift: true });
+    t.move([150, 25], null, { shift: true });                     // on the centre: the last matrix stays
+    const last = t.move([105, 25], null, { shift: true });         // straight left: +90
+    await last;
+    const up = await t.up([105, 25], null, { shift: true });
+    assert.equal(maxInflight, 1);
+    assert.ok(asked.every(([k, p]) => k === "transformAll" && p.ids.join() === "p1,p2"));
+    assert.deepEqual(asked.at(-1)[1].matrix, [0, -1, 175, 1, 0, -125]);
+    assert.equal(up.endPreview, true);
+    assert.deepEqual(up.reanchor, ["p1", "p2"]);
+    assert.equal(up.preview.length > 0, true);
+    // a click on a handle moves nothing
+    const quiet = []; const t2 = makeTool("transform", ctx({ nodes, drawings, selection: sel, request: async (k, p) => { quiet.push(p); return {}; } }));
+    t2.down([300, 50], { kind: "xform", id: "p1", handle: "ne" }, {});
+    assert.deepEqual(await t2.up([300, 50], null, {}), {});
+    assert.equal(quiet.length, 0);
+    // a single piece's corner: the single transform, about the opposite corner
+    const one = []; const t3 = makeTool("transform", ctx({ nodes, drawings, selection: { kind: "pattern", id: "p1" }, request: async (k, p) => { one.push([k, p]); return { path: m.rectPath(0, 0, 200, 100) }; } }));
+    t3.down([100, 50], { kind: "xform", id: "p1", handle: "ne" }, {});
+    await t3.move([200, 100], null, {});
+    const u3 = await t3.up([200, 100], null, {});
+    assert.deepEqual(one, [["transform", { id: "p1", matrix: [2, 0, 0, 0, 2, 0] }]]);
+    assert.deepEqual(u3.reanchor, ["p1"]);
+    // no bounds known: the press does nothing
+    const t4 = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t4.down([100, 50], { kind: "xform", id: "p1", handle: "ne" }, {});
+    assert.deepEqual(t4.move([200, 100], null, {}), {});
+}
 console.log("tools: ok");

@@ -1,7 +1,7 @@
 // assets/forms.json against the STEP forms it names: the body top the slots scale with, the
 // arms the sleeves wrap round, and the head the hood slots stand beside (tools/dressform.py).
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
 import { sceneBox } from "../arrange.js";
 
@@ -36,4 +36,24 @@ assert.deepEqual(right.shoulder.map(Math.round), [-182, 1352, -8]);
 assert.ok(Math.abs(Math.hypot(...left.dir) - 1) < 1e-9 && left.dir[0] > 0 && left.dir[1] < 0);
 assert.ok(Math.abs(left.radius - 50) < 1e-9);
 assert.ok(plain.hps_y > 1400 && plain.hps_y < 1450, `shoulder line ${plain.hps_y}`);
+// the graded sizes: f-M, f-M-head and f-XS..f-XL, m-XS..m-XL (f-M is the women's M), each
+// with its STEP in assets/, its label, two arms, and its body top on the STEP's bounds' top
+const sized = [];
+for (const b of ["f", "m"]) for (const s of ["XS", "S", "M", "L", "XL"]) sized.push(`${b}-${s}`);
+assert.equal(forms.length, 11, `forms.json lists ${forms.map((f) => f.name)}`);
+for (const name of [...sized, "f-M-head"]) {
+    const f = byName.get(name);
+    assert.ok(f, `forms.json lists ${name}`);
+    assert.ok(existsSync(new URL(`../assets/${f.file}`, import.meta.url)), `${f.file} present`);
+    assert.equal(f.arms.length, 2, `${name} has two arms`);
+    assert.deepEqual(f.arms.map((a) => a.side).sort(), ["left", "right"]);
+    if (name !== "f-M" && name !== "f-M-head") assert.equal(f.label, `${name[0] === "f" ? "Women's" : "Men's"} ${name.slice(2)}`);
+}
+assert.equal(plain.label, "f-M", "f-M keeps its label");
+for (const name of ["f-XS", "f-XL", "m-XS", "m-XL"]) {
+    const f = byName.get(name), b = boxOf(f.file);
+    assert.ok(Math.abs(b[4] - f.body_top) < 2, `${name} top ${b[4]} vs body_top ${f.body_top}`);
+    const l = f.arms.find((a) => a.side === "left");
+    assert.ok(l.shoulder[0] > 0 && l.shoulder[0] < b[3] && l.shoulder[1] < f.body_top, `${name} left shoulder inside the bounds`);
+}
 console.log(`ok - forms: f-M top ${pb[4].toFixed(1)}, f-M-head crown ${hb[4].toFixed(1)}`);

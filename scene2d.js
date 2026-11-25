@@ -10,10 +10,11 @@
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
 import { seamColour } from "./sewing.js";
-import { pointsOf, notchNormals } from "./view2d.js";
+import { pointsOf, internalPointsOf, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
+const FOLD = "#e0b050";   // an unfolded piece's fold guide (spec §6)
 const LINE = "#d8dce2", HOVER = "#ffffff", INTERNAL = "#b0b6c0", CUT = "#8a9099", GRAIN = "#9aa0aa", LABEL = "#c8ccd4", BG = "#1e2024";
 const STATE = { normal: 0, hover: 1, selected: 2, first: 3 };
 /** A piece's depths by its rank in layer order: fill, lines, seams (mm above the grid's z = 0).
@@ -21,10 +22,6 @@ const STATE = { normal: 0, hover: 1, selected: 2, first: 3 };
  *  that let a fill 1 mm above it show the grid through. */
 const BAND_BASE = 10;
 export const bandOf = (rank) => ({ fill: BAND_BASE + 4 * rank, line: BAND_BASE + 1 + 4 * rank, seam: BAND_BASE + 2 + 4 * rank });
-// The View's "tick" glyph is a slash turned 45 degrees from its `dir`: this turn makes the
-// stroke run along the notch's outward normal (M4a's notch mark).
-export const TICK_TURN = -Math.PI / 4;
-const turn = ([x, y], a) => [x * Math.cos(a) - y * Math.sin(a), x * Math.sin(a) + y * Math.cos(a)];
 const SEAM_NO_PX = 8;          // a seam's number stands this far out from its seam's middle
 
 const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
@@ -83,7 +80,33 @@ function midOut(pts, ring) {
     return { at: [pts[0], pts[1]], normal: [0, 0] };
 }
 
-export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], hover = null, colours = new Map() }) {
+const ROT_PX = 28, ROT_MM = 20;   // the rotate handle stands this far above the box's top side
+
+// The Move tool's box round the selected pieces (their kernel bounds' union): its frame as lines
+// above every piece, and its handles as points on top (view2d.js xformHandles, picked as
+// {kind: "xform"}). mmPerPx (the 2D window's scale when drawn) sets the rotate handle's offset.
+function xformSpecs(drawings, selection, mmPerPx, z) {
+    if (selection?.kind !== "pattern") return [];
+    const ids = new Set(selection.ids ?? [selection.id]);
+    const bs = drawings.filter((d) => ids.has(d.id) && d.bounds).map((d) => d.bounds);
+    if (!bs.length) return [];
+    const b = [Math.min(...bs.map((q) => q[0])), Math.min(...bs.map((q) => q[1])), Math.max(...bs.map((q) => q[2])), Math.max(...bs.map((q) => q[3]))];
+    const hs = xformHandles(b, mmPerPx > 0 && Number.isFinite(mmPerPx) ? ROT_PX * mmPerPx : ROT_MM);
+    const rot = hs.at(-1), top = hs.find((h) => h.handle === "n");
+    const frame = [...segs([b[0], b[1], b[2], b[1], b[2], b[3], b[0], b[3]], true, z), top.at[0], top.at[1], z, rot.at[0], rot.at[1], z];
+    const sig = JSON.stringify(b) + rot.at[1];
+    const what = { kind: "xform", id: selection.id };
+    return [
+        { key: "xform/box", show: "lines", data: frame, colour: ACCENT, dash: { dash: 4, gap: 3 }, what: { kind: "xformBox", id: selection.id }, sig },
+        { key: "xform/scale", show: "points", data: xyz(hs.slice(0, -1).map((h) => h.at), z), colour: ACCENT, size: 9, pointStyle: { shape: "square", hollow: true },
+            onTop: true, what: { ...what, handles: hs.slice(0, -1).map((h) => h.handle) }, sig },
+        { key: "xform/rot", show: "points", data: xyz([rot.at], z), colour: ACCENT, size: 10, pointStyle: { shape: "disc", hollow: false },
+            onTop: true, what: { ...what, handles: ["rot"] }, sig },
+    ];
+}
+
+// xform: the Move tool is on (its box and handles round the selection); mmPerPx the 2D scale.
+export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null }) {
     const out = [];
     const picked = (id) => selection?.kind === "pattern" && (selection.id === id || selection.ids?.includes(id));
     const ordered = [...drawings].sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0));
@@ -104,17 +127,22 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             colour: sel || (selection?.kind === "internal" && selection.id === id && selection.index === k) ? ACCENT : INTERNAL,
             dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig,
         }));
-        if (notchAt.length) {
-            const dir = xyz(notchNormals(d).map((n) => turn(n, TICK_TURN)));
-            out.push({ key: `${id}/notches`, show: "glyphs", data: notchAt, colour: line, glyph: { kind: "tick", dir, sizePt: 10 }, what: { kind: "notch", id }, sig });
-        }
+        // each notch's mark, the kernel's polyline (garment_pattern_notch_lines): a lines item each,
+        // picked as that notch; the selected one in the accent
+        (d.notchLines ?? []).forEach((pl, k) => {
+            const on = selection?.kind === "notch" && selection.id === id && selection.index === k;
+            out.push({ key: `${id}/notch/${k}`, show: "lines", data: segs(pl, false, z.line), colour: on ? ACCENT : line, what: { kind: "notch", id, index: k }, sig });
+        });
+        // an unfolded piece's fold (spec §6): a dashed guide, not an internal fold line
+        if (d.fold?.length === 4) out.push({ key: `${id}/fold`, show: "lines", data: [d.fold[0], d.fold[1], z.line, d.fold[2], d.fold[3], z.line], colour: FOLD, dash: { dash: 8, gap: 5 }, what: { kind: "fold", id }, sig });
         if (d.grain?.length >= 4) {
             const g = d.grain;
             out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });
             out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], z.line], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig });
         }
         if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
-        if (selection?.kind === "pattern" && selection.id === id) {
+        // the edit points: not under the Move tool, whose handles would share a rectangle's corners
+        if (!xform && (selection?.kind === "pattern" || selection?.kind === "internal") && selection.id === id) {
             const p = pointsOf(nodes, id);
             const chosen = new Set(pointSel);
             out.push({ key: `${id}/points`, show: "points", data: xyz(p.points, z.seam), colour: "#ffffff", size: 8, pointStyle: { shape: "square", hollow: false },
@@ -125,8 +153,23 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
                 out.push({ key: `${id}/handles`, show: "points", data: xyz(p.handles.map((h) => h.at), z.seam), colour: ACCENT, size: 7, pointStyle: { shape: "diamond", hollow: false },
                     onTop: true, what: { kind: "handles", id, handles: p.handles }, sig: JSON.stringify(p.handles) + r });
             }
+            // the internal lines' points (hollow) and handles: dragged by the Edit tool (spec §4)
+            const ip = internalPointsOf(nodes, id);
+            if (ip.points.length) {
+                const at = ip.points.map((q) => q.at);
+                const ichosen = new Set(ipointSel.map((q) => `${q.line}:${q.index}`));
+                out.push({ key: `${id}/ipoints`, show: "points", data: xyz(at, z.seam), colour: "#ffffff", size: 7, pointStyle: { shape: "square", hollow: true },
+                    states: ip.points.map((q) => (ichosen.has(`${q.line}:${q.index}`) ? STATE.selected : STATE.normal)), onTop: true, what: { kind: "ipoints", id, refs: ip.points.map(({ line, index }) => ({ line, index })) }, sig: JSON.stringify(at) + r });
+                if (ip.handles.length) {
+                    const tangents = ip.handles.flatMap((h) => [h.from, h.to].filter((i) => i !== undefined).flatMap((i) => [at[i][0], at[i][1], z.seam, h.at[0], h.at[1], z.seam]));
+                    if (tangents.length) out.push({ key: `${id}/itangents`, show: "lines", data: tangents, colour: ACCENT, onTop: true, what: { kind: "itangents", id, handles: ip.handles, points: at }, sig: JSON.stringify(tangents) });
+                    out.push({ key: `${id}/ihandles`, show: "points", data: xyz(ip.handles.map((h) => h.at), z.seam), colour: ACCENT, size: 6, pointStyle: { shape: "diamond", hollow: true },
+                        onTop: true, what: { kind: "ihandles", id, handles: ip.handles }, sig: JSON.stringify(ip.handles) + r });
+                }
+            }
         }
     }
+    if (xform) out.push(...xformSpecs(drawings, selection, mmPerPx, bandOf(ordered.length).seam));
     const byId = new Map(drawings.map((d) => [d.id, d]));
     seams.forEach((s, i) => {
         // seams are select-only for colour this round: no hover recolour (hover2d is a piece id)
@@ -223,9 +266,21 @@ export class Items2d {
 }
 
 // What a tool draws while it works: dashed lines, points, a curve (the ellipse being dragged) and
-// a read-out text, one item each, made on first use, hidden when empty, always on top.
+// a read-out text, one item each, made on first use, hidden when empty, always on top; and the
+// Ruler's labels, a text each over a box of the background, shown again when they change.
 export class Overlay2d {
-    constructor(viewer, layer = LAYER_2D) { this.v = viewer; this.layer = layer; this.items = {}; this.text = null; }
+    constructor(viewer, layer = LAYER_2D) { this.v = viewer; this.layer = layer; this.items = {}; this.text = null; this.labels = []; this.labelSig = "[]"; }
+    setLabels(labels) {
+        const sig = JSON.stringify(labels);
+        if (sig === this.labelSig) return;
+        this.labelSig = sig;
+        for (const id of this.labels) this.v.remove(id);
+        this.labels = labels.map((l) => {
+            const id = this.v.showText(l.text, { at: [l.at[0], l.at[1], 0], size: 12, colour: ACCENT, align: "centre", offset: [0, 10], box: BG, padding: 1, onTop: true });
+            this.v.setItemLayer(id, this.layer);
+            return id;
+        });
+    }
     put(kind, data, show, set) {
         const v = this.v;
         let id = this.items[kind];
@@ -237,8 +292,9 @@ export class Overlay2d {
             if (kind !== "points") v.setLineStyle(id, { dash: 5, gap: 3 });
         } else { v[set](id, data); v.setItemVisible(id, true); }
     }
-    set({ lines = [], points = [], curves = null, text = null } = {}) {
+    set({ lines = [], points = [], curves = null, labels = [], text = null } = {}) {
         const v = this.v;
+        this.setLabels(labels);
         this.put("lines", lines.flatMap((pl) => segs(pl.flat())), (d) => v.showLines(d, ACCENT), "setLines");
         this.put("points", xyz(points), (d) => v.showPoints(d, ACCENT, 8), "setPoints");
         this.put("curves", curves ? Array.from(curves) : [], (d) => v.showCurves(d, ACCENT), "setCurves");

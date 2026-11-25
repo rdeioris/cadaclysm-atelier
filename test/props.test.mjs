@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { fieldsFor, opsFor, validate, fieldText } from "../props.js";
+import { fieldsFor, opsFor, validate, fieldText, transformMatrix, unionBounds, selectedIds, TRANSFORM_KEYS } from "../props.js";
 import { presetParams, PRESETS } from "../fabrics.js";
 import * as m from "../model.js";
 import { reanchor } from "../sewing.js";
@@ -10,7 +10,7 @@ const drawings = new Map([["p1", { sides: [0, 100, 150, 250, 300], bounds: [0, 0
 
 const pf = fieldsFor({ kind: "pattern", id: "p1" }, nodes, drawings);
 // (frozen, strengthen and pressure: the simulation's rows, simprops.test.mjs)
-assert.deepEqual(pf.map((f) => f.key), ["label", "fabric", "layer", "allowance", "grain", "particle_distance", "slot", "frozen", "strengthen", "pressure", "remove"]);
+assert.deepEqual(pf.map((f) => f.key), ["label", "fabric", "layer", "allowance", "grain", "particle_distance", "slot", "frozen", "strengthen", "pressure", "rotate", "scale", "flipH", "flipV", "duplicate", "remove"]);
 {
     const mesh = pf.find((f) => f.key === "particle_distance");
     assert.equal(mesh.label, "Mesh");
@@ -116,7 +116,7 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
     assert.ok(form, "a Form field");
     assert.equal(form.type, "select");
     assert.equal(form.value, "f-M");
-    assert.deepEqual(form.options, [{ value: "f-M", label: "f-M" }, { value: "f-M-head", label: "f-M with head" }]);
+    assert.deepEqual(form.options, [{ value: "f-M", label: "f-M" }, { value: "f-M-head", label: "f-M with head" }, { value: "custom", label: "Custom form…" }]);
     const none = fieldsFor({ kind: "avatar", id: "avatar" }, [], new Map(), { name: "x", bounds: [0, 0, 0, 1, 1, 1] });
     assert.equal(none.find((f) => f.key === "form"), undefined, "no forms list: no Form field");
 }
@@ -180,3 +180,46 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
     assert.throws(() => m.duplicateFabric(nodes, "p1"), /no fabric p1/);
 }
 console.log("props: ok");
+
+// the transform fields: matrices about the selection's bounds centre, never plain ops
+{
+    const sel = { kind: "pattern", id: "p1" };
+    const at = (m6, [x, y]) => [m6[0] * x + m6[1] * y + m6[2], m6[3] * x + m6[4] * y + m6[5]].map((v) => Math.round(v * 1e9) / 1e9 + 0);
+    const b = [0, 0, 100, 50];
+    assert.deepEqual(transformMatrix("rotate", 90, b), [0, -1, 75, 1, 0, -25], "a quarter turn is exact");
+    assert.deepEqual(at(transformMatrix("rotate", 90, b), [50, 25]), [50, 25], "about the centre");
+    assert.deepEqual(at(transformMatrix("rotate", 90, b), [100, 25]), [50, 75]);
+    assert.equal(transformMatrix("rotate", 0, b), null);
+    assert.equal(transformMatrix("rotate", 360, b), null);
+    assert.deepEqual(at(transformMatrix("scale", 200, b), [100, 50]), [150, 75]);
+    assert.equal(transformMatrix("scale", 100, b), null);
+    assert.deepEqual(at(transformMatrix("flipH", null, b), [0, 10]), [100, 10]);
+    assert.deepEqual(at(transformMatrix("flipV", null, b), [0, 10]), [0, 40]);
+    assert.equal(validate(sel, nodes, "rotate", 45), null);
+    assert.match(validate(sel, nodes, "rotate", NaN), /degrees/);
+    assert.match(validate(sel, nodes, "scale", 0), /above 0/);
+    assert.equal(validate(sel, nodes, "scale", 50), null);
+    for (const key of [...TRANSFORM_KEYS, "duplicate"]) assert.throws(() => opsFor(sel, nodes, key, 1), /through the kernel/);
+    assert.deepEqual(selectedIds({ kind: "pattern", id: "p1", ids: ["p1", "p2"] }), ["p1", "p2"]);
+    assert.deepEqual(selectedIds(sel), ["p1"]);
+    assert.deepEqual(selectedIds({ kind: "seam", id: "s1" }), []);
+    const two = new Map([["p1", { bounds: [0, 0, 100, 50] }], ["p2", { bounds: [200, -10, 300, 40] }]]);
+    assert.deepEqual(unionBounds(two, ["p1", "p2"]), [0, -10, 300, 50]);
+    assert.equal(unionBounds(two, []), null);
+}
+// spec §6: a linked piece's panel has Unlink, an unfolded one's Fold back and Unlink
+{
+    const pair = [...nodes.filter((n) => n.id !== "p1"),
+        { id: "p1", kind: "garment.pattern", label: "Front", meta: { atelier: { link: { partner: "p2", axis: [0, 0, 0, 1] } } } },
+        { id: "p2", kind: "garment.pattern", label: "Back", meta: { atelier: { slot: "front", link: { partner: "p1", axis: [0, 0, 0, 1] } } } }];
+    const keys = (id, list) => fieldsFor({ kind: "pattern", id }, list, drawings).map((f) => f.key);
+    assert.ok(keys("p1", pair).includes("unlink") && !keys("p1", pair).includes("foldBack"));
+    assert.ok(!keys("p1", nodes).includes("unlink"));
+    const ops = opsFor({ kind: "pattern", id: "p1" }, pair, "unlink", null);
+    assert.deepEqual(ops, [{ op: "set", id: "p1", fields: { meta: {} } }, { op: "set", id: "p2", fields: { meta: { atelier: { slot: "front" } } } }]);
+    const folded = [...nodes.filter((n) => n.id !== "p1"), { id: "p1", kind: "garment.pattern", label: "Front", meta: { atelier: { unfold: { axis: [0, 0, 0, 1], half: {} } } } }];
+    assert.deepEqual(keys("p1", folded).slice(-2), ["foldBack", "unlink"]);
+    assert.deepEqual(opsFor({ kind: "pattern", id: "p1" }, folded, "unlink", null), [{ op: "set", id: "p1", fields: { meta: {} } }]);
+    assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, folded, "foldBack", null), /kernel/);
+}
+console.log("props transforms: ok");

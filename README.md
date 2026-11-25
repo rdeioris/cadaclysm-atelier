@@ -16,8 +16,11 @@ kernel and checks that every seam's two sides match within 2 %. Its front and ba
 about 50 mm clear of the form and its sleeves are wrapped round the form's arms, so the cloth
 sews it shut before it drapes.
 
-**Forms.** The Avatar's Form select offers the dress forms in `assets/forms.json`: f-M and
-f-M with head (`tools/dressform.py --head`). The file also carries each form's landmarks (body
+**Forms.** The Avatar's Form select offers the dress forms in `assets/forms.json`: f-M,
+f-M with head (`tools/dressform.py --head`), and the graded sizes Women's XS, S, L, XL and
+Men's XS, S, M, L, XL (f-XS ... m-XL), each graded from its size chart by `tools/dressform.py
+--body {female,male} --size ...`. Their landmarks come from the same script with
+`--forms-only --forms assets/forms.json`, never typed by hand. The file also carries each form's landmarks (body
 top, shoulder line, arms, head), which the slots place pieces by. The form is the session's,
 not the garment's: Save does not write it, and Open keeps the avatar that is loaded.
 
@@ -56,8 +59,12 @@ The tools, with their keys where they have one:
 
 - **Rect** (S), **Polygon** (H) and **Ellipse** (E): an ellipse drags corner to corner, Shift
   for a circle; a click without a drag asks for its size (so does a rectangle's).
-- **Internal** (G) draws an internal line on the selected piece (Enter or a double click ends
-  it); **Int □**, **Int ○** and **Int ⬠** draw an internal rectangle, ellipse or polygon.
+- **Internal** (G) draws an internal line on the selected piece as **Polygon** draws: a click
+  places a corner, a drag places a curve point with mirrored handles; Enter or a double click
+  ends it (Backspace drops the last point). **Int □**, **Int ○** and **Int ⬠** draw an internal
+  rectangle, ellipse or polygon. In **Edit**, the selected piece shows its internal lines' points
+  (hollow squares) and Bézier handles (hollow diamonds): a drag moves one, the handles on either
+  side of a point riding along; each drag is one undo step.
 - **Hole □**, **Hole ○** and **Hole ⬠** cut a rectangular, elliptical or polygonal hole in a
   piece; **To hole** turns an internal closed shape into a hole.
 - **Cut** splits a piece along an internal line, or along a cutter drawn across the selected
@@ -66,7 +73,44 @@ The tools, with their keys where they have one:
   and the status names it). **Cut & sew** also sews the two new edges.
 - **Trace** copies an internal closed shape out as a new piece.
 - **Fillet** rounds a corner: click it, then drag or type the radius.
-- **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M).
+- **Ruler** (R) measures in 2D: two clicks (snapping on, **Shift** for 45° steps) give the
+  straight distance, drawn as a line with its length (mm, to 0.1 mm); a click on an edge gives
+  that side's arc length (a click snapped to a vertex, an end or an intersection starts a
+  two-click measure instead). The measures stay until **Escape** or another tool, and are never
+  saved. In **Edit**, hovering an edge names its side's length on the status line.
+- **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
+  the whole piece: its internal lines, notches and grain go with the outline. With pieces
+  selected, **Move** draws their bounds box: a corner handle scales uniformly about the opposite
+  corner, a side handle scales one axis about the opposite side, and the round handle above the
+  top side rotates about the box centre (**Shift**: 15° steps). Each drag is one undo step, the
+  seams re-anchored.
+- The pattern panel's **Rotate** (degrees, counter-clockwise), **Scale** (%), **Flip H** and
+  **Flip V** turn the selected pieces about their bounds' centre (a multi-selection's union), one
+  undo step each, the seams re-anchored to the new sides; a scale keeps the allowances.
+- **Ctrl+C** copies the selected pieces, with the seams between them, to the app's own clipboard;
+  **Ctrl+V** pastes them 30 mm along x and y as "‹label› copy" (each further paste 30 mm more),
+  off their slots; **Ctrl+D** (and the panel's **Duplicate**) copies and pastes in one step.
+- **Points** in **Edit**: a double click on an outline edge adds a point there; **Delete** (or
+  **Backspace**) removes the selected points in one undo step; a right click on a point opens a
+  menu with **Make curve point** / **Make corner**, and **C** toggles the selected points between
+  the two. A point the kernel refuses (one that would leave too few sides, say) changes nothing,
+  and the status names it. Seams stay on their sides; notches keep their place along the outline.
+- **Notch** places a notch on an edge, of the kind and depth last chosen (a slit, 6 mm deep, at
+  first). The 2D window draws each of the five kinds as cut: **Slit**, **V**, **T**, **Castle**
+  and **U**. A click on a notch in **Edit** selects it; the panel then sets its **Kind**,
+  **Depth** (mm) and **At** (mm along the outline) or removes it, and the kind and depth set
+  there become the Notch tool's next ones.
+- **Sym** makes a symmetric pair: on the selected piece two clicks give an axis, as **Mirror**
+  does, and the mirrored copy is added, linked. An edit of either piece rebuilds the other
+  (outline, holes, internal lines, notches, grain) in the same undo step, live during a drag;
+  moving one moves the other the mirrored way, and moving both moves the pair as one. The
+  panel's **Unlink** (on either piece) makes them independent; deleting one unlinks the other,
+  and **Cut** unlinks first.
+- **Unfold** makes a piece whole: a click on a straight side takes it as the fold, and the piece
+  becomes the half plus its mirror, the fold drawn dashed across it. Editing either half rebuilds
+  the whole from that half (the fold's two ends slide only along the fold). The panel's **Fold
+  back** returns the half, with its own internal lines and notches (seams on the mirrored side
+  are dropped, and the status names them); **Unlink** keeps the whole as an ordinary piece.
 
 **Slots**: Front, Back, the sides and arms; Hood left / Hood right beside the head of a form
 that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).
@@ -138,8 +182,18 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 
 - On the CPU the drape runs at 2-5 frames a second; the View draws at the display rate
   meanwhile and the cloth moves as frames arrive.
-- On the GPU the cloth is one View item in one colour (the first piece's fabric): its pieces
-  are not coloured apart and the selection accent does not show on it.
+- On the GPU the cloth is one View item, coloured per vertex: each piece in its own fabric's
+  colour (the fit map, when on, recolours it). Unlike the CPU cloth, it does not take the
+  selection accent.
+- Box select in **Edit** picks the selected piece's outline points only, not its internal lines'
+  points or handles.
+- **Unfold** renumbers the piece: the whole starts where the fold side ended, so its sides
+  (and the point numbers in status messages) are not the half's old ones.
+- An edit that changes both halves of an unfolded piece at once (points on either side of the
+  fold moved together) keeps the first half's change and rebuilds the other half from it.
+  Internal lines and notches added to the whole are not mirrored.
+- **Sym** refuses a piece that is linked or unfolded already; **Unfold** refuses a linked piece,
+  an unfolded one, a curved side and a piece of fewer than three sides (the status says which).
 - On the GPU the global intersection analysis (GIA) is on by default, as in the View; the GIA
   button turns it off (faster a frame) and back on. The CPU path always runs it.
 - On the GPU a seam's weld lands up to about 2 frames later than on the CPU (it waits for the

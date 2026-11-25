@@ -2,7 +2,7 @@
 // Pure: no kernel calls. Every function takes the current node list (document_nodes) and
 // returns ops for one batch, so one user action is one undo step.
 // (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
-import { shiftAnchors } from "./sewing.js";
+import { shiftAnchors, splitAnchors, mergeAnchors } from "./sewing.js";
 import { removeTacks, tacksOn } from "./tacks.js";
 
 export const FABRIC_FIELDS = [
@@ -46,6 +46,15 @@ export function polyPath(points, curves = []) {
         const to = pt(points[(i + 1) % points.length]);
         const c = curves[i];
         return c ? { type: "bezier", c1: pt(c.c1), c2: pt(c.c2), to } : { type: "line", to };
+    });
+    return { start: pt(points[0]), segments };
+}
+// An open path through `points` (an internal line): curves[i] = {c1, c2} makes the segment from
+// point i to point i + 1 a cubic, else it is a line.
+export function openPath(points, curves = []) {
+    const segments = points.slice(1).map((p, i) => {
+        const c = curves[i];
+        return c ? { type: "bezier", c1: pt(c.c1), c2: pt(c.c2), to: pt(p) } : { type: "line", to: pt(p) };
     });
     return { start: pt(points[0]), segments };
 }
@@ -134,6 +143,44 @@ export function filletOps(nodes, id, path, insertAt, notches) {
     return [...setOutline(nodes, id, path), ...setPattern(nodes, id, { allowance: list, ...(p.notches ? { notches } : {}) }), ...shiftAnchors(nodes, id, insertAt)];
 }
 
+// Point editing (spec §3), each one batch; the commit's re-anchor (reanchorId) then sets the
+// seams' arc lengths from the anchors written here.
+// A point inserted on side `side` at fraction `t0` of its arc length (kernel.js insertPointOps):
+// the new outline, the split side's allowance width given to both halves, the seam anchors split
+// (sewing.js splitAnchors). The outline is the same curve, so notches keep their arc lengths.
+export function insertPointOps(nodes, id, path, side, t0) {
+    const p = byId(nodes).get(id), oldSides = path.segments.length - 1;
+    const allowance = p.allowance ?? [10];
+    const list = allowance.length === oldSides && oldSides > 1
+        ? [...allowance.slice(0, side + 1), allowance[side], ...allowance.slice(side + 1)] : allowance;
+    return [...setOutline(nodes, id, path), ...(list !== allowance ? setPattern(nodes, id, { allowance: list }) : []), ...splitAnchors(nodes, id, side, t0)];
+}
+// Points removed (kernel.js removePointsOps): `steps` in the order the kernel took them, each
+// {vertex, count (sides before it), w (the first merged side's share)}; each removal drops the
+// allowance entry of the side that starts at the point (the merged side keeps the one before's),
+// and merges the seam anchors (sewing.js mergeAnchors). The notches re-placed by the kernel.
+export function removePointsOps(nodes, id, path, steps, notches) {
+    const p = byId(nodes).get(id);
+    let list = [...(p.allowance ?? [10])], cur = nodes;
+    const seamSets = new Map();
+    for (const { vertex, count, w } of steps) {
+        if (list.length === count && count > 1) list.splice(vertex, 1);
+        const ops = mergeAnchors(cur, id, vertex, count, w);
+        for (const o of ops) seamSets.set(o.id, o);
+        cur = withAdded(cur, ops);
+    }
+    const fields = { ...(p.allowance && list.length !== p.allowance.length ? { allowance: list } : {}), ...(p.notches ? { notches } : {}) };
+    return [...setOutline(nodes, id, path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : []), ...seamSets.values()];
+}
+// Points made curve points or corners: the same sides, so the anchors stand; notches re-placed.
+export const smoothPointsOps = (nodes, id, path, notches) =>
+    [...setOutline(nodes, id, path), ...(byId(nodes).get(id)?.notches ? setPattern(nodes, id, { notches }) : [])];
+// Internal entry `line` of piece `id` with a new path (its point edited).
+export function setInternalPath(nodes, id, line, path) {
+    const p = byId(nodes).get(id);
+    return setPattern(nodes, id, { internal: (p.internal ?? []).map((l, i) => (i === line ? { ...l, path: { start: path.start, segments: path.segments } } : l)) });
+}
+
 // A hole added to piece `id`'s outline (path JSON, closed). Hole edges are not sewn this round.
 export function addHole(nodes, id, path) {
     const outline = byId(nodes).get(`${id}_outline`).path;
@@ -218,11 +265,120 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
     return { ops, ids, collapsed };
 }
 
+// Piece `id` set to a transformed piece r = {path, internal, notches, grain} (kernel.js
+// transformedPiece): its outline, and its internal lines, notches and grain where it has them
+// or the transform gives them. The caller re-anchors the seams in the same commit.
+// `ids`: every piece the same matrix moves. An unfolded piece's half and axis move with it (r.unfold);
+// a linked piece's axis moves only when its partner is among `ids` (spec §6: moving one piece
+// keeps the axis, and the partner is rebuilt the mirrored way).
+export function pieceOps(nodes, id, r, ids = [id]) {
+    const n = byId(nodes).get(id), fields = {};
+    if (n?.internal || r.internal?.length) fields.internal = r.internal ?? [];
+    if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
+    if (r.grain) fields.grain = r.grain;
+    let meta = n?.meta;
+    if (r.unfold && meta?.atelier?.unfold) meta = atelierMeta(meta, "unfold", r.unfold);
+    const link = meta?.atelier?.link;
+    if (r.linkAxis && link && ids.includes(link.partner)) meta = atelierMeta(meta, "link", { ...link, axis: r.linkAxis });
+    if (meta !== n?.meta) fields.meta = meta;
+    return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : [])];
+}
+
+// The in-app clipboard (spec §2): copies of pieces `ids` (each its node and outline path) and the
+// seams with both ends among them. Plain data: it outlives the pieces.
+export function copyPieces(nodes, ids) {
+    const map = byId(nodes), clone = (v) => JSON.parse(JSON.stringify(v));
+    const live = ids.filter((id) => map.get(id)?.kind === "garment.pattern" && map.has(`${id}_outline`));
+    return {
+        pieces: live.map((id) => ({ node: clone(map.get(id)), path: clone(map.get(`${id}_outline`).path) })),
+        seams: nodes.filter((n) => n.kind === "garment.seam" && live.includes(n.a) && live.includes(n.b)).map(clone),
+    };
+}
+
+// The clipboard's pieces added as new ones, each from `placed[i]` ({path, internal, notches,
+// grain}: the kernel's moved copy of piece i), labelled "‹label› copy" (made unique), keeping
+// fabric, layer, allowance, mesh size and the rest but not the slot (no frame, no meta slot: it
+// lies on the floor); its inner seams copied onto the new pieces. One batch. -> {ops, ids}
+export function pasteOps(nodes, clip, placed) {
+    const ops = [], ids = [], idOf = new Map();
+    let cur = nodes;
+    clip.pieces.forEach(({ node }, i) => {
+        const r = addPattern(cur, { label: freeLabel(cur, `${node.label ?? "Piece"} copy`), path: placed[i].path, fabric: node.fabric });
+        const add = r.ops.find((o) => o.node?.kind === "garment.pattern");
+        const { id: _i, outline: _o, label: _l, frame: _f, meta, ...rest } = JSON.parse(JSON.stringify(node));
+        Object.assign(add.node, rest, { grain: placed[i].grain ?? rest.grain ?? [0, 1] });
+        if (placed[i].internal?.length) add.node.internal = placed[i].internal; else delete add.node.internal;
+        if (placed[i].notches?.length) add.node.notches = placed[i].notches; else delete add.node.notches;
+        if (meta) {
+            const atelier = { ...(meta.atelier ?? {}) };
+            delete atelier.slot;
+            // a copy is linked to nothing (spec §6); an unfolded one keeps its half, moved with it
+            delete atelier.link;
+            if (placed[i].unfold) atelier.unfold = placed[i].unfold; else delete atelier.unfold;
+            const m2 = { ...meta, atelier };
+            if (!Object.keys(atelier).length) delete m2.atelier;
+            if (Object.keys(m2).length) add.node.meta = m2;
+        }
+        ops.push(...r.ops); ids.push(r.id); idOf.set(node.id, r.id);
+        cur = withAdded(cur, r.ops);
+    });
+    for (const sm of clip.seams) {
+        const { id: _s, kind: _k, a, b, ...rest } = JSON.parse(JSON.stringify(sm));
+        const id = nextId(cur, "s");
+        const r = [{ op: "add", node: { id, kind: "garment.seam", a: idOf.get(a), b: idOf.get(b), ...rest } },
+            ...garmentOps(cur, listOf(cur, "patterns"), [...listOf(cur, "seams"), id])];
+        ops.push(...r);
+        cur = withAdded(cur, r);
+    }
+    return { ops, ids };
+}
+
 // `id` (optional): the new seam's id, when `nodes` lacks seams whose ids must not come back.
 export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor, id = nextId(nodes, "s") }) {
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };
     if (anchor) node.meta = { atelier: anchor };
     return { id, ops: [{ op: "add", node }, ...garmentOps(nodes, listOf(nodes, "patterns"), [...listOf(nodes, "seams"), id])] };
+}
+
+// Seams `ids` removed in one batch.
+export const removeSeams = (nodes, ids) => (ids.length
+    ? [...garmentOps(nodes, listOf(nodes, "patterns"), listOf(nodes, "seams").filter((s) => !ids.includes(s))), ...ids.map((id) => ({ op: "remove", id }))]
+    : []);
+
+// `meta` with meta.atelier[key] set to `value` (undefined: removed; an empty atelier goes too).
+export function atelierMeta(meta, key, value) {
+    const atelier = { ...(meta?.atelier ?? {}) };
+    if (value === undefined) delete atelier[key]; else atelier[key] = value;
+    const out = { ...(meta ?? {}) };
+    if (Object.keys(atelier).length) out.atelier = atelier; else delete out.atelier;
+    return out;
+}
+
+// Spec §6, the Sym tool: piece `id`'s mirrored copy `piece` ({path, internal, notches, grain}:
+// kernel.js mirroredPiece across `axis`) added as its linked partner, "‹label› (sym)" with the
+// source's fabric, layer and allowance list (the kernel keeps the side order); both pieces get
+// meta.atelier.link = {partner, axis}. One batch. -> {id, ops}
+export function linkedCopyOps(nodes, id, piece, axis) {
+    const src = byId(nodes).get(id);
+    if (!src) throw new Error(`no pattern ${id}`);
+    if (src.meta?.atelier?.link) throw new Error("sym: the piece is linked already");
+    if (src.meta?.atelier?.unfold) throw new Error("sym: the piece is unfolded: fold it back or unlink it first");
+    const r = addPattern(nodes, { label: freeLabel(nodes, `${src.label ?? "Piece"} (sym)`), path: piece.path, fabric: src.fabric, layer: src.layer ?? 0, allowance: src.allowance ?? [10], grain: piece.grain ?? src.grain ?? [0, 1] });
+    const node = r.ops.find((o) => o.op === "add" && o.node?.kind === "garment.pattern").node;
+    if (piece.internal?.length) node.internal = piece.internal;
+    if (piece.notches?.length) node.notches = piece.notches;
+    node.meta = { atelier: { link: { partner: id, axis: [...axis] } } };
+    return { id: r.id, ops: [...r.ops, ...setPattern(nodes, id, { meta: atelierMeta(src.meta, "link", { partner: r.id, axis: [...axis] }) })] };
+}
+// Unlink (spec §6): piece `id` without its link (and its partner without the link back) or
+// without its unfold (the whole stays as an ordinary piece). One batch; [] when it has neither.
+export function unlinkOps(nodes, id) {
+    const map = byId(nodes), n = map.get(id), link = n?.meta?.atelier?.link;
+    if (!link && !n?.meta?.atelier?.unfold) return [];
+    const ops = setPattern(nodes, id, { meta: atelierMeta(atelierMeta(n.meta, "link"), "unfold") });
+    const partner = link && map.get(link.partner);
+    if (partner?.meta?.atelier?.link?.partner === id) ops.push(...setPattern(nodes, partner.id, { meta: atelierMeta(partner.meta, "link") }));
+    return ops;
 }
 
 export const removeSeam = (nodes, id) =>

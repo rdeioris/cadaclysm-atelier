@@ -81,10 +81,17 @@ assert.ok(SNAPPING.has("fold") && SNAPPING.has("tack"), "both place points: snap
 assert.deepEqual(["pattern", "edge", "internal", "point", "handle", "hole", "tack", "seam"].map((kind) => pieceOf({ kind, id: "p1" })),
     ["p1", "p1", "p1", "p1", "p1", null, null, null]);
 
-// Edit: a click on an internal line or a tack selects it
+// Edit: a click on an internal line of the piece being edited, or on a tack, selects it; a click on
+// another piece's internal line selects that piece; a double click on the line inserts a point
 {
     const t = makeTool("edit", ctx({ selection: on("p1") }));
-    assert.deepEqual(t.down([10, 50], { kind: "internal", id: "p1", index: 2 }, {}).select, { kind: "internal", id: "p1", index: 2 });
+    const line = { kind: "internal", id: "p1", index: 2 };
+    assert.deepEqual(t.down([10, 50], line, {}), {});
+    assert.deepEqual(t.up([10, 50], line, {}).select, line);
+    const t2 = makeTool("edit", ctx({ selection: line }));
+    assert.deepEqual(t2.down([10, 50], line, {}), {}, "the line's piece stays the one being edited");
+    assert.equal(t2.up([10, 50], line, { dblclick: true }).point.op, "insert");
+    assert.deepEqual(t.down([10, 50], { kind: "internal", id: "p2", index: 0 }, {}).select, { kind: "pattern", id: "p2" });
     assert.deepEqual(t.down([10, 50], { kind: "tack", id: "t3" }, {}).select, { kind: "tack", id: "t3" });
 }
 

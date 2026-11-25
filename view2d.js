@@ -4,7 +4,7 @@
 // column-major, entry 4 * col + row -- to go between its device pixels and pattern millimetres
 // (as the forge's projection.js does), and turns a pick answer into the hit a tool takes. Pure:
 // no View, no kernel, no DOM.
-import { segmentEnd } from "./model.js";
+import { segmentEnd, isClosedPath } from "./model.js";
 
 const unit3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]); return l < 1e-20 ? [0, 0, 1] : [v[0] / l, v[1] / l, v[2] / l]; };
 function axes(r) {
@@ -80,6 +80,48 @@ export function pointsOf(nodes, id) {
     return out;
 }
 
+/** Whether point `i` of `path` is a curve point: a cubic on either side has its handle off the
+ *  point (what the C key and the point menu toggle; the kernel's profile_smooth_vertex makes it). */
+export function isCurvePoint(path, i, closed = true) {
+    const segs = path?.segments ?? [], n = segs.length;
+    if (!n) return false;
+    const at = i === 0 ? path.start : segmentEnd(segs[i - 1]);
+    const off = (h) => !!h && (h[0] !== at[0] || h[1] !== at[1]);
+    const before = i > 0 ? segs[i - 1] : closed ? segs[n - 1] : null, after = segs[i] ?? null;
+    return (before?.type === "bezier" && off(before.c2)) || (after?.type === "bezier" && off(after.c1));
+}
+
+/** Piece `id`'s internal lines' edit handles (open lines and closed shapes, spec §4): each path
+ *  point as {line, index, at} (a closed shape's end, its start again, is not repeated), and the
+ *  Bézier and conic control points as {line, index (the segment), which, at, from, to} with
+ *  `from`/`to` indices into `points` (their tangent lines' other ends). A point an arc or a NURBS
+ *  span ends at is left out, as on the outline (plan ruling 13). */
+export function internalPointsOf(nodes, id) {
+    const out = { points: [], handles: [] };
+    const entries = (nodes ?? []).find((n) => n.id === id)?.internal ?? [];
+    entries.forEach((entry, line) => {
+        const path = entry?.path, segs = path?.segments ?? [], n = segs.length;
+        if (!n) return;
+        const closed = isClosedPath(path), count = closed ? n : n + 1, next = (i) => (closed ? (i + 1) % n : i + 1);
+        const locked = new Set();
+        segs.forEach((seg, i) => { if (seg.type === "arc" || seg.type === "nurbs") locked.add(i).add(next(i)); });
+        const flat = new Map();
+        for (let k = 0; k < count; k++) {
+            if (locked.has(k)) continue;
+            flat.set(k, out.points.length);
+            out.points.push({ line, index: k, at: [...(k === 0 ? path.start : segmentEnd(segs[k - 1]))] });
+        }
+        segs.forEach((seg, i) => {
+            const a = flat.get(i), b = flat.get(next(i));
+            if (seg.type === "bezier") {
+                out.handles.push({ line, index: i, which: "c1", at: [...seg.c1], from: a });
+                out.handles.push({ line, index: i, which: "c2", at: [...seg.c2], from: b });
+            } else if (seg.type === "conic") out.handles.push({ line, index: i, which: "control", at: [...seg.control], from: a, to: b });
+        });
+    });
+    return out;
+}
+
 /** A pick answer, resolved through the item map's entry `what`, as the tools' hit. A label's
  *  text runs past its piece's edge and the View picks text over the fill under it, so a label
  *  answers `pieceAt(point)` -- the highest piece whose outline holds the point (the kernel's,
@@ -98,13 +140,22 @@ export function hitOf(what, pick, drawings, pieceAt = null, cursor = null) {
         case "points": return { kind: "point", id: what.id, index: pick.node };
         case "handles": { const h = what.handles?.[pick.node]; return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
         case "tangents": { const h = tangentHandle(what, at); return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
+        // an internal line's points and handles (internalPointsOf)
+        case "ipoints": { const q = what.refs?.[pick.node]; return q ? { kind: "ipoint", id: what.id, line: q.line, index: q.index } : null; }
+        case "ihandles": { const h = what.handles?.[pick.node]; return h ? { kind: "ihandle", id: what.id, line: h.line, index: h.index, which: h.which } : null; }
+        case "itangents": { const h = tangentHandle(what, at); return h ? { kind: "ihandle", id: what.id, line: h.line, index: h.index, which: h.which } : null; }
         case "sew": return edge(what.id, {});
         case "seam": return edge(what.pattern, { seam: what.id });
         case "internal": return { kind: "internal", id: what.id, index: what.index };
         case "hole": return { kind: "hole", id: what.id, index: what.index };
         case "tack": return { kind: "tack", id: what.id };
         case "label": { const q = cursor ?? at; return { kind: "pattern", id: (q && pieceAt?.(q)) ?? what.id }; }
-        case "fill": case "grain": case "notch": case "cut": return { kind: "pattern", id: what.id };
+        // a notch's mark: that notch (the Edit tool selects it); other tools read it as its piece
+        case "notch": return what.index === undefined ? { kind: "pattern", id: what.id } : { kind: "notch", id: what.id, index: what.index };
+        case "fill": case "grain": case "cut": case "fold": return { kind: "pattern", id: what.id };
+        // the Move tool's handles (scene2d.js): which one; a press on the box's frame moves the selection
+        case "xform": { const handle = what.handles?.[pick.node]; return handle ? { kind: "xform", id: what.id, handle } : null; }
+        case "xformBox": return { kind: "pattern", id: what.id };
         default: return null;
     }
 }
@@ -135,6 +186,17 @@ function segDist([x, y], a, b) {
  *  the piece), a seam or an edit handle. */
 const BOX_KINDS = new Set(["fill", "sew", "cut", "hole", "internal", "notch", "grain"]), WINDOW_KINDS = new Set(["fill", "sew"]);
 export const boxPiece = (what, crossing = true) => (what && (crossing ? BOX_KINDS : WINDOW_KINDS).has(what.kind) ? what.id : null);
+
+/** The Move tool's handles round the selection's box [x0, y0, x1, y1] (y up): the four corners
+ *  (uniform scale about the opposite corner), the four sides' middles (one-axis scale about the
+ *  opposite side) and "rot", `rotOffset` mm above the top side's middle (rotate about the box
+ *  centre). -> [{handle, at}] */
+export const XFORM_SCALE = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+export function xformHandles([x0, y0, x1, y1], rotOffset) {
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const at = { nw: [x0, y1], n: [cx, y1], ne: [x1, y1], e: [x1, cy], se: [x1, y0], s: [cx, y0], sw: [x0, y0], w: [x0, cy] };
+    return [...XFORM_SCALE.map((handle) => ({ handle, at: at[handle] })), { handle: "rot", at: [cx, y1 + rotOffset] }];
+}
 
 /** The box around every drawing's bounds; null for none. */
 export function unionBounds(drawings) {

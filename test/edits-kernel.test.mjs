@@ -23,7 +23,7 @@ const node = (a, id) => m.byId(a.nodes()).get(id);
     const a = fresh();
     rect(a, "Front", 0);
     const ctx = { nodes: a.nodes(), drawings: drawingsOf(a), selection: { kind: "pattern", id: "p1" }, fabric: "f_x",
-        request: async (kind, p) => (kind === "transform" ? a.transformed(p.id, p.matrix) : a.mirroredPiece(p.id, p.axis)) };
+        request: async (kind, p) => (kind === "transform" ? a.transformedPiece(p.id, p.matrix) : a.mirroredPiece(p.id, p.axis)) };
     const t = makeTool("transform", ctx);
     const run = (r) => { if (r?.preview) a.preview(r.preview); return r; };
     t.down([0, 0], { kind: "pattern", id: "p1" }, {});

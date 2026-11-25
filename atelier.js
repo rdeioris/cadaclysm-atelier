@@ -8,18 +8,20 @@ import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams, presetNote } from "./fabrics.js";
-import { makeTool, SNAPPING, typedPoint, typedValues, readout } from "./tools.js";
+import { makeTool, SNAPPING, typedPoint, typedValues, readout, pointMenuOp, NOTCH_DEFAULT } from "./tools.js";
+import { isCurvePoint } from "./view2d.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
-import { fieldsFor, opsFor, validate, fieldText } from "./props.js";
+import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
 import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
 import { TapeTool, cmText } from "./tape3d.js";
 import { SimPanel } from "./simpanel.js";
+import { CUSTOM, draftFrom, bodyCommit, isBodyKey } from "./bodypanel.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -28,14 +30,19 @@ const DEFAULT_FABRIC = "cotton_jersey";
 
 // ---- state --------------------------------------------------------------------------------
 let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
-let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar"|"internal"|"tack", id, ids?, index?}: ids a box selection, index an internal line's
-let pointSel = [];            // the selected piece's box-selected point indices (the Edit tool)
+let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar"|"notch"|"internal"|"tack", id, ids?, index?}: ids a box selection, index a notch's or an internal line's
+let notchNext = { ...NOTCH_DEFAULT };   // the Notch tool's kind and depth: a selected notch's panel edit sets them
+let pointSel = [];            // the selected piece's selected point indices (the Edit tool: a click or a box)
+let ipointSel = [];           // or its internal lines' selected points, [{line, index}]
 let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
 let forms = [];               // the dress forms in assets/forms.json, as the worker read them
 let formLoading = null;       // the form the Form select asked for, until it lands or fails
+let bodyDraft = null;         // the Body panel's draft (bodypanel.js) while "Custom form…" is open
+let formAskedAt = null;       // when Build or Apply was hit: the browser test reads the time to the form shown
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
+let toolKeep = {};            // what a tool keeps while it stays armed (the Ruler's measures): fresh tools share it
 let previewing = false, previewPattern = null;
 let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
 let seq = 0;                  // the `seq` of the last doc-changing message sent
@@ -119,11 +126,12 @@ function exists(sel) {
     if (!sel) return true;
     if (sel.kind === "avatar") return !!avatar;
     if (sel.kind === "internal") return !!nodes.find((n) => n.id === sel.id)?.internal?.[sel.index];
+    if (sel.kind === "notch") return !!nodes.find((n) => n.id === sel.id)?.notches?.[sel.index];
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
-    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}), ...(sel.index !== undefined ? { index: sel.index } : {}) } : null;
-    pointSel = [];                // the worker drops its own on `select`
+    selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}), ...(sel.index != null ? { index: sel.index } : {}) } : null;
+    pointSel = []; ipointSel = [];   // the worker drops its own on `select`
     selSeq++;
     if (selection?.kind === "fabric") pickedFabric = selection.id;
     post({ kind: "select", selection });
@@ -177,21 +185,54 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar", internal: "Internal line on", tack: "Tack" };
+const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar", notch: "Notch", internal: "Internal line on", tack: "Tack" };
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
-    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
+    if (selection.kind === "avatar" && f.key === "form" && raw === CUSTOM) { openBody(); return; }
+    if (selection.kind === "avatar" && f.key === "form") {      // a shipped pick: the Body panel closes, no rebuild over it
+        bodyDraft = null; if (avatar) avatar.draft = null;
+        if (avatar?.landmarks?.form) change("form", { spec: null });
+    }
+    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } else renderProps(); return; }
+    if (selection.kind === "avatar" && bodyDraft && isBodyKey(f.key)) { bodyEdit(f, raw); return; }
     const value = f.type === "text" || f.type === "colour" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
+    // the pattern transforms and Duplicate go through the kernel: one batch each
+    if (selection.kind === "pattern" && TRANSFORM_KEYS.has(f.key)) { transformSelected(f.key, value, f.label); return; }
+    if (selection.kind === "pattern" && f.key === "duplicate") { duplicateSelected(); return; }
+    // Fold back goes through the kernel (spec §6): the worker's batch, its status names dropped seams
+    if (selection.kind === "pattern" && f.key === "foldBack") { cancelPreview(); change("foldBack", { id: selection.id }); return; }
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
         status(f.type === "action" ? f.label : `${f.label}: set`);
+        // a notch's kind or depth is also the Notch tool's next; a removed notch leaves its piece selected
+        if (selection.kind === "notch") {
+            notchNext = nextNotch(notchNext, f.key, value);
+            document.body.dataset.notchNext = `${notchNext.kind},${notchNext.depth}`;
+            if (f.key === "remove") setSelection({ kind: "pattern", id: selection.id });
+        }
         // a duplicated fabric is the one selected next, for its label and colour
         if (f.key === "duplicate" && ops[0]?.op === "add") { pickedFabric = ops[0].node.id; setSelection({ kind: "fabric", id: ops[0].node.id }); }
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
+}
+// "Custom form…": the Body panel, its draft from the form shown (or chart f-M at Rest)
+function openBody() {
+    bodyDraft ??= draftFrom(avatar?.landmarks?.form ?? null);
+    if (avatar) avatar.draft = bodyDraft;
+    status("Custom form: set the measurements and the pose, then Build form");
+    renderProps();
+}
+// A Body-panel edit: the draft changes; Build and Apply write the form into the document
+function bodyEdit(f, raw) {
+    const r = bodyCommit(bodyDraft, f.key, raw);
+    bodyDraft = r.draft;
+    if (avatar) avatar.draft = bodyDraft;
+    if (r.error) { status(r.error, true); renderProps(); return; }
+    if (r.build) { formAskedAt = performance.now(); change("form", { spec: r.build }); status("building the form…"); }
+    renderProps();
 }
 function fieldRow(f) {
     const dt = document.createElement("dt");
@@ -199,7 +240,7 @@ function fieldRow(f) {
     if (f.tip) dt.title = f.tip;
     const dd = document.createElement("dd");
     let input;
-    if (f.type === "readonly") dd.textContent = String(f.value);
+    if (f.type === "readonly") { dd.textContent = String(f.value); if (f.measured) dd.classList.add("measured"); }
     else if (f.type === "action") {
         input = document.createElement("button");
         input.textContent = f.label;
@@ -238,7 +279,8 @@ function renderProps() {
     const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
-    h.textContent = `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
+    h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
+        : `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
     const dl = document.createElement("dl");
     for (const f of fields) dl.append(...fieldRow(f));
     const kids = [h, dl];
@@ -253,8 +295,69 @@ function renderProps() {
     if (target) { target.focus(); target.select?.(); }
 }
 
-// The selected pieces (with their seams), seam, tack or internal line out of the document: one undo step.
+// ---- the pattern transforms and the in-app clipboard (spec §2) -----------------------------
+const liveIds = () => selectedIds(selection).filter((id) => nodes.some((n) => n.id === id));
+// The selection after the change `s` lands (its pieces are not in the page's nodes before).
+let selectAfter = null;
+// Rotate / Scale / Flip H / Flip V of the selected pieces about their union's bounds centre: the
+// kernel moves each whole piece (transformAll), and one batch sets them with their seams
+// re-anchored. The panel's field goes back to 0 / 100 with the doc.
+async function transformSelected(key, value, label) {
+    const ids = liveIds(), b = unionBounds(drawings, ids);
+    if (!b) { status("select a piece first", true); return; }
+    const matrix = transformMatrix(key, value, b);
+    if (!matrix) { renderProps(); return; }
+    try {
+        cancelPreview();
+        const pieces = await request("transformAll", { ids, matrix });
+        const ops = ids.flatMap((id) => model.pieceOps(nodes, id, pieces[id], ids));
+        change("ops", { ops, message: label.toLowerCase(), reanchor: ids });
+        status(`${label}: ${ids.length === 1 ? "the piece" : `${ids.length} pieces`}`, false);
+    } catch (e) { status(`${label}: ${e?.message ?? e}`, true); renderProps(); }
+}
+// The clipboard: the copied pieces with their inner seams (model.copyPieces), and how many
+// pastes it has had (each lands another 30 mm along x and y).
+let clipboard = null, pastes = 0;
+const PASTE_STEP = 30;
+function copySelected() {
+    const ids = liveIds();
+    if (!ids.length) { status("copy: select pieces first", true); return false; }
+    clipboard = model.copyPieces(nodes, ids); pastes = 0;
+    status(`copied ${ids.length === 1 ? "1 piece" : `${ids.length} pieces`}${clipboard.seams.length ? ` and ${clipboard.seams.length} seam${clipboard.seams.length === 1 ? "" : "s"}` : ""}`, false);
+    return true;
+}
+// `clip` placed `k` steps along: the kernel moves each piece, one batch adds them (and their
+// seams), and the new pieces are selected.
+async function placeClip(clip, k, message) {
+    const d = PASTE_STEP * k;
+    try {
+        cancelPreview();
+        const placed = await request("placePieces", { pieces: clip.pieces, matrix: [1, 0, d, 0, 1, d] });
+        const r = model.pasteOps(nodes, clip, placed);
+        const s = change("ops", { ops: r.ops, message });
+        selectAfter = { seq: s, sel: { kind: "pattern", id: r.ids[0], ...(r.ids.length > 1 ? { ids: r.ids } : {}) } };
+        status(`${message}: ${r.ids.length === 1 ? "1 piece" : `${r.ids.length} pieces`}`, false);
+    } catch (e) { status(`${message}: ${e?.message ?? e}`, true); }
+}
+function pasteClipboard() {
+    if (!clipboard?.pieces.length) { status("paste: nothing copied", true); return; }
+    placeClip(clipboard, ++pastes, "paste");
+}
+// Duplicate (Ctrl+D, the panel's button): a copy and a paste in one batch.
+function duplicateSelected() {
+    if (!copySelected()) return;
+    placeClip(clipboard, ++pastes, "duplicate");
+}
+
+// The selected pieces (with their seams), seam, notch, tack or internal line out of the document: one undo step.
 function removeSelected() {
+    if (selection?.kind === "notch" && exists(selection)) {
+        cancelPreview();
+        change("ops", { ops: opsFor(selection, nodes, "remove", null), message: "remove notch" });
+        status("removed the notch");
+        setSelection({ kind: "pattern", id: selection.id });
+        return true;
+    }
     if (selection && (selection.kind === "tack" || selection.kind === "internal") && exists(selection)) {
         cancelPreview();
         change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${selection.kind === "tack" ? "tack" : "line"}` });
@@ -291,23 +394,31 @@ function removeSelected() {
 }
 
 // ---- tools --------------------------------------------------------------------------------
+// the browser test reads the selected points from the body's dataset
+const postPointSel = () => { post({ kind: "pointSel", indices: pointSel, internal: ipointSel }); document.body.dataset.pointSel = pointSel.join(","); };
 function freshTool() {
     const ctx = {
         nodes, drawings, request,
         get fabric() { return currentFabric(); },
         get selection() { return selection; },
         get pointSel() { return pointSel; },
+        get ipointSel() { return ipointSel; },
+        get notchNext() { return notchNext; },
         get pxToWorld() { return mmPerPx * dprNow(); },
+        keep: toolKeep,
     };
     tool = makeTool(toolName, ctx);
     toolStale = false;
 }
 function setTool(name) {
     toolName = name;
+    // the worker draws the Move tool's box and handles round the selection while it is on
+    post({ kind: "tool2d", name });
     for (const b of document.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === name);
     $("well").classList.toggle("tool2d", name !== "edit");
     cancelPreview();
     overlay = null;
+    toolKeep = {};                            // a tool change drops the Ruler's measures
     if (!typed.box.hidden) closeTyped();      // no last point to type from any more
     freshTool();
     draw2d();
@@ -337,8 +448,10 @@ $("tools2d").querySelector("[data-toggle=grid]").addEventListener("click", (e) =
 // A failure is reported and the queue goes on: the next result (an endPreview, say) is never lost.
 let queue = Promise.resolve();
 const toolFailed = (e) => status(`tool: ${e?.message ?? e}`, true);
+// A result may be a function: it is called in its turn, after the results before it are handled
+// (the Edit tool's point keys read the point selection a click just made).
 function apply(result) {
-    queue = queue.then(() => result).then(handle).catch(toolFailed);
+    queue = queue.then(() => (typeof result === "function" ? result() : result)).then(handle).catch(toolFailed);
 }
 // End an open preview without committing it.
 function cancelPreview() {
@@ -355,7 +468,7 @@ function handle(r) {
     if (r.preview) { previewing = true; previewPattern = patternOfOps(r.preview) ?? previewPattern; change("preview", { ops: r.preview }); }
     // the commit re-anchors the edited pattern's seams in the same undo step (the worker does it)
     if (r.endPreview) {
-        change("endPreview", { commit: true, reanchor: previewPattern });
+        change("endPreview", { commit: true, reanchor: r.reanchor ?? previewPattern });
         previewing = false;
         previewPattern = null;
     }
@@ -366,7 +479,11 @@ function handle(r) {
     if (r.trace) change("trace", r.trace);
     // and a fillet
     if (r.fillet) change("fillet", r.fillet);
-    if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse ? r.overlay : null;
+    // and a point inserted, removed or made a corner / curve point (kernel.js pointOps)
+    if (r.point) change("point", r.point);
+    // an unfold (spec §6): the worker builds the whole (one batch) or refuses it
+    if (r.unfold) change("unfold", r.unfold);
+    if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse || r.overlay.labels?.length ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);
     // a click-placed shape asks for its size; the answer goes to the tool that asked, if still armed
@@ -379,7 +496,7 @@ function handle(r) {
         });
     }
     if (r.select !== undefined) setSelection(r.select);
-    if (r.pointSel) { pointSel = r.pointSel; post({ kind: "pointSel", indices: pointSel }); }
+    if (r.pointSel || r.ipointSel) { pointSel = r.pointSel ?? pointSel; ipointSel = r.ipointSel ?? ipointSel; postPointSel(); }
     if (r.done) setTool("edit");
     else if (toolStale && !previewing && !gesture2d()) freshTool();
     syncSnapBase();                       // done, or the overlay emptied: no last point, no lock
@@ -417,6 +534,9 @@ function command(name) {
     else if (name === "simulate") post({ kind: "sim", action: "toggle" });
     else if (name === "reset") post({ kind: "sim", action: "reset" });
     else if (name === "undo" || name === "redo") afterGesture(() => { cancelPreview(); change(name); });
+    else if (name === "copy") copySelected();
+    else if (name === "paste") pasteClipboard();
+    else if (name === "duplicate") duplicateSelected();
     else if (name === "save") menu.save();
     else if (name === "open") menu.open();
     else if (name === "maximise2d") maximise("max2d");
@@ -465,7 +585,8 @@ new ResizeObserver(() => {
 function draw2d() {
     const t = readout(tool?.lastPoint?.() ?? null, lastWorld);
     document.body.dataset.readout = t ?? "";
-    post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, text: t ? { at: lastWorld, text: t } : null });
+    post({ kind: "overlay2d", lines: overlay?.lines ?? [], points: overlay?.points ?? [], ellipse: overlay?.ellipse ?? null, labels: overlay?.labels ?? [], text: t ? { at: lastWorld, text: t } : null });
+    document.body.dataset.labels2d = (overlay?.labels ?? []).map((l) => l.text).join("|");
 }
 
 // Typed lengths: while a tool has a last point, a digit opens the box at the pointer; Tab goes to
@@ -510,6 +631,36 @@ for (const input of [typed.len, typed.ang]) input.addEventListener("keydown", (e
     else if (e.key === "Tab") { e.preventDefault(); (input === typed.len ? typed.ang : typed.len).focus(); }
 });
 function fit2d() { post({ kind: "fit2d" }); }
+
+// The Edit tool's point menu (spec §3): a right click on a point of the selected piece offers
+// "Make curve point" or "Make corner", whichever it is not; the kernel makes it (one batch).
+const pmenu = { box: $("point-menu"), hit: null };
+function pointMenu(hit, xy) {
+    closePointMenu();
+    if (!hit || (hit.kind !== "point" && hit.kind !== "ipoint") || hit.id !== selection?.id || selection?.kind !== "pattern") return;
+    const node = nodes.find((n) => n.id === (hit.kind === "point" ? `${hit.id}_outline` : hit.id));
+    const path = hit.kind === "point" ? node?.path : node?.internal?.[hit.line]?.path;
+    if (!path) return;
+    const curve = isCurvePoint(path, hit.index, hit.kind === "point" || model.isClosedPath(path));
+    $("point-curve").hidden = curve; $("point-corner").hidden = !curve;
+    pmenu.hit = hit;
+    pmenu.box.hidden = false;
+    const well = $("well"), c = cv.getBoundingClientRect(), w = well.getBoundingClientRect();
+    const x = (xy ? xy[0] / dprNow() : pointerCss[0]) + c.left - w.left, y = (xy ? xy[1] / dprNow() : pointerCss[1]) + c.top - w.top;
+    pmenu.box.style.left = `${Math.max(0, Math.min(x + 4, well.clientWidth - pmenu.box.offsetWidth))}px`;
+    pmenu.box.style.top = `${Math.max(0, Math.min(y + 4, well.clientHeight - pmenu.box.offsetHeight))}px`;
+    document.body.dataset.pointMenu = curve ? "corner" : "curve";
+    (curve ? $("point-corner") : $("point-curve")).focus();
+}
+function closePointMenu() { if (!pmenu.box.hidden) { pmenu.box.hidden = true; pmenu.hit = null; document.body.dataset.pointMenu = ""; } }
+for (const [id, smooth] of [["point-curve", true], ["point-corner", false]]) $(id).addEventListener("click", () => {
+    const op = pointMenuOp(pmenu.hit, smooth);
+    closePointMenu();
+    cv.focus();
+    if (op) { cancelPreview(); change("point", op); }
+});
+pmenu.box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closePointMenu(); cv.focus(); } });
+pmenu.box.addEventListener("focusout", (e) => { if (!pmenu.box.contains(e.relatedTarget)) closePointMenu(); });
 
 // The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the
 // router below claims it), so the camera does not orbit; right and middle drag and the wheel
@@ -560,7 +711,7 @@ showMap(); tapeDo(null);
 // with the pattern point and the View's pick. A left press in the 3D window with Pin or Drag on
 // is that tool's. Everything else is the View's camera input; a hover over the 2D window is
 // also sent as `pointer2d` (the worker hovers the piece under it).
-let space = false, shiftHeld = false, drag2d = false, lastUp = null;
+let space = false, shiftHeld = false, drag2d = false, lastUp = null, rightDown = null;
 let ups2d = 0;                            // 2D releases sent, not yet answered: the gesture is still the tool's
 let pan2d = null;                         // the pointer panning the 2D window (the View's), while it does
 let in2d = false;                         // a hover was sent since the pointer last left the 2D window
@@ -623,6 +774,8 @@ listen(cv, (ev) => {
             return;
         }
         if (vp === 1 && ev.button === 1) ev = { ...ev, button: 0 };          // middle-drag pans the 2D window
+        // a right press in 2D pans; let go without moving, it is a click: the point menu (Edit)
+        rightDown = vp === 1 && ev.button === 2 ? { id: ev.pointerId, x: ev.x, y: ev.y } : null;
         if (vp === 0 && ev.button === 0) down3d = [ev.x, ev.y];
     }
     const claim = ev.pointerId !== undefined ? claims.get(ev.pointerId) : undefined;
@@ -653,6 +806,10 @@ listen(cv, (ev) => {
         else if (vpNow !== 1) leave2d();
         if (pan2d === null) cursorAt(vpNow);
         if (fit.on && vpNow === 0 && !down3d) mapHovers.push(ev);
+    }
+    if (ev.kind === "up" && rightDown && rightDown.id === ev.pointerId) {
+        if (Math.hypot(ev.x - rightDown.x, ev.y - rightDown.y) < CLICK_PX * dprNow() && toolName === "edit") send2d("context", ev, mods2d(ev));
+        rightDown = null;
     }
     if (ev.kind === "up" && down3d) {                                    // a click without a drag picks in 3D
         const click = Math.hypot(ev.x - down3d[0], ev.y - down3d[1]) < CLICK_PX * dprNow();
@@ -693,7 +850,7 @@ function onAt2d(m) {
     try { at2dAnswer(m); } finally { settle2d(); }
 }
 function at2dAnswer(m) {
-    const { mods = {}, xy = null } = pending2d.get(m.seq) ?? {};
+    let { mods = {}, xy = null } = pending2d.get(m.seq) ?? {};
     pending2d.delete(m.seq);
     // the keys typed after this release run once the tool has heard it (below), before the next answer
     if (m.phase === "up") { ups2d = Math.max(0, ups2d - 1); keyHold.answered(m.seq); queueMicrotask(() => keyHold.flush()); }
@@ -702,6 +859,7 @@ function at2dAnswer(m) {
     document.body.dataset.hit = m.hit?.kind ?? "";
     document.body.dataset.snap = m.snap?.kind ?? "";
     document.body.dataset.snapAngle = m.snap?.lockedAngle == null ? "" : String(Math.round(m.snap.lockedAngle));
+    if (m.phase === "context") { pointMenu(m.hit, xy); return; }
     // no point (the window hidden since, or the worker failed): a release still ends the
     // gesture, at the last point answered, so no preview is left open
     if (!m.world) { if (m.phase === "up" && tool && lastWorld) apply(tool.up(lastWorld, m.hit, mods)); return; }
@@ -709,6 +867,7 @@ function at2dAnswer(m) {
     document.body.dataset.world = m.world.map((v) => v.toFixed(3)).join(",");
     document.body.dataset.worldAt = xy ? xy.join(",") : "";   // the canvas point (device px) that world answers: the tests wait on it
     if (!tool) return;
+    mods = { ...mods, snap: m.snap?.kind ?? null };
     if (m.phase === "down") apply(tool.down(m.world, m.hit, mods));
     else if (m.phase === "up") apply(tool.up(m.world, m.hit, mods));
     else apply(tool.move(m.world, m.hit, mods));
@@ -800,12 +959,26 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
-    // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
-    if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
+    // Delete (and Backspace in the edit tool) removes the selected points (the Edit tool's key),
+    // else the selected piece, with its seams, seam or notch; else it is the tool's key. Decided in
+    // its turn, after the clicks before it: a click on a point just before selects that point.
+    if (e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) {
+        e.preventDefault();
+        const k = e.key;
+        afterUps(() => {
+            queue = queue.then(() => {
+                const points = toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0);
+                if (!points && removeSelected()) return;
+                const r = tool?.key(k);
+                if (typeof r === "function" || (r && Object.keys(r).length)) apply(r);
+            }).catch(toolFailed);
+        });
+        return;
+    }
     if (e.key === "Backspace" || e.key === "Enter") e.preventDefault();
     const k = e.key;
     afterUps(() => {
-        if (tool) { const r = tool.key(k); if (r && Object.keys(r).length) apply(r); }
+        if (tool) { const r = tool.key(k); if (typeof r === "function" || (r && Object.keys(r).length)) apply(r); }
         if (sc?.tool) setTool(sc.tool);
     });
 });
@@ -898,12 +1071,20 @@ worker.onmessage = ({ data: m }) => {
         case "forms": forms = m.forms ?? []; if (avatar) avatar.forms = forms; break;
         case "avatar":
             avatar = { name: m.name, bounds: m.bounds, landmarks: m.landmarks ?? null, forms };
+            // a built form (meta atelier.form): the Body panel shows its spec; a shipped one closes it
+            bodyDraft = avatar.landmarks?.form ? draftFrom(avatar.landmarks.form) : null;
+            avatar.draft = bodyDraft;
+            document.body.dataset.form = m.formKey ?? "";
+            if (m.formKey && formAskedAt !== null) { document.body.dataset.formMs = String(Math.round(performance.now() - formAskedAt)); formAskedAt = null; }
+            if (m.formKey) { document.body.dataset.formWorkerMs = String(Math.round(m.timings?.worker ?? 0)); status(`form built: ${m.triangles} triangles${m.separate?.length ? `; separate: ${m.separate.join("; ")}` : ""}`); }
             document.body.dataset.avatarHead = avatar.landmarks?.head ? "1" : "0";     // the browser test reads it
             if (formLoading === m.name) { formLoading = null; status(`${m.name} loaded`); }
             renderBrowser();
             if (selection?.kind === "avatar") renderProps();
             break;
         case "status": status(m.text); break;
+        case "formBuilding": status("building the form…"); break;
+        case "formFailed": formAskedAt = null; break;
         case "sim": onSim(m); break;
         case "at2d": onAt2d(m); break;
         case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;
@@ -931,15 +1112,19 @@ worker.onmessage = ({ data: m }) => {
 
 // The selected outline's point count: box-selected point indices hold only while it stands.
 const pointCount = () => (selection?.kind === "pattern" ? nodes.find((n) => n.id === `${selection.id}_outline`)?.path?.segments?.length ?? 0 : 0);
+// The selected piece's internal lines' point counts: internal point selections hold while they stand.
+const internalSig = () => (selection?.kind === "pattern" ? (nodes.find((n) => n.id === selection.id)?.internal ?? []).map((l) => l.path?.segments?.length ?? 0).join(",") : "");
 function onDoc(m) {
-    const points0 = pointCount();
+    const points0 = pointCount(), internal0 = internalSig();
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection
     const kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
-    if (kept !== selection) setSelection(kept);
-    else if (pointSel.length && pointCount() !== points0) { pointSel = []; post({ kind: "pointSel", indices: [] }); }
+    // a paste's or duplicate's new pieces, once they are in
+    if (selectAfter && m.seq >= selectAfter.seq) { const sel = selectAfter.sel; selectAfter = null; if (exists(sel)) setSelection(sel); else if (kept !== selection) setSelection(kept); }
+    else if (kept !== selection) setSelection(kept);
+    else if ((pointSel.length && pointCount() !== points0) || (ipointSel.length && internalSig() !== internal0)) { pointSel = []; ipointSel = []; postPointSel(); }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
     // A fresh tool for the new nodes, unless a gesture (and its previews) is under way.
     if (previewing || gesture2d()) toolStale = true; else freshTool();
