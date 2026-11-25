@@ -22,6 +22,8 @@ import { GpuDrapeHost, gpuClothOk } from "./gpu-drape.js";
 import { filmCommand } from "./film.js";
 import { valueAt, recolourMeshes, BurstCache } from "./fitmap.js";
 import { TapeMeasures } from "./tape3d.js";
+import { concatParts, positionsBox, specKey } from "./dressform.js";
+import { reslotOps } from "./reslot.js";
 
 const ready = (async () => {
     const module = await load();
@@ -39,7 +41,7 @@ const started = new Promise((resolve, reject) => { startedResolve = resolve; sta
 started.catch(() => {});
 let viewer = null;
 let atelier = null;
-let avatar = null;                       // { scene, id, bounds, name }
+let avatar = null;                       // { id, bounds, name, landmarks, dispose, formKey }
 let forms = [];                          // assets/forms.json: the dress forms and their landmarks
 let formAsk = 0;                         // bumped by every Form pick: a pick overtaken while it fetched is dropped
 let drawn = [];                          // View item ids of the slabs and seam lines
@@ -442,6 +444,7 @@ function changed(seq) {
     refresh2d();
     if (!atelier.previewing) lastSaved = null;
     if (sim.live && clothPort) clothPort.postMessage({ kind: "update", ...garmentNow() });
+    syncForm();
 }
 
 // `form` is the forms.json entry (its landmarks) for a dress form from assets; a user's STEP
@@ -455,16 +458,103 @@ async function loadAvatar(bytes, name, form = null) {
         b = sceneBox(scene.vertices(), scene.origin());
         id = v.showScene(scene);
     } catch (e) { scene.free(); throw e; }
-    if (avatar) { v.remove(avatar.id); avatar.scene.free(); }
-    avatar = { scene, id, bounds: b, name };
+    let collider = null;
+    try { collider = avatarMesh(scene.vertices(), scene.origin(), scene.indices()); }
+    catch (e) { post({ kind: "error", text: `avatar collider: ${e.message ?? e}` }); }
+    if (form) lastShipped = name;
+    setAvatar({ id, collider, bounds: b, name, landmarks: form, dispose: () => scene.free() });
+}
+
+// The avatar shown, whatever made it (a STEP file, a shipped form, a form built from
+// measurements): the old one removed and disposed, the cloth told (the drape goes stale), the
+// page told, then the placed pieces re-slotted on it (reslot.js: the one call; lane A's A2
+// refresh may replace it).
+function setAvatar({ id, collider, bounds, name, landmarks = null, dispose = null, formKey = null, extra = {} }) {
+    if (avatar) { viewer.remove(avatar.id); avatar.dispose?.(); }
+    avatar = { id, bounds, name, landmarks, dispose, formKey };
+    shownFormKey = formKey;
+    avatarCollider = collider;
     try {
-        avatarCollider = avatarMesh(scene.vertices(), scene.origin(), scene.indices());
-        clothPort?.postMessage({ kind: "avatar", avatar: avatarCollider });
+        if (collider) clothPort?.postMessage({ kind: "avatar", avatar: collider });
         if (sim.live) { sim.stale = "the avatar changed"; simPost(); }
     } catch (e) { post({ kind: "error", text: `avatar collider: ${e.message ?? e}` }); }
     if (rects) frame3d();
-    post({ kind: "avatar", name, bounds: b, landmarks: form });
+    post({ kind: "avatar", name, bounds, landmarks, formKey, ...extra });
+    reslotPieces();
     if (atelier) refresh3d();
+}
+
+function reslotPieces() {
+    if (!atelier || !avatar || atelier.previewing) return;
+    const r = reslotOps(atelier.nodes(), new Map(atelier.drawings().map((d) => [d.id, d])), { bounds: avatar.bounds, landmarks: avatar.landmarks });
+    if (!r.ops.length) return;
+    try {
+        atelier.apply(r.ops, "re-arrange on the form");
+        changed();
+        post({ kind: "status", text: `re-arranged ${r.moved.length} piece${r.moved.length === 1 ? "" : "s"} on the form` });
+    } catch (e) { post({ kind: "error", text: `re-arrange: ${e.message ?? e}` }); }
+}
+
+// ---- dress forms built from measurements (form-worker.js) ------------------------------------
+// The document's meta atelier.form is what is built: every change runs syncForm, so Build,
+// Apply, undo, redo and Open all arrive here. A build answers on the form worker; only the
+// latest ask (formAsk, shared with the shipped-form picks) is shown.
+const FORM_COLOUR = "#d8cbb8";
+let formWorker = null;
+let shownFormKey = null;         // the built form on the View (its spec key), null for any other avatar
+let pendingFormKey = null;       // the build in flight
+let lastShipped = "f-M";         // the shipped form an undo past the first build goes back to
+let changeCause = null;          // the message kind of the change being handled
+
+function syncForm() {
+    if (!atelier) return;
+    const spec = atelier.formMeta(), key = specKey(spec);
+    if (key) {
+        if (key !== shownFormKey && key !== pendingFormKey) requestForm(spec, key);
+    } else if (changeCause === "open" || changeCause === "new") {
+        if (pendingFormKey) { pendingFormKey = null; formAsk++; }      // the avatar stays as it is
+    } else if (shownFormKey && (changeCause === "undo" || changeCause === "redo")) {
+        pendingFormKey = null;
+        loadShippedForm(lastShipped).catch((e) => post({ kind: "error", text: `avatar: ${e.message ?? e}` }));
+    }
+}
+
+function requestForm(spec, key) {
+    if (!formWorker) {
+        formWorker = new Worker(new URL("./form-worker.js", import.meta.url), { type: "module" });
+        formWorker.onmessage = ({ data }) => { try { onFormBuilt(data); } catch (e) { post({ kind: "error", text: `form: ${e.message ?? e}` }); } };
+        formWorker.onerror = (e) => { e.preventDefault?.(); pendingFormKey = null; post({ kind: "error", text: `form worker: ${e.message || "failed"}` }); };
+    }
+    const ask = ++formAsk;
+    pendingFormKey = key;
+    post({ kind: "formBuilding", key });
+    formWorker.postMessage({ kind: "build", ask, key, spec });
+}
+
+function onFormBuilt(m) {
+    if (m.ask !== formAsk) return;              // a later pick or build is on its way
+    pendingFormKey = null;
+    if (m.kind === "buildError") { post({ kind: "error", text: `form: ${m.text}` }); post({ kind: "formFailed", key: m.key }); return; }
+    const all = concatParts(m.parts);
+    const id = viewer.showMesh({ positions: all.positions, normals: all.normals, indices: all.indices, colour: FORM_COLOUR });
+    const spec = JSON.parse(m.key);
+    setAvatar({
+        id, collider: { positions: all.positions, indices: all.indices }, bounds: positionsBox(all.positions), name: "custom form",
+        landmarks: { ...m.landmarks, name: "custom", label: "Custom form", form: spec, girths: m.girths },
+        formKey: m.key,
+        extra: { timings: m.timings, separate: m.separate, cached: m.cached, triangles: all.indices.length / 3 },
+    });
+}
+
+async function loadShippedForm(name) {
+    const ask = ++formAsk;
+    const form = forms.find((f) => f.name === name);
+    if (!form) throw new Error(`no form ${name}`);
+    const r = await fetch(new URL(`./assets/${form.file}`, import.meta.url));
+    if (!r.ok) throw new Error(`${form.file}: ${r.status}`);
+    const bytes = await r.arrayBuffer();
+    if (ask !== formAsk) return;               // a later pick is loading: the last one chosen wins
+    await loadAvatar(bytes, form.name, form);
 }
 
 // A transform/mirror request answers with the new outline path; the document is not changed.
@@ -474,7 +564,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack", "form"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -508,6 +598,7 @@ self.onmessage = async ({ data }) => {
             return;
         }
         await started;
+        changeCause = data.kind;
         switch (data.kind) {
             // a hole added too small for its allowance is kept, with a word on the status line
             // `reanchor` (a pattern id or a list): those pieces' seams re-anchored in the same commit
@@ -585,17 +676,9 @@ self.onmessage = async ({ data }) => {
             case "importDxf": atelier.apply(atelier.fromDxf(data.text, data.fabric), "import"); changed(data.seq); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
             case "avatar": await loadAvatar(data.bytes, data.name); break;
-            case "avatarAsset": {
-                const ask = ++formAsk;
-                const form = forms.find((f) => f.name === data.name);
-                if (!form) throw new Error(`no form ${data.name}`);
-                const r = await fetch(new URL(`./assets/${form.file}`, import.meta.url));
-                if (!r.ok) throw new Error(`${form.file}: ${r.status}`);
-                const bytes = await r.arrayBuffer();
-                if (ask !== formAsk) break;            // a later pick is loading: the last one chosen wins
-                await loadAvatar(bytes, form.name, form);
-                break;
-            }
+            case "avatarAsset": await loadShippedForm(data.name); break;
+            // Build / Apply: the form's spec into the document (one undo step); syncForm builds it
+            case "form": atelier.apply([atelier.formMetaOp(data.spec ?? null)], data.spec ? "build form" : "shipped form"); changed(data.seq); break;
             case "select": selection = data.selection ?? null; pointSel = []; ipointSel = []; paintSelection(); refresh2d(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));

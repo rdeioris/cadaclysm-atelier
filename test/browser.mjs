@@ -19,6 +19,10 @@
 //     ATELIER_SHOT_HOLES=holes.png ...                   # also one of the holed piece in 2D
 //     ATELIER_SHOT_MAP=map.png ATELIER_SHOT_TAPE=tape.png  # the drape with the Strain map, a girth on the avatar
 //     ATELIER_SHOT_MAP_OFF=off.png ...                  # also the drape with the map back off
+//     ATELIER_SHOT_FORM_XS=xs.png ATELIER_SHOT_FORM_XL=xl.png  # V3: the custom forms built from XS and XL
+//     ATELIER_SHOT_POSED=posed.png ATELIER_HOODIE=<hoodie.json>  # V3: a garment opened, the form at A-pose with
+//                                                        # the left knee bent (ATELIER_KNEE, default 30), draped
+//     ATELIER_V3_ONLY=1 ...                              # only the V3 block (custom forms), after the page is ready
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -237,6 +241,93 @@ async function check(cdp, base) {
             await send("DOM.setFileInputFiles", { files: [file], objectId: result.objectId });
         };
         try {
+            // V3: "Custom form…" -- the Body panel, Build from XS and XL, the measured girths, then a
+            // garment draped on a posed form. Shots on ATELIER_SHOT_FORM_XS / _XL / ATELIER_SHOT_POSED.
+            async function v3() {
+                const shotTo = async (file) => { await evaluate(`document.querySelector("#props dd.measured")?.scrollIntoView({ block: "center" })`); await sleep(800); await frames(); const { data } = await send("Page.captureScreenshot", { format: "png" }); writeFileSync(file, Buffer.from(data, "base64")); ok(`screenshot ${file}`); };
+                const formKey = () => evaluate(`document.body.dataset.form ?? ""`);
+                const action = (key) => evaluate(`${field(key)}.click()`);
+                const build = async (what, key = "build") => {
+                    const before = await formKey();
+                    await action(key);
+                    await until(`${what} built`, async () => { const k = await formKey(); return k && k !== before; }, 120000);
+                    const ms = Number(await evaluate(`document.body.dataset.formMs ?? -1`)), inWorker = Number(await evaluate(`document.body.dataset.formWorkerMs ?? -1`));
+                    await noStatusError();
+                    failIfErrors();
+                    return { ms, inWorker };
+                };
+                await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
+                await until("the Form select", () => evaluate(`!!${field("form")}`), 30000);
+                const options = await evaluate(`[...${field("form")}.options].map((o) => o.value).join(",")`);
+                if (!options.endsWith(",custom")) throw new Error(`the Form options: ${options}`);
+                await setField("form", "custom");
+                await until("the Body panel", () => evaluate(`!!${field("build")} && !!${field("left_leg.knee")}`), 30000);
+                await setField("start", "XS");
+                const bust = await evaluate(`${field("bust")}.value`);
+                if (bust !== "80") throw new Error(`Start from XS: bust ${bust}`);
+                const xs = await build("XS");
+                // the read-outs: each girth measured on the form within 2 % of the asked-for
+                const readouts = await evaluate(`[...document.querySelectorAll("#props dd.measured")].map((d) => d.textContent)`);
+                const girths = readouts.map((t) => /^([\d.]+) cm \(asked ([\d.]+)\)$/.exec(t)).filter(Boolean);
+                if (girths.length !== 3) throw new Error(`the girth read-outs: ${JSON.stringify(readouts)}`);
+                for (const [t, measured, asked] of girths) if (Math.abs(measured - asked) / asked > 0.02) throw new Error(`a measured girth is off: ${t}`);
+                if (await evaluate(`${field("form")}.value`) !== "custom") throw new Error("the Form select does not show the custom form");
+                ok(`custom XS built: ${xs.ms} ms from Build to the form shown (${xs.inWorker} ms in the form worker); ${readouts.join("; ")}`);
+                if (process.env.ATELIER_SHOT_FORM_XS) await shotTo(process.env.ATELIER_SHOT_FORM_XS);
+                await setField("start", "XL");
+                const xl = await build("XL");
+                ok(`custom XL built: ${xl.ms} ms (${xl.inWorker} ms in the worker)`);
+                if (process.env.ATELIER_SHOT_FORM_XL) await shotTo(process.env.ATELIER_SHOT_FORM_XL);
+                // undo goes back to the XS form, redo to the XL
+                const xlKey = await formKey();
+                await evaluate(`document.activeElement?.blur()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("undo: the XS form back", async () => { const k = await formKey(); return k && k !== xlKey && JSON.parse(k).measurements.bust === 80; }, 60000);
+                await key("y", "KeyY", 89, 2);
+                await until("redo: the XL form back", async () => (await formKey()) === xlKey, 60000);
+                failIfErrors();
+                ok("undo and redo rebuild the form the document names");
+                // a garment on a posed form: open it (when given), Custom M with a head at A-pose, a knee bent, Apply, drape
+                const hoodie = process.env.ATELIER_HOODIE;
+                if (hoodie) {
+                    await pickInto("menu-open", hoodie, ".json");
+                    await until("the opened garment", async () => (await patternCount()) > 0, 30000);
+                } else await evaluate(`document.getElementById("menu-sample").click()`);
+                await until("a garment", async () => (await patternCount()) > 0, 30000);
+                await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
+                await until("the Body panel", () => evaluate(`!!${field("build")}`), 30000);
+                await setField("start", "M");
+                await setField("head", "true");
+                await setField("preset", "A-pose");
+                const knee = Number(process.env.ATELIER_KNEE ?? 30);
+                await setField("left_leg.knee", String(knee));
+                if (await evaluate(`${field("left_leg.knee")}.value`) !== String(knee)) throw new Error("the knee angle did not stay");
+                await setField("left_leg.knee", "141");
+                if (!/left knee must be from 0 to 140°/.test((await statusError()) ?? "")) throw new Error(`a knee of 141°: ${await evaluate(`document.getElementById("status-text").textContent`)}`);
+                if (await evaluate(`${field("left_leg.knee")}.value`) !== String(knee)) throw new Error("a refused angle was kept");
+                const posed = await build("the posed form", "apply");
+                const lm = JSON.parse(await formKey());
+                if (lm.pose.left_leg.knee !== knee || lm.pose.left_arm.abduction !== 45 || !lm.head) throw new Error(`the posed form: ${await formKey()}`);
+                ok(`posed M (A-pose, left knee ${knee}°, head) built: ${posed.ms} ms (${posed.inWorker} ms in the worker)`);
+                const health = () => evaluate(`document.getElementById("health").textContent`);
+                const frameNo = async () => Number(/frame (\d+)/.exec(await health())?.[1] ?? -1);
+                const simState = () => evaluate(`document.body.dataset.sim ?? "off"`);
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("the cloth running", async () => (await simState()) === "running", 120000);
+                const target = Number(process.env.ATELIER_DRAPE_FRAMES ?? 4);
+                await until(`frame ${target}`, async () => (await frameNo()) >= target || (await simState()) !== "running", Math.max(120000, target * 3000));
+                if ((await simState()) !== "running") throw new Error(`the drape stopped: ${await evaluate(`document.getElementById("status-text").textContent`)}`);
+                if (process.env.ATELIER_SHOT_POSED) await shotTo(process.env.ATELIER_SHOT_POSED);
+                ok(`a garment drapes on the posed form: ${await health()}`);
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("paused", async () => (await simState()) !== "running", 60000);
+                // a shipped form picked: the Body panel closes and the document forgets the form
+                await setField("form", "f-M");
+                await until("f-M back", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M" && !${field("build")}`), 60000);
+                if (await formKey()) throw new Error("a shipped form still names a built one");
+                failIfErrors();
+                ok("a shipped form picked: the Body panel closes");
+            }
             // 1. ready: the new document has one fabric, no patterns, and the avatar
             const clothWanted = (process.env.ATELIER_CLOTH ?? "").toLowerCase();
             await send("Page.navigate", { url: clothWanted === "cpu" ? `${base}/?cloth=cpu` : `${base}/` });
@@ -254,6 +345,7 @@ async function check(cdp, base) {
             if (!clothWanted && !adapter) console.log("note - no WebGPU adapter in this browser: the cloth runs on the CPU");
             await until("the default fabric", async () => (await count("fabrics", "fabric")) === 1, 30000);
             await until("the avatar", async () => (await count("avatar", "avatar")) === 1, 60000);
+            if (process.env.ATELIER_V3_ONLY === "1") { await v3(); failIfErrors(); ok("V3 block alone"); return; }
             const robots = await evaluate(`document.querySelector('meta[name=robots]')?.content`);
             if (robots !== "noindex") throw new Error(`robots meta is ${robots}`);
             const fps = await evaluate(`document.getElementById("fps").textContent`);
@@ -1601,6 +1693,8 @@ async function check(cdp, base) {
                 writeFileSync(process.env.ATELIER_SHOT_HOLES, Buffer.from(data, "base64"));
                 ok(`screenshot ${process.env.ATELIER_SHOT_HOLES}`);
             }
+            // 8b. V3: custom forms and a posed drape
+            await v3();
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }
         // 9. no console error anywhere, page or worker
         await sleep(300);
