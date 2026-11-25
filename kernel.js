@@ -27,7 +27,9 @@ export function forPage(d) {
 // The kernel calls this app needs beyond 0.15's: a package without them fails here, saying how
 // to get one (scripts/setup.mjs says the same).
 const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "profile_fillet_corner", "profile_piece_count",
-    "profile_piece", "profile_chain", "profile_close_loop", "profile_beziers", "profile_contains", "profile_offset", "face", "mesh"];
+    "profile_piece", "profile_chain", "profile_close_loop", "profile_beziers", "profile_contains", "profile_offset", "face", "mesh",
+    // the simulation controls (S1): saved options and pins, Freeze
+    "garment_sim_options", "garment_pins", "cloth_freeze"];
 
 // The kernel's seam-length warning (garment_issue: severity 1 = warning, kind 10 =
 // ISSUE_SEAM_LENGTH_MISMATCH): CLO's ease rule, a seam whose sides differ by more than 5 %.
