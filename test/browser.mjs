@@ -1512,6 +1512,24 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok("linked pair: Sym added a linked partner; an Edit drag on it moved the source's corner; Ctrl+Z took both back; Unlink");
 
+                // ---- unfold (A1 task A8): a click on the left side makes the piece whole; Fold back ----
+                await evaluate(`document.querySelector('#tools2d [data-tool=unfold]').click()`);
+                const left = screenAt([o[0], o[1] + 40]);
+                await worldOf(left);
+                await click(left);
+                const whole = await until("the whole", async () => { const p = await pathOf(pid); return p.segments.length === 6 ? p : null; }, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); });
+                await noStatusError();
+                if (!hasPoint(whole, [o[0] - 200, o[1]], 1e-6) || !hasPoint(whole, [o[0] - 200, o[1] + 100], 1e-6)) throw new Error(`the whole is ${JSON.stringify(whole)}`);
+                if (whole.segments.some((g, i) => Math.abs(g.to[0] - o[0]) < 1e-9 && Math.abs((i ? whole.segments[i - 1].to : whole.start)[0] - o[0]) < 1e-9)) throw new Error("the fold side is still a side");
+                await until("the Fold back button", () => evaluate(`!!${field("foldBack")}`), 10000);
+                await evaluate(`${field("foldBack")}.click()`);
+                const back = await until("the half again", async () => { const p = await pathOf(pid); return p.segments.length === 4 ? p : null; }, 30000);
+                if (!hasPoint(back, [o[0], o[1]], 1e-6) || !hasPoint(back, [o[0] + 200, o[1] + 100], 1e-6)) throw new Error(`folded back: ${JSON.stringify(back)}`);
+                if ((await saveJson()).nodes.find((n) => n.id === pid).meta?.atelier?.unfold) throw new Error("Fold back kept the unfold");
+                await noStatusError();
+                failIfErrors();
+                ok("unfold: a click on the left side made the piece whole (6 sides, twice as wide); Fold back gave the half");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

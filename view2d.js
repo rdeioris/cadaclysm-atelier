@@ -150,7 +150,7 @@ export function hitOf(what, pick, drawings, pieceAt = null) {
         case "label": return { kind: "pattern", id: (at && pieceAt?.(at)) ?? what.id };
         // a notch's mark: that notch (the Edit tool selects it); other tools read it as its piece
         case "notch": return what.index === undefined ? { kind: "pattern", id: what.id } : { kind: "notch", id: what.id, index: what.index };
-        case "fill": case "grain": case "cut": return { kind: "pattern", id: what.id };
+        case "fill": case "grain": case "cut": case "fold": return { kind: "pattern", id: what.id };
         // the Move tool's handles (scene2d.js): which one; a press on the box's frame moves the selection
         case "xform": { const handle = what.handles?.[pick.node]; return handle ? { kind: "xform", id: what.id, handle } : null; }
         case "xformBox": return { kind: "pattern", id: what.id };

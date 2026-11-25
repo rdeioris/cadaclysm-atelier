@@ -244,4 +244,13 @@ assert.deepEqual(hitOf(tangents.what, { node: 0, point: [15, -5, 3] }, dmap), { 
     // no scale known: a 20 mm offset
     assert.deepEqual(Array.from(specs2d(state({ selection: { kind: "pattern", id: "p1" }, xform: true })).find((s) => s.key === "xform/rot").data).slice(0, 2), [50, 70]);
 }
+// an unfolded piece's fold (spec §6): a dashed guide, picked as its piece
+{
+    const specs = specs2d(state({ drawings: [drawing("p1", 0, { fold: [0, 0, 0, 50] })] }));
+    const fold = specs.find((s) => s.key === "p1/fold");
+    assert.deepEqual(Array.from(fold.data), [0, 0, bandOf(0).line, 0, 50, bandOf(0).line]);
+    assert.ok(fold.dash);
+    assert.deepEqual(hitOf(fold.what, { point: [0, 10, 0] }, new Map()), { kind: "pattern", id: "p1" });
+    assert.ok(!specs2d(state()).some((s) => s.key.endsWith("/fold")));
+}
 console.log("scene2d: ok");

@@ -432,7 +432,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -507,6 +507,16 @@ self.onmessage = async ({ data }) => {
             // a point inserted, removed or made a corner/curve point (kernel.js pointOps): one batch,
             // an outline's seams re-anchored in it; a refusal changes nothing and names the point
             case "point": atelier.commit(atelier.pointOps(data), "point", data.line == null ? data.id : null); changed(data.seq); break;
+            // Unfold and Fold back (spec §6): one batch each, the piece's seams re-anchored in it; the
+            // seams that lose their side are named
+            case "unfold": case "foldBack": {
+                const r = data.kind === "unfold" ? atelier.unfoldOps(data.id, data.side) : atelier.foldBackOps(data.id);
+                atelier.commit(r.ops, data.kind === "unfold" ? "unfold" : "fold back", data.id);
+                changed(data.seq);
+                const what = data.kind === "unfold" ? "unfolded" : "folded back";
+                post({ kind: "status", text: r.dropped.length ? `${what}; dropped seam${r.dropped.length === 1 ? "" : "s"} ${r.dropped.join(", ")}: ${data.kind === "unfold" ? "on the fold side" : "on the mirrored side"}` : what });
+                break;
+            }
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
             case "redo": atelier.redo(); changed(data.seq); break;
             // the whole piece: outline, internal lines, notches and grain (kernel.js transformedPiece)

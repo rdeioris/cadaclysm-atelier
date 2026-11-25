@@ -189,6 +189,8 @@ function commitField(f, raw) {
     // the pattern transforms and Duplicate go through the kernel: one batch each
     if (selection.kind === "pattern" && TRANSFORM_KEYS.has(f.key)) { transformSelected(f.key, value, f.label); return; }
     if (selection.kind === "pattern" && f.key === "duplicate") { duplicateSelected(); return; }
+    // Fold back goes through the kernel (spec §6): the worker's batch, its status names dropped seams
+    if (selection.kind === "pattern" && f.key === "foldBack") { cancelPreview(); change("foldBack", { id: selection.id }); return; }
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
@@ -443,6 +445,8 @@ function handle(r) {
     if (r.fillet) change("fillet", r.fillet);
     // and a point inserted, removed or made a corner / curve point (kernel.js pointOps)
     if (r.point) change("point", r.point);
+    // an unfold (spec §6): the worker builds the whole (one batch) or refuses it
+    if (r.unfold) change("unfold", r.unfold);
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse || r.overlay.labels?.length ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);

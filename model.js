@@ -263,7 +263,8 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
 // Piece `id` set to a transformed piece r = {path, internal, notches, grain} (kernel.js
 // transformedPiece): its outline, and its internal lines, notches and grain where it has them
 // or the transform gives them. The caller re-anchors the seams in the same commit.
-// `ids`: every piece the same matrix moves. A linked piece's axis moves only when its partner is among `ids` (spec §6: moving one piece
+// `ids`: every piece the same matrix moves. An unfolded piece's half and axis move with it (r.unfold);
+// a linked piece's axis moves only when its partner is among `ids` (spec §6: moving one piece
 // keeps the axis, and the partner is rebuilt the mirrored way).
 export function pieceOps(nodes, id, r, ids = [id]) {
     const n = byId(nodes).get(id), fields = {};
@@ -271,6 +272,7 @@ export function pieceOps(nodes, id, r, ids = [id]) {
     if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
     if (r.grain) fields.grain = r.grain;
     let meta = n?.meta;
+    if (r.unfold && meta?.atelier?.unfold) meta = atelierMeta(meta, "unfold", r.unfold);
     const link = meta?.atelier?.link;
     if (r.linkAxis && link && ids.includes(link.partner)) meta = atelierMeta(meta, "link", { ...link, axis: r.linkAxis });
     if (meta !== n?.meta) fields.meta = meta;
@@ -305,8 +307,9 @@ export function pasteOps(nodes, clip, placed) {
         if (meta) {
             const atelier = { ...(meta.atelier ?? {}) };
             delete atelier.slot;
-            // a copy is linked to nothing (spec §6)
+            // a copy is linked to nothing (spec §6); an unfolded one keeps its half, moved with it
             delete atelier.link;
+            if (placed[i].unfold) atelier.unfold = placed[i].unfold; else delete atelier.unfold;
             const m2 = { ...meta, atelier };
             if (!Object.keys(atelier).length) delete m2.atelier;
             if (Object.keys(m2).length) add.node.meta = m2;
@@ -332,6 +335,11 @@ export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anc
     return { id, ops: [{ op: "add", node }, ...garmentOps(nodes, listOf(nodes, "patterns"), [...listOf(nodes, "seams"), id])] };
 }
 
+// Seams `ids` removed in one batch.
+export const removeSeams = (nodes, ids) => (ids.length
+    ? [...garmentOps(nodes, listOf(nodes, "patterns"), listOf(nodes, "seams").filter((s) => !ids.includes(s))), ...ids.map((id) => ({ op: "remove", id }))]
+    : []);
+
 // `meta` with meta.atelier[key] set to `value` (undefined: removed; an empty atelier goes too).
 export function atelierMeta(meta, key, value) {
     const atelier = { ...(meta?.atelier ?? {}) };
@@ -349,6 +357,7 @@ export function linkedCopyOps(nodes, id, piece, axis) {
     const src = byId(nodes).get(id);
     if (!src) throw new Error(`no pattern ${id}`);
     if (src.meta?.atelier?.link) throw new Error("sym: the piece is linked already");
+    if (src.meta?.atelier?.unfold) throw new Error("sym: the piece is unfolded: fold it back or unlink it first");
     const r = addPattern(nodes, { label: freeLabel(nodes, `${src.label ?? "Piece"} (sym)`), path: piece.path, fabric: src.fabric, layer: src.layer ?? 0, allowance: src.allowance ?? [10], grain: piece.grain ?? src.grain ?? [0, 1] });
     const node = r.ops.find((o) => o.op === "add" && o.node?.kind === "garment.pattern").node;
     if (piece.internal?.length) node.internal = piece.internal;
@@ -356,12 +365,12 @@ export function linkedCopyOps(nodes, id, piece, axis) {
     node.meta = { atelier: { link: { partner: id, axis: [...axis] } } };
     return { id: r.id, ops: [...r.ops, ...setPattern(nodes, id, { meta: atelierMeta(src.meta, "link", { partner: r.id, axis: [...axis] }) })] };
 }
-// Unlink (spec §6): piece `id` without its link, and its partner without the link back. One
-// batch; [] when it has none.
+// Unlink (spec §6): piece `id` without its link (and its partner without the link back) or
+// without its unfold (the whole stays as an ordinary piece). One batch; [] when it has neither.
 export function unlinkOps(nodes, id) {
     const map = byId(nodes), n = map.get(id), link = n?.meta?.atelier?.link;
-    if (!link) return [];
-    const ops = setPattern(nodes, id, { meta: atelierMeta(n.meta, "link") });
+    if (!link && !n?.meta?.atelier?.unfold) return [];
+    const ops = setPattern(nodes, id, { meta: atelierMeta(atelierMeta(n.meta, "link"), "unfold") });
     const partner = link && map.get(link.partner);
     if (partner?.meta?.atelier?.link?.partner === id) ops.push(...setPattern(nodes, partner.id, { meta: atelierMeta(partner.meta, "link") }));
     return ops;

@@ -14,6 +14,7 @@ import { pointsOf, internalPointsOf, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
+const FOLD = "#e0b050";   // an unfolded piece's fold guide (spec §6)
 const LINE = "#d8dce2", HOVER = "#ffffff", INTERNAL = "#b0b6c0", CUT = "#8a9099", GRAIN = "#9aa0aa", LABEL = "#c8ccd4", BG = "#1e2024";
 const STATE = { normal: 0, hover: 1, selected: 2, first: 3 };
 /** A piece's depths by its rank in layer order: fill, lines, seams (mm above the grid's z = 0).
@@ -131,6 +132,8 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             const on = selection?.kind === "notch" && selection.id === id && selection.index === k;
             out.push({ key: `${id}/notch/${k}`, show: "lines", data: segs(pl, false, z.line), colour: on ? ACCENT : line, what: { kind: "notch", id, index: k }, sig });
         });
+        // an unfolded piece's fold (spec §6): a dashed guide, not an internal fold line
+        if (d.fold?.length === 4) out.push({ key: `${id}/fold`, show: "lines", data: [d.fold[0], d.fold[1], z.line, d.fold[2], d.fold[3], z.line], colour: FOLD, dash: { dash: 8, gap: 5 }, what: { kind: "fold", id }, sig });
         if (d.grain?.length >= 4) {
             const g = d.grain;
             out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });

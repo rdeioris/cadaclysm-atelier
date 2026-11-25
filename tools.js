@@ -740,6 +740,18 @@ const TOOLS = {
             lastPoint() { return pts.length ? [...pts[0]] : null; },
         };
     },
+    // Unfold (spec §6): a click on a straight side of a piece makes it whole across that side
+    // (the kernel builds it: the worker's unfold).
+    unfold() {
+        return {
+            down(w, h) {
+                if (h?.kind !== "edge") return { status: "click a straight side of a piece" };
+                return { unfold: { id: h.id, side: h.side }, done: true };
+            },
+            move() { return {}; }, up() { return {}; }, key(k) { return k === "Escape" ? { done: true } : {}; },
+        };
+    },
+
     allowance(ctx) {
         let hit = null, digits = "";
         return {

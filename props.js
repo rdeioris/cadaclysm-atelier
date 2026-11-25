@@ -80,9 +80,10 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             { key: "flipV", label: "Flip V", unit: "", type: "action", value: null },
             { key: "duplicate", label: "Duplicate", unit: "", type: "action", value: null },
             { key: "remove", label: "Remove piece", unit: "", type: "action", value: null },
-            // spec §6: a linked pair's action
-            ...(n.meta?.atelier?.link ? [{ key: "unlink", label: "Unlink", unit: "", type: "action", value: null,
-                tip: `Linked to ${find(nodes, n.meta.atelier.link.partner)?.label ?? n.meta.atelier.link.partner}: unlinked, each piece is edited on its own.` }] : []),
+            // spec §6: a linked pair's or an unfolded piece's actions
+            ...(n.meta?.atelier?.unfold ? [{ key: "foldBack", label: "Fold back", unit: "", type: "action", value: null, tip: "Back to the half this piece was unfolded from: seams on the mirrored side are dropped." }] : []),
+            ...(n.meta?.atelier?.link || n.meta?.atelier?.unfold ? [{ key: "unlink", label: "Unlink", unit: "", type: "action", value: null,
+                tip: n.meta.atelier.link ? `Linked to ${find(nodes, n.meta.atelier.link.partner)?.label ?? n.meta.atelier.link.partner}: unlinked, each piece is edited on its own.` : "The whole becomes an ordinary piece: its halves are edited on their own." }] : []),
         ];
     }
     if (selection.kind === "seam") {
@@ -219,6 +220,7 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         }
         if (key === "remove") return model.removePattern(nodes, id);
         if (key === "unlink") return model.unlinkOps(nodes, id);
+        if (key === "foldBack") throw new Error("fold back goes through the kernel (atelier.js commitField)");
         if (TRANSFORM_KEYS.has(key) || key === "duplicate") throw new Error(`${key} goes through the kernel (atelier.js transformSelected / duplicate)`);
         return model.setPattern(nodes, id, { [key]: value });
     }

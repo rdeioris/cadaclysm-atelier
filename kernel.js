@@ -17,14 +17,20 @@ const HOLE_TOL = 0.01;    // mm: profile_deviation's accuracy for that gap (1e-4
 const OUTSIDE = 0, INSIDE = 1, ON = 2;   // profile_contains
 const LAND = 0.5;                        // mm: how near a point must lie to land on an outline
 // Reflection across the line through axis [x0, y0, x1, y1] (the arithmetic of a mirror axis;
-// the shapes themselves go through profile_mirror).
+// the shapes themselves go through profile_mirror), and the foot of a point on that line.
 export function reflector([x0, y0, x1, y1]) {
     const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy), ux = dx / len, uy = dy / len;
     return ([x, y]) => { const k = 2 * ((x - x0) * ux + (y - y0) * uy); return [x0 + k * ux - (x - x0), y0 + k * uy - (y - y0)]; };
 }
+export function projector([x0, y0, x1, y1]) {
+    const dx = x1 - x0, dy = y1 - y0, l2 = dx * dx + dy * dy;
+    return ([x, y]) => { const k = ((x - x0) * dx + (y - y0) * dy) / l2; return [x0 + k * dx, y0 + k * dy]; };
+}
 const SHAPE_FIELDS = new Set(["internal", "notches", "grain", "allowance"]);   // a piece's shape besides its outline
-// A piece's link to its partner {partner, axis} (spec §6), or null.
+const CHAIN_TOL = 1e-6;                  // mm: an unfold's half and mirror meet on the axis within this
+// A piece's link to its partner {partner, axis} and its unfold {axis, half} (spec §6), or null.
 export const linkOf = (n) => n?.meta?.atelier?.link ?? null;
+export const unfoldOf = (n) => n?.meta?.atelier?.unfold ?? null;
 const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
 
 // A drawing without what only the worker draws (posted to the page with every `doc`).
@@ -104,8 +110,8 @@ export class Atelier {
         try {
             this.f("document_apply")(this.d, batch(ops), null);
             this.evaluate();
-            // a linked partner rebuilt from what the ops changed (spec §6), in the same batch; its
-            // seams re-anchored with the rest
+            // a linked partner or an unfolded whole rebuilt from what the ops changed (spec §6),
+            // in the same batch; its seams re-anchored with the rest
             const sym = this.symmetryOps(prior, ops, true);
             if (sym.ops.length) { this.f("document_apply")(this.d, batch(sym.ops), null); this.evaluate(); }
             // several pieces (a transform of a multi-selection): each one's seams in turn
@@ -139,7 +145,7 @@ export class Atelier {
         try {
             this.f("document_preview")(this.d, batch(ops));
             this.evaluate();
-            // each frame rebuilds a linked partner too: both pieces move live
+            // each frame rebuilds a linked partner or an unfolded whole too: both halves move live
             const sym = this.symmetryOps(p.nodes, ops, false);
             if (sym.ops.length) { full = [...ops, ...sym.ops]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
             bad = this.newProblems(p.problems);
@@ -253,11 +259,14 @@ export class Atelier {
             const half = 0.4 * Math.min(bounds[2] - bounds[0], bounds[3] - bounds[1]) || 10;
             const gl = Math.hypot(gx, gy) || 1;
             const grain = [cx - (gx / gl) * half, cy - (gy / gl) * half, cx + (gx / gl) * half, cy + (gy / gl) * half];
+            // an unfolded piece's fold (spec §6): from the whole's start to the end of the half's sides
+            const U = unfoldOf(node), foldEnd = U && outlineNode.path.segments[U.half.path.segments.length - 2];
+            const fold = foldEnd ? [...outlineNode.path.start, ...m.segmentEnd(foldEnd)] : null;
             return {
                 id, label: node.label, fabric: node.fabric, layer: node.layer ?? 0,
                 sew, cut: Array.from(this.f("garment_cut_line")(this.g, pid, TOL)),
                 samples, sides, notches, notchLines, internal, grain, bounds,
-                beziers: this.beziersOf(outlineNode.path), holes, fill,
+                beziers: this.beziersOf(outlineNode.path), holes, fill, fold,
                 link: linkOf(node)?.partner ?? null,
                 sig: JSON.stringify([node, outlineNode.path]),
             };
@@ -501,9 +510,14 @@ export class Atelier {
         if (!(gl > 0)) throw new Error("the transform collapses the piece");
         const r = { path: out, internal, notches, grain: [tx / gl, ty / gl] };
         // spec §6: a link's axis through the same matrix (model.pieceOps keeps it only when the
-        // partner moves too)
+        // partner moves too), and an unfold's axis and half with it
         const axisThrough = ([x0, y0, x1, y1]) => [...map([x0, y0]), ...map([x1, y1])];
         if (linkOf(node)) r.linkAxis = axisThrough(linkOf(node).axis);
+        const U = unfoldOf(node);
+        if (U) {
+            const h = this.pieceThrough({ internal: U.half.internal, notches: U.half.notches }, U.half.path, m6);
+            r.unfold = { axis: axisThrough(U.axis), half: { ...U.half, path: h.path, internal: h.internal, notches: h.notches } };
+        }
         return r;
     }
     // Clipboard pieces ([{node, path}]) through m6: what a paste places. -> [{path, internal, notches, grain}]
@@ -703,7 +717,7 @@ export class Atelier {
         return m.filletOps(this.nodes(), id, r.path, r.insertAt, r.notches);
     }
 
-    // ---- linked pairs (spec §6) ----
+    // ---- linked pairs and unfold (spec §6) ----
     // The pieces a batch's own ops changed the shape of: an outline, or the internal lines,
     // notches, grain or allowance (a label, layer, fabric or meta is not the shape).
     // -> Map id -> {outline: whether its outline changed}
@@ -724,8 +738,9 @@ export class Atelier {
     }
     // The ops that keep the symmetric pieces whole after a batch's own `ops` (`priorList` the
     // nodes before them; the document holds them applied): a linked piece the ops changed rebuilds
-    // its partner (mirrorPieceOf across the link's axis), and a link whose partner is gone or no
-    // longer links back is dropped. Only the pieces the ops touched are read: a rebuilt one
+    // its partner (mirrorPieceOf across the link's axis), an unfolded piece whose outline they
+    // changed rebuilds its whole from the edited half (refolded), and a link whose partner is gone
+    // or no longer links back is dropped. Only the pieces the ops touched are read: a rebuilt one
     // never rebuilds its source back. With `seams`, the rebuilt pieces' seams follow (followSides).
     // -> {ops, reanchor: the pieces whose seams the commit re-anchors}
     symmetryOps(priorList, ops, seams) {
@@ -737,8 +752,8 @@ export class Atelier {
         }
         const touched = this.touchedPieces(ops, after);
         const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-        for (const id of touched.keys()) {
-            const n = after.get(id), L = linkOf(n), path = after.get(`${id}_outline`)?.path;
+        for (const [id, t] of touched) {
+            const n = after.get(id), L = linkOf(n), U = unfoldOf(n), path = after.get(`${id}_outline`)?.path;
             if (!path) continue;
             // both pieces in the batch (a move of the pair): the axis went through the same matrix
             if (L && !touched.has(L.partner) && same(L, linkOf(prior.get(id)))) {
@@ -749,6 +764,13 @@ export class Atelier {
                         ...m.setPattern(nodes, partner.id, { internal: r.internal, notches: r.notches, grain: r.grain, allowance: n.allowance ?? partner.allowance ?? [10] }));
                     if (seams) out.push(...this.followSides(partner.id, old, r.path, nodes, reanchor));
                 }
+            }
+            // an unfold, a fold-back or a move sets `unfold` itself: nothing to rebuild
+            if (U && t.outline && same(U, unfoldOf(prior.get(id)))) {
+                const r = this.refolded(n, U, prior.get(`${id}_outline`)?.path, path);
+                if (!r) continue;
+                out.push(...m.setOutline(nodes, id, r.path), ...m.setPattern(nodes, id, r.fields));
+                if (seams) out.push(...this.followSides(id, path, r.path, nodes, reanchor));
             }
         }
         return { ops: out, reanchor };
@@ -791,6 +813,166 @@ export class Atelier {
             }
         }));
         return ops;
+    }
+
+    // An unfolded piece's whole from its half (spec §6): the half's open outline (its sides but
+    // the fold side, which comes last) and its mirror across the axis, chained and closed by the
+    // kernel (profile_mirror, profile_chain, profile_close_loop). The whole starts where the half
+    // does: its sides 0..N-2 are the half's, N-1+j the half's side N-2-j mirrored (run backwards).
+    // The half's holes, internal lines and notches with their mirrors, then `extra`'s (the whole's
+    // own: {holes, internal, notches on outline `notchesFrom`}). -> {path, internal, notches, allowance}
+    wholeOf(half, axis, extra = {}) {
+        const f = this.f, hp = half.path, N = hp.segments.length;
+        if (N < 2) throw new Error("unfold: the half has too few sides");
+        const [x0, y0, x1, y1] = axis, mirror = (q) => f("profile_mirror")(q, x0, y0, x1 - x0, y1 - y0);
+        const open = { start: hp.start, segments: hp.segments.slice(0, N - 1) };
+        const owned = [], own = (h) => { owned.push(h); return h; };
+        let path;
+        try {
+            const p = own(this.profileOf(open)), q = own(mirror(p));
+            const { start, segments } = this.pathJson(own(f("profile_close_loop")(own(f("profile_chain")(Uint32Array.of(p, q), CHAIN_TOL)))));
+            path = { start, segments };
+        } finally { owned.forEach((h) => f("profile_free")(h)); }
+        if (path.segments.length !== 2 * N - 2 || Math.hypot(path.start[0] - hp.start[0], path.start[1] - hp.start[1]) > 1e-6)
+            throw new Error("unfold: the kernel did not chain the half and its mirror end to end");
+        const mirrored = (l) => { const r = this.withPath({ start: l.start, segments: l.segments }, (q) => this.pathOf(mirror(q))); return { start: r.start, segments: r.segments }; };
+        const holes = [...(hp.holes ?? []), ...(hp.holes ?? []).map(mirrored), ...(extra.holes ?? [])];
+        if (holes.length) path.holes = holes;
+        const internal = [...(half.internal ?? []), ...(half.internal ?? []).map((l) => ({ ...l, path: mirrored(l.path) })), ...(extra.internal ?? [])];
+        const reflect = reflector(axis);
+        // the half's notches stand at their own arc lengths (the whole runs the half's sides first);
+        // one on the fold side is gone with it
+        const notches = this.withPath(open, (op) => this.withPath({ start: path.start, segments: path.segments }, (wp) => {
+            const L = this.openLength(op), samples = this.samplesOf(wp), sides = this.sideStarts(wp, f("profile_length")(wp, ACC)[0], path.segments.length);
+            const mine = (half.notches ?? []).filter((nt) => nt.at <= L + 1e-9);
+            const mirrors = mine.map((nt) => { const r = f("profile_point_at_length")(op, nt.at, ACC); return { ...nt, at: arcAt(samples, sides, reflect([r[0], r[1]])).s }; });
+            return [...mine, ...mirrors];
+        }));
+        if (extra.notches?.length) notches.push(...this.notchesOnto({ notches: extra.notches }, extra.notchesFrom, path));
+        const a = half.allowance ?? [10];
+        const allowance = a.length === N && N > 1 ? [...a.slice(0, N - 1), ...a.slice(0, N - 1).reverse()] : a;
+        return { path, internal, notches, allowance };
+    }
+    // An unfolded piece's whole after an edit took outline `oldW` to `newW` (spec §6): the half
+    // holding the edit becomes the half, mirrored back (profile_mirror, profile_reversed) when it
+    // was the mirrored side, its two fold ends put back on the axis, and the whole rebuilt from it.
+    // The sides that did not change say which half was edited (the half's first: a move of a fold
+    // end changes both). null when neither half's sides changed (a hole edit).
+    // -> {path, fields} (fields: internal, notches, allowance and the meta with the new half)
+    refolded(node, U, oldW, newW) {
+        const f = this.f, half = U.half.path, N = half.segments.length, T = 2 * N - 2, T2 = newW.segments.length;
+        if (!oldW || oldW.segments.length !== T) return null;
+        const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+        const hSame = eq(newW.start, oldW.start) && eq(newW.segments.slice(0, N - 1), oldW.segments.slice(0, N - 1));
+        const mSame = eq(newW.segments.slice(T2 - (N - 1)), oldW.segments.slice(N - 1));
+        if (hSame && mSame) return null;
+        const k = T2 - (N - 1);          // the edited half's sides (the other kept its N - 1)
+        if (k < 1) throw new Error("unfold: a half needs a side besides the fold");
+        const [x0, y0, x1, y1] = U.axis;
+        let open, mirrored = false;
+        if (!hSame) open = { start: newW.start, segments: newW.segments.slice(0, k) };
+        else {
+            mirrored = true;
+            const back = { start: m.segmentEnd(newW.segments[N - 2]), segments: newW.segments.slice(N - 1) };
+            open = this.withPath(back, (p) => {
+                const q = f("profile_mirror")(p, x0, y0, x1 - x0, y1 - y0);
+                try { return this.pathOf(f("profile_reversed")(q)); } finally { f("profile_free")(q); }
+            });
+        }
+        // the fold's two ends move only along the axis
+        const proj = projector(U.axis), segments = open.segments.map((s) => JSON.parse(JSON.stringify(s)));
+        const start = proj(open.start), d0 = [start[0] - open.start[0], start[1] - open.start[1]];
+        if (segments[0].type === "bezier") segments[0].c1 = [segments[0].c1[0] + d0[0], segments[0].c1[1] + d0[1]];
+        const last = segments.at(-1), e = m.segmentEnd(last), end = proj(e), d1 = [end[0] - e[0], end[1] - e[1]];
+        if (last.to) last.to = end; else if (last.points) last.points[last.points.length - 1] = end;
+        if (last.type === "bezier") last.c2 = [last.c2[0] + d1[0], last.c2[1] + d1[1]];
+        const path = { start, segments: [...segments, { type: "line", to: [...start] }], ...(half.holes ? { holes: half.holes } : {}) };
+        const per = node.allowance ?? [10], hA = U.half.allowance ?? per;
+        let allowance;
+        if (per.length === T2 && T2 > 1) {
+            const region = mirrored ? per.slice(N - 1).reverse() : per.slice(0, k);
+            allowance = [...region, hA.length === N ? hA[N - 1] : region[0]];
+        } else allowance = hA.length === k + 1 || hA.length === 1 ? hA : [hA[0]];
+        const newHalf = { path, internal: U.half.internal ?? [], notches: this.notchesOnto({ notches: U.half.notches ?? [] }, half, path), allowance };
+        const hi = (U.half.internal ?? []).length, hn = (U.half.notches ?? []).length, hh = (half.holes ?? []).length;
+        const whole = this.wholeOf(newHalf, U.axis, {
+            holes: (newW.holes ?? []).slice(2 * hh), internal: (node.internal ?? []).slice(2 * hi),
+            notches: (node.notches ?? []).slice(2 * hn), notchesFrom: newW,
+        });
+        this.checkHoles(whole.path);
+        return {
+            path: whole.path,
+            fields: { internal: whole.internal, notches: whole.notches, allowance: whole.allowance, meta: m.atelierMeta(node.meta, "unfold", { axis: U.axis, half: newHalf }) },
+        };
+    }
+    // Unfold (spec §6): piece `id` made whole across its straight side `side`, the fold. The half
+    // is kept re-indexed to start where the fold side ends, the fold side last (so the whole's
+    // first sides are the half's); its seams follow their sides, one on the fold side is dropped.
+    // -> {ops, dropped: seam ids}; Atelier.commit(ops, "unfold", id) re-anchors the rest.
+    unfoldOps(id, side) {
+        const { node, path } = this.pieceOf(id), nodes = this.nodes(), segs = path.segments, N = segs.length;
+        if (linkOf(node)) throw new Error("unfold: the piece is linked: unlink it first");
+        if (unfoldOf(node)) throw new Error("unfold: the piece is unfolded already");
+        if (!Number.isInteger(side) || side < 0 || side >= N) throw new Error(`unfold: no side ${side + 1}`);
+        if (segs[side].type !== "line") throw new Error("unfold: click a straight side");
+        if (N < 3) throw new Error("unfold: the piece needs three sides or more");
+        const a = m.pathPoints(path)[side], b = m.segmentEnd(segs[side]), axis = [a[0], a[1], b[0], b[1]];
+        const at = (j) => (j - side - 1 + N) % N;     // a side's index in the half
+        const sides = this.sidesOf(id), P = sides.at(-1), s0 = sides[side + 1] % P, foldAt = P - (sides[side + 1] - sides[side]);
+        const notches = (node.notches ?? []).map((nt) => ({ ...nt, at: (((nt.at - s0) % P) + P) % P })).filter((nt) => nt.at <= foldAt + 1e-9);
+        const per = node.allowance ?? [10];
+        const half = {
+            path: { start: [...b], segments: [...segs.slice(side + 1), ...segs.slice(0, side + 1)].map((s) => JSON.parse(JSON.stringify(s))), ...(path.holes ? { holes: path.holes } : {}) },
+            internal: node.internal ?? [], notches,
+            allowance: per.length === N ? per.map((_, j) => per[(j + side + 1) % N]) : per,
+        };
+        const whole = this.wholeOf(half, axis);
+        this.checkHoles(whole.path);
+        const dropped = [], moves = [];
+        for (const n of nodes) {
+            if (n.kind !== "garment.seam" || !n.meta?.atelier || (n.a !== id && n.b !== id)) continue;
+            const anchor = { ...n.meta.atelier };
+            let gone = false;
+            for (const end of ["a", "b"]) {
+                if (n[end] !== id || !anchor[end]) continue;
+                const [sf, tf, tt, st = sf] = anchor[end], x = at(sf), y = at(st);
+                // on the fold side, or running round through it
+                if (x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt)) { gone = true; break; }
+                anchor[end] = x === y ? [x, tf, tt] : [x, tf, tt, y];
+            }
+            if (gone) dropped.push(n.id);
+            else moves.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
+        }
+        return {
+            ops: [...m.setOutline(nodes, id, whole.path),
+                ...m.setPattern(nodes, id, { internal: whole.internal, notches: whole.notches, allowance: whole.allowance, meta: m.atelierMeta(node.meta, "unfold", { axis, half }) }),
+                ...moves, ...m.removeSeams(nodes, dropped)],
+            dropped,
+        };
+    }
+    // Fold back (spec §6): the unfolded piece `id` is its half again -- outline, internal lines,
+    // notches and allowance as the half has them. A seam on the half's sides keeps its anchor (the
+    // whole's first sides are the half's); one on the mirrored side is dropped.
+    // -> {ops, dropped}; Atelier.commit(ops, "fold back", id) re-anchors the rest.
+    foldBackOps(id) {
+        const { node } = this.pieceOf(id), nodes = this.nodes(), U = unfoldOf(node);
+        if (!U) throw new Error("fold back: the piece is not unfolded");
+        const N = U.half.path.segments.length, dropped = [];
+        for (const n of nodes) {
+            if (n.kind !== "garment.seam" || (n.a !== id && n.b !== id)) continue;
+            for (const end of ["a", "b"]) {
+                if (n[end] !== id) continue;
+                const [sf, tf, tt, st = sf] = n.meta?.atelier?.[end] ?? [N, 0, 0];
+                if (sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt)) { dropped.push(n.id); break; }
+            }
+        }
+        const h = U.half;
+        return {
+            ops: [...m.setOutline(nodes, id, h.path),
+                ...m.setPattern(nodes, id, { internal: h.internal ?? [], notches: h.notches ?? [], allowance: h.allowance ?? node.allowance ?? [10], meta: m.atelierMeta(node.meta, "unfold") }),
+                ...m.removeSeams(nodes, dropped)],
+            dropped,
+        };
     }
 
     // ---- point editing (spec §3): the kernel's profile_insert/remove/smooth_vertex ----
