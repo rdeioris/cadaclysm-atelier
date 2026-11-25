@@ -429,7 +429,7 @@ async function tapeOp(data) {
     if (data.target === "avatar") mesh = avatarCollider;
     else if (sim.live && sim.triangles) mesh = { positions: clothEngine === "gpu" ? await clothPort.positions() : sim.positions, indices: sim.triangles };
     if (!mesh?.positions) throw new Error(`tape: no ${data.target === "avatar" ? "avatar" : "cloth"} to measure`);
-    post({ kind: "taped", id: data.id, op: data.op, length: tapes.measure(data, mesh) });
+    post({ kind: "taped", id: data.id, op: data.op, target: data.target, length: tapes.measure(data, mesh) });
 }
 
 // `seq` echoes the request's own `seq`, so the page knows which change a `doc` answers.

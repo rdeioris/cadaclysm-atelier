@@ -904,7 +904,7 @@ worker.onmessage = ({ data: m }) => {
             $("map-value").textContent = m.value == null ? "" : valueText(fit.key, m.value);
             document.body.dataset.mapValue = m.value == null ? "" : String(m.value);
             break;
-        case "taped": status(`${m.op === "girth" ? "girth" : "tape"}: ${cmText(m.length)}`); document.body.dataset.tapeLength = String(m.length); break;
+        case "taped": status(`${m.op === "girth" ? "girth" : "tape"}: ${cmText(m.length)}`); document.body.dataset.tapeLength = String(m.length); document.body.dataset.tapeTarget = m.target; break;
         case "path": waiting.get(m.reqId)?.resolve(m.path); waiting.delete(m.reqId); break;
         case "saved":
             if (film?.onSaved(m.text)) break;
