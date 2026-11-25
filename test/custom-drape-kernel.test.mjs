@@ -3,7 +3,7 @@
 // cache). Each time the pieces are re-slotted on the form (reslot.js), the cloth is built from the
 // re-arranged document and run SETTLE_FRAMES frames, with settle-kernel's health checks: no
 // non-finite particle, every seam pair welded, the peak speed over the last 50 frames under
-// 200 mm/s. Frame counts only, no clock. ATELIER_DRAPE_POSED=0 skips the A-pose half.
+// 200 mm/s. Frame counts only, no clock. The A-pose half runs with ATELIER_LONG=1 (about 90 s more).
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
@@ -53,7 +53,7 @@ function drapeOn(what, pose) {
 
 drapeOn("custom M at Rest", null);
 console.log("ok - the T-shirt drapes on a custom M with legs");
-if (process.env.ATELIER_DRAPE_POSED !== "0") {
+if (process.env.ATELIER_LONG === "1") {
     drapeOn("custom M at A-pose", PRESETS["A-pose"]);
     console.log("ok - the T-shirt drapes on the custom M at A-pose");
-} else console.log("skip - the A-pose drape (ATELIER_DRAPE_POSED=0)");
+} else console.log("skip - the A-pose drape (ATELIER_LONG=1)");
