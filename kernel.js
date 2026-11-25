@@ -144,6 +144,17 @@ export class Atelier {
     }
     redo() { this.f("document_redo")(this.d); this.evaluate(); }
     save() { return this.f("document_save")(this.d); }
+    // The app's document meta (`atelier`): the form built from measurements, `form`, is the V3
+    // dress form's spec (dressform.js normaliseSpec), or null.
+    atelierMeta() { const t = this.f("document_meta")(this.d, "atelier"); return t ? JSON.parse(t) ?? {} : {}; }
+    formMeta() { return this.atelierMeta().form ?? null; }
+    // The op that sets the form (null removes it). The op replaces the app's whole value, so the
+    // other keys are carried; with nothing left the meta is dropped.
+    formMetaOp(spec) {
+        const value = { ...this.atelierMeta() };
+        if (spec) value.form = spec; else delete value.form;
+        return { op: "meta", app: "atelier", value: Object.keys(value).length ? value : null };
+    }
     swapDocument(d) { this.dropGarment(); this.f("document_free")(this.d); this.d = d; this.open = null; }
     // An opened document's seams without the app's anchor (an older or imported one) are anchored
     // to their sides as they are now, and fabrics with buckling_stiffness in the old absolute form
