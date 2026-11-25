@@ -5,6 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
+import { makeGroupTool } from "./seamgroup.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 
@@ -840,6 +841,7 @@ function piecesOnly(t) {
 }
 export function makeTool(name, ctx) {
     if (name === "segment" || name === "free") return piecesOnly(makeSewingTool(name, ctx));
+    if (name === "sewmn") return piecesOnly(makeGroupTool(ctx));
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
     const t = TOOLS[name](ctx);
     return name === "edit" ? t : piecesOnly(t);

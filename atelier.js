@@ -11,6 +11,7 @@ import { PRESETS, presetParams, presetNote } from "./fabrics.js";
 import { makeTool, SNAPPING, typedPoint, typedValues, readout, pointMenuOp, NOTCH_DEFAULT } from "./tools.js";
 import { isCurvePoint } from "./view2d.js";
 import { seamColour } from "./sewing.js";
+import { groupOf, groupSelection, membersOf } from "./seamgroup.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, avatarFormat, fabricColours, isSelected, survivingSelection } from "./arrange.js";
@@ -128,6 +129,7 @@ function exists(sel) {
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
+    sel = groupSelection(sel, nodes);   // one seam of an M:N group selects the group
     selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}), ...(sel.index != null ? { index: sel.index } : {}) } : null;
     pointSel = []; ipointSel = [];   // the worker drops its own on `select`
     selSeq++;
@@ -157,8 +159,16 @@ function renderBrowser() {
     $("browser-patterns").replaceChildren(...(patterns.length
         ? patterns.map((id) => item("pattern", id, byId.get(id)?.label ?? id, swatch(colours.get(byId.get(id)?.fabric) ?? "#cccccc")))
         : [empty("draw one in 2D")]));
-    $("browser-seams").replaceChildren(...(seams.length
-        ? seams.map((s, i) => item("seam", s.id, `${i + 1}: ${byId.get(s.a)?.label ?? s.a} – ${byId.get(s.b)?.label ?? s.b}`, swatch(seamColour(i))))
+    // an M:N group is one entry (its first member's), in its first member's colour
+    const label = (id) => byId.get(id)?.label ?? id;
+    const listed = seams.map((s, i) => ({ s, i })).filter(({ s }) => !s.group || seams.find((t) => t.group === s.group) === s);
+    $("browser-seams").replaceChildren(...(listed.length
+        ? listed.map(({ s, i }) => {
+            if (!s.group) return item("seam", s.id, `${i + 1}: ${label(s.a)} – ${label(s.b)}`, swatch(seamColour(i)));
+            const g = groupOf(byId.get(s.id)), n = seams.filter((t) => t.group === s.group).length;
+            const names = (rs) => [...new Set((rs ?? []).map((r) => label(r.pattern)))].join(" + ");
+            return item("seam", s.id, `${i + 1}: ${names(g?.a)} – ${names(g?.b)} (M:N, ${n} seams)`, swatch(seamColour(i)));
+        })
         : [empty("none")]));
     $("browser-avatar").replaceChildren(avatar ? item("avatar", "avatar", avatar.name) : empty("none"));
     markBrowser();
@@ -183,7 +193,7 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar", notch: "Notch" };
+const TITLES = { pattern: "Pattern", seam: "Seam", group: "Seam group", fabric: "Fabric", avatar: "Avatar", notch: "Notch" };
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
@@ -205,6 +215,8 @@ function commitField(f, raw) {
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
+        // an ungrouped M:N group: its first seam stays selected, as a plain seam
+        if (selection.kind === "seam" && f.key === "ungroup") { const id = selection.id; selection = { kind: "seam", id }; post({ kind: "select", selection }); }
         status(f.type === "action" ? f.label : `${f.label}: set`);
         // a notch's kind or depth is also the Notch tool's next; a removed notch leaves its piece selected
         if (selection.kind === "notch") {
@@ -278,6 +290,7 @@ function renderProps() {
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
     h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
+        : selection.kind === "seam" && groupOf(n) ? `${TITLES.group} ${groupOf(n).id}`
         : `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
     const dl = document.createElement("dl");
     for (const f of fields) dl.append(...fieldRow(f));
@@ -361,8 +374,9 @@ function removeSelected() {
     const kind = selection.kind;
     const pieces = kind === "pattern" ? (selection.ids ?? [selection.id]).filter((id) => nodes.some((n) => n.id === id)) : [];
     const ops = pieces.length > 1 ? model.removePatterns(nodes, pieces) : opsFor(selection, nodes, "remove", null);
-    change("ops", { ops, message: `remove ${kind === "pattern" ? (pieces.length > 1 ? "pieces" : "piece") : "seam"}` });
-    status(kind === "pattern" ? (pieces.length > 1 ? `removed ${pieces.length} pieces` : "removed the piece") : "removed the seam");
+    const group = kind === "seam" && membersOf(nodes, selection.id);   // an M:N group goes whole
+    change("ops", { ops, message: `remove ${kind === "pattern" ? (pieces.length > 1 ? "pieces" : "piece") : group ? "seam group" : "seam"}` });
+    status(kind === "pattern" ? (pieces.length > 1 ? `removed ${pieces.length} pieces` : "removed the piece") : group ? `removed the M:N group (${group.length} seams)` : "removed the seam");
     setSelection(null);
     return true;
 }
@@ -1106,11 +1120,18 @@ const pointCount = () => (selection?.kind === "pattern" ? nodes.find((n) => n.id
 const internalSig = () => (selection?.kind === "pattern" ? (nodes.find((n) => n.id === selection.id)?.internal ?? []).map((l) => l.path?.segments?.length ?? 0).join(",") : "");
 function onDoc(m) {
     const points0 = pointCount(), internal0 = internalSig();
+    // a selected M:N group: its members after the change (a re-distribution may renew their ids)
+    const group = selection?.kind === "seam" ? groupOf(nodes.find((n) => n.id === selection.id))?.id ?? null : null;
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection
-    const kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
+    let kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
+    if (group) {
+        const first = nodes.find((n) => groupOf(n)?.id === group);
+        const again = first ? groupSelection({ kind: "seam", id: first.id }, nodes) : null;
+        if (again && JSON.stringify(again) !== JSON.stringify(kept)) kept = again;
+    }
     // a paste's or duplicate's new pieces, once they are in
     if (selectAfter && m.seq >= selectAfter.seq) { const sel = selectAfter.sel; selectAfter = null; if (exists(sel)) setSelection(sel); else if (kept !== selection) setSelection(kept); }
     else if (kept !== selection) setSelection(kept);

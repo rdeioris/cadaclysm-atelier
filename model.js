@@ -317,8 +317,21 @@ export function pasteOps(nodes, clip, placed) {
         ops.push(...r.ops); ids.push(r.id); idOf.set(node.id, r.id);
         cur = withAdded(cur, r.ops);
     });
+    // an M:N group's copies form a new group when all its ranges' pieces were copied, else they
+    // are plain seams (seamgroup.js)
+    const groupIds = new Map();
+    let groupNo = Math.max(0, ...nodes.map((n) => /^g(\d+)$/.exec(n.meta?.atelier?.group?.id ?? "")?.[1] ?? 0).map(Number));
     for (const sm of clip.seams) {
         const { id: _s, kind: _k, a, b, ...rest } = JSON.parse(JSON.stringify(sm));
+        const g = rest.meta?.atelier?.group;
+        if (g) {
+            const all = [...g.a, ...g.b].every((r) => idOf.has(r.pattern));
+            if (all) {
+                if (!groupIds.has(g.id)) groupIds.set(g.id, `g${++groupNo}`);
+                const map = (rs) => rs.map((r) => ({ ...r, pattern: idOf.get(r.pattern) }));
+                rest.meta.atelier.group = { ...g, id: groupIds.get(g.id), a: map(g.a), b: map(g.b) };
+            } else { delete rest.meta.atelier.group; delete rest.meta.atelier.member; }
+        }
         const id = nextId(cur, "s");
         const r = [{ op: "add", node: { id, kind: "garment.seam", a: idOf.get(a), b: idOf.get(b), ...rest } },
             ...garmentOps(cur, listOf(cur, "patterns"), [...listOf(cur, "seams"), id])];

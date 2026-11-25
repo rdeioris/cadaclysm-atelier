@@ -78,6 +78,16 @@ The tools, with their keys where they have one:
   that side's arc length (a click snapped to a vertex, an end or an intersection starts a
   two-click measure instead). The measures stay until **Escape** or another tool, and are never
   saved. In **Edit**, hovering an edge names its side's length on the status line.
+- **Sew M:N** (B) sews several ranges to several: pick side A's ranges (a click on a side takes
+  the whole side, running away from the end nearer the click; **Shift** and two clicks take a
+  free range, first click to second), **Enter**, side B's the same way, **Enter** sews.
+  **Backspace** drops the last range, **Escape** cancels. A's ranges end to end map onto B's end
+  to end by length; every range end on either side cuts the run, and each piece is one 1:1 seam
+  (at most M + N - 1). The group is re-distributed after every edit of its pieces (one undo step
+  with the edit); a piece cut, or a range's side gone, leaves its seams as plain ones. Selecting
+  one of its seams selects the group (one colour, numbered n.1, n.2, ...): the panel shows its
+  ranges and lengths, **Ungroup** (the seams stay as plain 1:1 seams) and **Remove group**;
+  **Delete** removes it whole.
 - **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
   the whole piece: its internal lines, notches and grain go with the outline. With pieces
   selected, **Move** draws their bounds box: a corner handle scales uniformly about the opposite

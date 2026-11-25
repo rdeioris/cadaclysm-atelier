@@ -4,6 +4,7 @@ import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
+import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 // The notch kinds the kernel draws (spec §5), in its order, as the panel names them.
@@ -86,6 +87,21 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             ...(n.meta?.atelier?.unfold ? [{ key: "foldBack", label: "Fold back", unit: "", type: "action", value: null, tip: "Back to the half this piece was unfolded from: seams on the mirrored side are dropped." }] : []),
             ...(n.meta?.atelier?.link || n.meta?.atelier?.unfold ? [{ key: "unlink", label: "Unlink", unit: "", type: "action", value: null,
                 tip: n.meta.atelier.link ? `Linked to ${find(nodes, n.meta.atelier.link.partner)?.label ?? n.meta.atelier.link.partner}: unlinked, each piece is edited on its own.` : "The whole becomes an ordinary piece: its halves are edited on their own." }] : []),
+        ];
+    }
+    if (selection.kind === "seam" && groupOf(n)) {
+        // an M:N group (A2 spec §1): its ranges and lengths, Ungroup, Remove
+        const g = groupOf(n), label = (id) => find(nodes, id)?.label ?? id;
+        const ranges = groupRanges(g, (id) => drawings?.get(id)?.sides);
+        const total = (side) => ranges.filter((r) => r.side === side).reduce((t, r) => t + r.length, 0);
+        const mm = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} mm` : "gone");
+        return [
+            { key: "members", label: "Seams", unit: "", type: "readonly", value: `${membersOf(nodes, n.id).length} (M:N ${g.a.length}:${g.b.length})` },
+            ...ranges.map((r) => ({ key: `range-${r.side}${r.k + 1}`, label: `${r.side}${r.k + 1}`, unit: "", type: "readonly", value: `${label(r.pattern)}, ${mm(r.length)}` })),
+            { key: "lengthA", label: "A length", unit: "", type: "readonly", value: mm(total("A")) },
+            { key: "lengthB", label: "B length", unit: "", type: "readonly", value: mm(total("B")) },
+            { key: "ungroup", label: "Ungroup", unit: "", type: "action", value: null, tip: "The group's seams stay as plain 1:1 seams, no longer re-distributed after an edit." },
+            { key: "remove", label: "Remove group", unit: "", type: "action", value: null },
         ];
     }
     if (selection.kind === "seam") {
@@ -237,7 +253,10 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         return model.setPattern(nodes, id, { notches: list.map((nt, j) => (j === i ? { ...nt, [key]: value } : nt)) });
     }
     if (selection.kind === "seam") {
-        if (key === "remove") return model.removeSeam(nodes, id);
+        const members = membersOf(nodes, id);
+        if (key === "remove") return members ? model.removeSeams(nodes, members) : model.removeSeam(nodes, id);
+        if (key === "ungroup") return members ? ungroupOps(nodes, members) : [];
+        if (members) throw new Error("a seam of an M:N group is edited through its group: Ungroup it first");
         const v = key === "reversed" ? value === true || value === "true" : value;
         const fields = { [key]: v };
         const n = find(nodes, id);

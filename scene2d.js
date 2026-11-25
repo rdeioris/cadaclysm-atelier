@@ -9,7 +9,7 @@
 // and each piece, in `layer` order, gets a band above it -- its fill, then its lines, then its
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
-import { seamColour } from "./sewing.js";
+import { seamColour, seamColourIndex } from "./sewing.js";
 import { pointsOf, internalPointsOf, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
@@ -170,9 +170,13 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
     }
     if (xform) out.push(...xformSpecs(drawings, selection, mmPerPx, bandOf(ordered.length).seam));
     const byId = new Map(drawings.map((d) => [d.id, d]));
+    // an M:N group's members share their first member's colour and number, numbered n.1, n.2, ...
+    const index = seamColourIndex(seams);
     seams.forEach((s, i) => {
         // seams are select-only for colour this round: no hover recolour (hover2d is a piece id)
-        const colour = selection?.kind === "seam" && selection.id === s.id ? ACCENT : seamColour(i);
+        const on = selection?.kind === "seam" && (selection.id === s.id || !!selection.ids?.includes(s.id));
+        const colour = on ? ACCENT : seamColour(index[i]);
+        const no = s.group ? `${index[i] + 1}.${(s.member ?? 0) + 1}` : String(i + 1);
         for (const [end, pts, pattern] of [["a", s.points_a, s.a], ["b", s.points_b, s.b]]) {
             if (!pts || pts.length < 4) continue;
             const r = rank.get(pattern) ?? 0;
@@ -184,8 +188,8 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             const r = rank.get(s.a) ?? 0;
             const { at, normal: [nx, ny] } = midOut(s.points_a, byId.get(s.a)?.sew);
             const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(SEAM_NO_PX * ny * 10) / 10 + 0];   // the View's offset y runs up the screen
-            out.push({ key: `seam/${s.id}/no`, show: "text", text: String(i + 1), data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
-                offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${i + 1}@${at[0]},${at[1]}@${r}` });
+            out.push({ key: `seam/${s.id}/no`, show: "text", text: no, data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
+                offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${no}@${at[0]},${at[1]}@${r}` });
         }
     });
     return out.filter((s) => s.show === "text" || (s.data && (s.data.length ?? s.data.indices?.length) > 0));

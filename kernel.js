@@ -1,7 +1,8 @@
 // The kernel facade: the one place the app calls cadaclysm_blacksmith_*. It owns a
 // blacksmith document holding the garment, and hands back plain arrays for drawing.
 import * as m from "./model.js";
-import { reanchor, anchorOf } from "./sewing.js";
+import { reanchor, anchorOf, mapGroupRanges } from "./sewing.js";
+import { redistributeOps, namesPiece } from "./seamgroup.js";
 import { arcAt } from "./view2d.js";
 import { translatePath } from "./drape.js";
 import { bucklingMigration } from "./fabrics.js";
@@ -125,6 +126,11 @@ export class Atelier {
                 const r = reanchor(this.nodes(), new Map([[rid, { sides: this.sidesOf(rid) }]]), rid);
                 if (r.ops.length) { this.f("document_apply")(this.d, batch(r.ops), null); this.evaluate(); }
                 out.removed.push(...r.removed);
+            }
+            // the M:N groups re-distributed on their ranges' sides now (seamgroup.js), in the same batch
+            if (!this.newProblems(before)) {
+                const groups = redistributeOps(this.nodes(), (id) => this.sidesOf(id));
+                if (groups.length) { this.f("document_apply")(this.d, batch(groups), null); this.evaluate(); }
             }
             const bad = this.newProblems(before);
             if (bad) throw new Error(bad);
@@ -500,6 +506,7 @@ export class Atelier {
             try {
                 out.push({
                     id: n.id, a: n.a, b: n.b, a_from: n.a_from, a_to: n.a_to, b_from: n.b_from, b_to: n.b_to, reversed: !!n.reversed,
+                    group: n.meta?.atelier?.group?.id ?? null, member: n.meta?.atelier?.member ?? null,
                     points_a: Array.from(this.f("garment_range_points")(this.g, this.patternIndex(n.a), n.a_from, n.a_to, TOL)),
                     points_b: Array.from(this.f("garment_range_points")(this.g, this.patternIndex(n.b), n.b_from, n.b_to, TOL)),
                 });
@@ -831,7 +838,7 @@ export class Atelier {
     // LAND exactly that), written as anchorOf writes it.
     anchorsOnto(id, from, to, nodes) {
         const f = this.f, ops = [];
-        const seams = nodes.filter((n) => n.kind === "garment.seam" && n.meta?.atelier && (n.a === id || n.b === id));
+        const seams = nodes.filter((n) => n.kind === "garment.seam" && n.meta?.atelier && (n.a === id || n.b === id || namesPiece(n, id)));
         if (!seams.length) return ops;
         this.withPath({ start: from.start, segments: from.segments }, (pf) => this.withPath({ start: to.start, segments: to.segments }, (pt) => {
             const sf = this.sideStarts(pf, f("profile_length")(pf, ACC)[0], from.segments.length);
@@ -840,19 +847,25 @@ export class Atelier {
                 const r = f("profile_point_at_length")(pf, s, ACC), a = arcAt(samples, st, [r[0], r[1]]).s;
                 return st.find((c) => Math.abs(c - a) < LAND) ?? a;
             };
+            const onto = ([a, ta, tb, b = a]) => {
+                if (a >= sf.length - 1 || b >= sf.length - 1) return null;
+                let s0 = arcOn(sf[a] + ta * (sf[a + 1] - sf[a])), s1 = arcOn(sf[b] + tb * (sf[b + 1] - sf[b]));
+                if (s0 >= P - 1e-9) s0 = 0;
+                if (s1 < s0 && s1 < LAND) s1 = P;
+                return anchorOf(st, s0, s1);
+            };
             for (const n of seams) {
-                const anchor = { ...n.meta.atelier };
-                let moved = false;
+                let anchor = { ...n.meta.atelier }, moved = false;
                 for (const end of ["a", "b"]) {
                     if (n[end] !== id || !anchor[end]) continue;
-                    const [a, ta, tb, b = a] = anchor[end];
-                    if (a >= sf.length - 1 || b >= sf.length - 1) continue;
-                    let s0 = arcOn(sf[a] + ta * (sf[a + 1] - sf[a])), s1 = arcOn(sf[b] + tb * (sf[b + 1] - sf[b]));
-                    if (s0 >= P - 1e-9) s0 = 0;
-                    if (s1 < s0 && s1 < LAND) s1 = P;
-                    anchor[end] = anchorOf(st, s0, s1);
+                    const next = onto(anchor[end]);
+                    if (!next) continue;
+                    anchor[end] = next;
                     moved = true;
                 }
+                // an M:N group's ranges on the piece move the same way (seamgroup.js)
+                const grouped = mapGroupRanges(anchor, id, onto);
+                if (grouped !== anchor) { anchor = grouped; moved = true; }
                 if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
             }
         }));
@@ -974,8 +987,8 @@ export class Atelier {
         this.checkHoles(whole.path);
         const dropped = [], moves = [];
         for (const n of nodes) {
-            if (n.kind !== "garment.seam" || !n.meta?.atelier || (n.a !== id && n.b !== id)) continue;
-            const anchor = { ...n.meta.atelier };
+            if (n.kind !== "garment.seam" || !n.meta?.atelier || (n.a !== id && n.b !== id && !namesPiece(n, id))) continue;
+            let anchor = { ...n.meta.atelier };
             let gone = false;
             for (const end of ["a", "b"]) {
                 if (n[end] !== id || !anchor[end]) continue;
@@ -984,6 +997,11 @@ export class Atelier {
                 if (x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt)) { gone = true; break; }
                 anchor[end] = x === y ? [x, tf, tt] : [x, tf, tt, y];
             }
+            // an M:N group's ranges follow their sides; one on the fold side dissolves the group
+            anchor = mapGroupRanges(anchor, id, ([sf, tf, tt, st = sf]) => {
+                const x = at(sf), y = at(st);
+                return x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt) ? null : x === y ? [x, tf, tt] : [x, tf, tt, y];
+            });
             if (gone) dropped.push(n.id);
             else moves.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
         }
@@ -1002,19 +1020,24 @@ export class Atelier {
         const { node } = this.pieceOf(id), nodes = this.nodes(), U = unfoldOf(node);
         if (!U) throw new Error("fold back: the piece is not unfolded");
         const N = U.half.path.segments.length, dropped = [];
+        const mirrored = ([sf, tf, tt, st = sf]) => sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt);
         for (const n of nodes) {
             if (n.kind !== "garment.seam" || (n.a !== id && n.b !== id)) continue;
             for (const end of ["a", "b"]) {
                 if (n[end] !== id) continue;
-                const [sf, tf, tt, st = sf] = n.meta?.atelier?.[end] ?? [N, 0, 0];
-                if (sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt)) { dropped.push(n.id); break; }
+                if (mirrored(n.meta?.atelier?.[end] ?? [N, 0, 0])) { dropped.push(n.id); break; }
             }
         }
+        // an M:N group with a range on the mirrored side is dissolved (its members left as plain seams)
+        const dissolved = nodes.filter((n) => !dropped.includes(n.id) && namesPiece(n, id))
+            .map((n) => ({ n, atelier: mapGroupRanges(n.meta.atelier, id, (a) => (mirrored(a) ? null : a)) }))
+            .filter((x) => x.atelier !== x.n.meta.atelier)
+            .map(({ n, atelier }) => ({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier } } }));
         const h = U.half;
         return {
             ops: [...m.setOutline(nodes, id, h.path),
                 ...m.setPattern(nodes, id, { internal: h.internal ?? [], notches: h.notches ?? [], allowance: h.allowance ?? node.allowance ?? [10], meta: m.atelierMeta(node.meta, "unfold") }),
-                ...m.removeSeams(nodes, dropped)],
+                ...dissolved, ...m.removeSeams(nodes, dropped)],
             dropped,
         };
     }

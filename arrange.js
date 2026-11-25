@@ -1,6 +1,6 @@
 // Where a flat pattern stands around the avatar, and the pure helpers the worker draws with.
 // No kernel and no View in here, so Node can test it.
-import { seamColour } from "./sewing.js";
+import { seamColour, seamColourIndex } from "./sewing.js";
 
 // Slot origins are fractions of the avatar's bounds (min xyz, max xyz); x and y are the
 // pattern's 2D axes in world space (y up, the avatar facing +z, the panel facing outward).
@@ -276,8 +276,9 @@ export const isSelected = (selection, kind, id) => !!selection && selection.kind
 export function showSeams(viewer, seams, frames, selection, wraps = new Map()) {
     const shown = [];
     let error = null;
+    const index = seamColourIndex(seams);
     seams.forEach((s, i) => {
-        const colour = seamColour(i);
+        const colour = seamColour(index[i]);
         try {
             const segs = seamSegments(s, frames.get(s.a), frames.get(s.b), wraps.get(s.a) ?? null, wraps.get(s.b) ?? null);
             if (segs.length) shown.push({ item: viewer.showLines(segs, isSelected(selection, "seam", s.id) ? ACCENT : colour), id: s.id, colour });

@@ -502,6 +502,45 @@ async function check(cdp, base) {
             failIfErrors();
             ok("seam picked in 2D, deleted, undone; piece removed with its seam, undone");
 
+            // M:N sewing (A2 spec §1): the Sew M:N tool (B) takes the first piece's top and bottom
+            // (side A), Enter, the second piece's top (side B), Enter: one group of two kernel seams,
+            // listed once. Selecting it shows Ungroup; Delete removes both; Ctrl+Z brings both back.
+            {
+                const groupItem = () => evaluate(`[...document.querySelectorAll('#browser-seams li[data-kind=seam]')].map((li) => li.textContent).find((t) => /M:N/.test(t)) ?? ""`);
+                await key("b", "KeyB", 66);
+                await until("the Sew M:N tool", () => evaluate(`document.querySelector('#tools2d [data-tool].on')?.dataset.tool === "sewmn"`), 10000);
+                await click([a[0] + 0.25 * (b[0] - a[0]), a[1]]);
+                await click([a[0] + 0.25 * (b[0] - a[0]), b[1]]);
+                await until("side A's two ranges drawn", () => evaluate(`document.body.dataset.labels2d === "A1|A2"`), 10000);
+                await key("Enter", "Enter", 13);
+                await click([c[0] + 0.25 * (d[0] - c[0]), c[1]]);
+                await until("side B's range drawn", () => evaluate(`document.body.dataset.labels2d === "A1|A2|B1"`), 10000);
+                await key("Enter", "Enter", 13);
+                await until("the M:N group in the browser", async () => (await seamCount()) === 2 && /M:N, 2 seams/.test(await groupItem()), 30000);
+                await noStatusError();
+                const pickGroup = () => evaluate(`[...document.querySelectorAll('#browser-seams li[data-kind=seam]')].find((li) => /M:N/.test(li.textContent)).click()`);
+                await pickGroup();
+                await until("the group's panel", () => evaluate(`!!${field("ungroup")} && /Seam group/.test(document.getElementById("props").textContent)`), 30000);
+                await key("Delete", "Delete", 46);
+                await until("the group deleted", async () => (await seamCount()) === 1 && !(await groupItem()), 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("the group back after Ctrl+Z", async () => /M:N, 2 seams/.test(await groupItem()), 30000);
+                // Ungroup: two plain seams; Ctrl+Z, then the group goes again (the steps below expect one seam)
+                await pickGroup();
+                await until("the Ungroup button", () => evaluate(`!!${field("ungroup")}`), 30000);
+                await evaluate(`${field("ungroup")}.click()`);
+                await until("ungrouped: three plain seams", async () => (await seamCount()) === 3 && !(await groupItem()), 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("the group back after Ctrl+Z", async () => /M:N, 2 seams/.test(await groupItem()), 30000);
+                await pickGroup();
+                await until("the group's panel", () => evaluate(`!!${field("ungroup")}`), 30000);
+                await key("Delete", "Delete", 46);
+                await until("the group deleted", async () => (await seamCount()) === 1 && !(await groupItem()), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("Sew M:N: a 2 -> 1 group of two seams, listed once; deleted and undone; ungrouped and undone");
+            }
+
             // the Move tool: a drag with pauses (several previews) moves the piece by exactly the drag
             const outlineOf = (json, label) => {
                 const p = json.nodes.find((n) => n.kind === "garment.pattern" && n.label === label);
