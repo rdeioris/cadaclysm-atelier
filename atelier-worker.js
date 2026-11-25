@@ -698,7 +698,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack", "form"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack", "form", "size", "sizes", "grade"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -783,6 +783,19 @@ self.onmessage = async ({ data }) => {
                 changed(data.seq);
                 const what = data.kind === "unfold" ? "unfolded" : "folded back";
                 post({ kind: "status", text: r.dropped.length ? `${what}; dropped seam${r.dropped.length === 1 ? "" : "s"} ${r.dropped.join(", ")}: ${data.kind === "unfold" ? "on the fold side" : "on the mirrored side"}` : what });
+                break;
+            }
+            // grading (A3): a size switch, a size table change, a grade rule set; one batch each,
+            // the seams that lose their side named
+            case "size": case "sizes": case "grade": {
+                let r;
+                if (data.kind === "size") r = atelier.switchSize(data.size);
+                else {
+                    const g = data.kind === "sizes" ? atelier.sizesOps(data.action) : atelier.gradeOps(data.action);
+                    r = atelier.commit(g.ops, data.kind === "sizes" ? "sizes" : "grade", g.ids);
+                }
+                changed(data.seq);
+                if (r.removed.length) post({ kind: "status", text: `removed seam${r.removed.length === 1 ? "" : "s"} ${r.removed.join(", ")}: the side is gone` });
                 break;
             }
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
