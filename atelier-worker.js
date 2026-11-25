@@ -48,7 +48,7 @@ const seamLines = new Map();             // seam id -> { item, colour }
 const slabBoxes = new Map();             // pattern id -> its slab's world box [x0, y0, z0, x1, y1, z1]
 const wrappedMeshes = new WrappedMeshCache();   // a wrapped piece's mesh, kept while its drawing, frame and wrap stay
 let canvasRef = null;                    // the OffscreenCanvas: its height is the drag's pixel scale
-let items2d = null, overlay2d = null, rects = null, hover2d = null, pointSel = [];
+let items2d = null, overlay2d = null, rects = null, hover2d = null, pointSel = [], ipointSel = [];
 let tool2d = "edit";           // the page's 2D tool: Move ("transform") draws its box and handles
 
 // ---- the live drape ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ function refresh2d() {
     if (!viewer || !atelier || !items2d) return;
     const nodes = atelier.nodes();
     const r = viewer.frameReport?.()[1], scale = r && r.rect[2] > 0 ? mmPerPx(r) : null;
-    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale }));
+    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale }));
     post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d });
 }
 
@@ -432,7 +432,7 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -500,6 +500,9 @@ self.onmessage = async ({ data }) => {
             case "trace": atelier.apply(atelier.traceOps(data.id, data.index), "trace"); changed(data.seq); break;
             // a fillet: one batch with its seams re-anchored; a refusal changes nothing and says why
             case "fillet": atelier.commit(atelier.filletOps(data.id, data.corner, data.radius), "fillet", data.id); changed(data.seq); break;
+            // a point inserted, removed or made a corner/curve point (kernel.js pointOps): one batch,
+            // an outline's seams re-anchored in it; a refusal changes nothing and names the point
+            case "point": atelier.commit(atelier.pointOps(data), "point", data.line == null ? data.id : null); changed(data.seq); break;
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
             case "redo": atelier.redo(); changed(data.seq); break;
             // the whole piece: outline, internal lines, notches and grain (kernel.js transformedPiece)
@@ -536,7 +539,7 @@ self.onmessage = async ({ data }) => {
                 await loadAvatar(bytes, form.name, form);
                 break;
             }
-            case "select": selection = data.selection ?? null; pointSel = []; paintSelection(); refresh2d(); break;
+            case "select": selection = data.selection ?? null; pointSel = []; ipointSel = []; paintSelection(); refresh2d(); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
                 let selection = p ? items.resolve(p.item) : null;
@@ -572,7 +575,7 @@ self.onmessage = async ({ data }) => {
                 overlay2d?.set({ lines: data.lines ?? [], points: data.points ?? [], curves, labels: data.labels ?? [], text: data.text ?? null });
                 break;
             }
-            case "pointSel": pointSel = data.indices ?? []; refresh2d(); break;
+            case "pointSel": pointSel = data.indices ?? []; ipointSel = data.internal ?? []; refresh2d(); break;
             case "tool2d": tool2d = data.name; refresh2d(); break;
             case "fit2d": if (rects) fit2d(); break;
         }

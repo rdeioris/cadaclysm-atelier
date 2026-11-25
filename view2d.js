@@ -80,6 +80,17 @@ export function pointsOf(nodes, id) {
     return out;
 }
 
+/** Whether point `i` of `path` is a curve point: a cubic on either side has its handle off the
+ *  point (what the C key and the point menu toggle; the kernel's profile_smooth_vertex makes it). */
+export function isCurvePoint(path, i, closed = true) {
+    const segs = path?.segments ?? [], n = segs.length;
+    if (!n) return false;
+    const at = i === 0 ? path.start : segmentEnd(segs[i - 1]);
+    const off = (h) => !!h && (h[0] !== at[0] || h[1] !== at[1]);
+    const before = i > 0 ? segs[i - 1] : closed ? segs[n - 1] : null, after = segs[i] ?? null;
+    return (before?.type === "bezier" && off(before.c2)) || (after?.type === "bezier" && off(after.c1));
+}
+
 /** Piece `id`'s internal lines' edit handles (open lines and closed shapes, spec §4): each path
  *  point as {line, index, at} (a closed shape's end, its start again, is not repeated), and the
  *  Bézier and conic control points as {line, index (the segment), which, at, from, to} with

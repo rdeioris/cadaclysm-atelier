@@ -665,6 +665,108 @@ export class Atelier {
         return m.filletOps(this.nodes(), id, r.path, r.insertAt, r.notches);
     }
 
+    // ---- point editing (spec §3): the kernel's profile_insert/remove/smooth_vertex ----
+    // Each throws, changing nothing, where the kernel refuses (the message names the point).
+    // The notches of `node` re-placed from outline `oldPath` onto `newPath`: each at its old
+    // point's nearest arc length (filletPath's rule).
+    notchesOnto(node, oldPath, newPath) {
+        const f = this.f;
+        if (!node.notches?.length) return node.notches ?? [];
+        return this.withPath({ start: oldPath.start, segments: oldPath.segments }, (old) => this.withPath({ start: newPath.start, segments: newPath.segments }, (p) => {
+            const samples = this.samplesOf(p), sides = this.sideStarts(p, f("profile_length")(p, ACC)[0], newPath.segments.length);
+            return node.notches.map((nt) => { const at = f("profile_point_at_length")(old, nt.at, ACC); return { ...nt, at: arcAt(samples, sides, [at[0], at[1]]).s }; });
+        }));
+    }
+    pieceOf(id) {
+        const nodes = m.byId(this.nodes()), node = nodes.get(id), path = nodes.get(`${id}_outline`)?.path;
+        if (!node || !path) throw new Error(`no pattern ${id}`);
+        return { node, path };
+    }
+    // One kernel call on a path JSON, its result as path JSON; a refusal says `what` (the point).
+    vertexCall(path, name, what, ...args) {
+        try { return this.withPath(path, (p) => this.pathOf(this.f(name)(p, ...args))); }
+        catch (e) { throw new Error(`${what}: ${text(e).replace(/^profile_\w+: /, "")}`); }
+    }
+    // A point on piece `id`'s outline at arc length `s` (an edge's double click): the side it
+    // splits and where along it (the kernel's side table), then the batch (model.insertPointOps).
+    insertPointOps(id, s) {
+        const { path } = this.pieceOf(id), sides = this.sidesOf(id), P = sides.at(-1);
+        s = ((s % P) + P) % P;
+        let side = 0;
+        for (let i = 0; i + 1 < sides.length; i++) if (sides[i] <= s) side = i;
+        const out = this.vertexCall(path, "profile_insert_vertex", "insert point", s);
+        if (out.segments.length !== path.segments.length + 1) throw new Error("insert point: the kernel did not split one side");
+        const t0 = (s - sides[side]) / (sides[side + 1] - sides[side]);
+        return m.insertPointOps(this.nodes(), id, { ...out, ...(path.holes ? { holes: path.holes } : {}) }, side, t0);
+    }
+    // Points `indices` of piece `id`'s outline removed in one batch, the highest first (lower
+    // indices stand while a higher one goes; point 0 last, which makes old point 1 the start).
+    removePointsOps(id, indices) {
+        const f = this.f, { node, path } = this.pieceOf(id);
+        const steps = [];
+        let cur = path;
+        for (const i of [...new Set(indices)].sort((a, b) => b - a)) {
+            const count = cur.segments.length;
+            const sides = this.withPath({ start: cur.start, segments: cur.segments }, (p) => this.sideStarts(p, f("profile_length")(p, ACC)[0], count));
+            const next = this.vertexCall(cur, "profile_remove_vertex", `point ${i + 1}`, i);
+            const before = (i - 1 + count) % count, la = sides[before + 1] - sides[before], lb = sides[i + 1] - sides[i];
+            steps.push({ vertex: i, count, w: la / (la + lb) });
+            cur = { ...next, ...(path.holes ? { holes: path.holes } : {}) };
+        }
+        this.checkHoles(cur);
+        return m.removePointsOps(this.nodes(), id, cur, steps, this.notchesOnto(node, path, cur));
+    }
+    // Points made curve points (`smooth` true) or corners: `points` [{index, smooth}], in turn.
+    smoothPointsOps(id, points) {
+        const { node, path } = this.pieceOf(id);
+        let cur = path;
+        for (const { index, smooth } of points) cur = { ...this.vertexCall(cur, "profile_smooth_vertex", `point ${index + 1}`, index, !!smooth), ...(path.holes ? { holes: path.holes } : {}) };
+        this.checkHoles(cur);
+        return m.smoothPointsOps(this.nodes(), id, cur, this.notchesOnto(node, path, cur));
+    }
+    // The same on internal entry `line` of piece `id` (an open line or a closed shape): one batch.
+    // insert: at the line's point nearest `at`; remove: `indices`; smooth: `points`.
+    internalPointOps(id, line, { op, at, indices, points }) {
+        const f = this.f, entry = this.pieceOf(id).node.internal?.[line];
+        if (!entry?.path) throw new Error(`no internal line ${line + 1}`);
+        let cur = entry.path;
+        if (op === "insert") {
+            const s = this.withPath(cur, (p) => this.nearestArc(p, at, m.isClosedPath(cur)));
+            cur = this.vertexCall(cur, "profile_insert_vertex", "insert point", s);
+        } else if (op === "remove") {
+            for (const i of [...new Set(indices)].sort((a, b) => b - a)) cur = this.vertexCall(cur, "profile_remove_vertex", `point ${i + 1}`, i);
+        } else if (op === "smooth") {
+            for (const { index, smooth } of points) cur = this.vertexCall(cur, "profile_smooth_vertex", `point ${index + 1}`, index, !!smooth);
+        } else throw new Error(`no point op ${op}`);
+        return m.setInternalPath(this.nodes(), id, line, cur);
+    }
+    // The arc length along profile p nearest point `at`, from the kernel's 1 mm samples: an open
+    // path's run without the closing chord profile_length adds.
+    nearestArc(p, [x, y], closed) {
+        const L = closed ? this.f("profile_length")(p, ACC)[0] : this.openLength(p);
+        const pts = [];
+        this.rows(this.f("profile_divide_by_length")(p, STEP, ACC)).forEach((r, i) => { if (i * STEP < L) pts.push([i * STEP, r[0], r[1]]); });
+        const end = this.f("profile_point_at_length")(p, closed ? 0 : L, ACC);
+        pts.push([L, end[0], end[1]]);
+        let best = { s: 0, d: Infinity };
+        for (let i = 0; i + 1 < pts.length; i++) {
+            const [sa, ax, ay] = pts[i], [sb, bx, by] = pts[i + 1], dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+            const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l2)) : 0;
+            const d = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+            if (d < best.d) best = { s: sa + t * (sb - sa), d };
+        }
+        return best.s;
+    }
+    // The page's point message: {id, line?, op: insert|remove|smooth, s?, at?, indices?, points?}
+    // -> ops (Atelier.commit(ops, "point", line == null ? id : null) re-anchors the seams).
+    pointOps(d) {
+        if (d.line != null) return this.internalPointOps(d.id, d.line, d);
+        if (d.op === "insert") return this.insertPointOps(d.id, d.s);
+        if (d.op === "remove") return this.removePointsOps(d.id, d.indices);
+        if (d.op === "smooth") return this.smoothPointsOps(d.id, d.points);
+        throw new Error(`no point op ${d.op}`);
+    }
+
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }
     // The pieces of an AAMA DXF as ops adding them, in `fabric` (absent or unknown: the first fabric).
     fromDxf(dxf, fabric) {

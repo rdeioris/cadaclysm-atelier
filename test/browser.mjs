@@ -1416,6 +1416,38 @@ async function check(cdp, base) {
                 await until("the measures cleared, Edit armed", async () => (await labels()) === "" && await evaluate(`document.querySelector('#tools2d [data-tool=edit]').classList.contains("on")`), 10000);
                 failIfErrors();
                 ok(`ruler: hover read-out 200.0 mm; two clicks ${two}; a side 100.0 mm; Escape clears`);
+
+                // ---- point editing (A1 task A4): a double click on an edge adds a point; the right click's
+                // menu makes it a curve point; C makes it a corner again; Delete removes it ----
+                const outlineNow = async () => (await saveJson()).nodes.find((n) => n.id === `${pid}_outline`).path;
+                const P = screenAt([o[0] + 60, o[1]]);
+                await worldOf(P);
+                await click(P);
+                await mouse("mousePressed", P[0], P[1], { clickCount: 2 });
+                await mouse("mouseReleased", P[0], P[1], { clickCount: 2 });
+                const p5 = await until("a fifth point", async () => { const p = await outlineNow(); return p.segments.length === 5 ? p : null; }, 30000);
+                await noStatusError();
+                if (Math.abs(p5.segments[0].to[1] - o[1]) > 1e-6 || Math.abs(p5.segments[0].to[0] - o[0] - 60) > 2) throw new Error(`the new point is at ${p5.segments[0].to}`);
+                const Pn = screenAt(p5.segments[0].to);
+                await worldOf(Pn);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error("the new point's hover is not a point");
+                await mouse("mousePressed", Pn[0], Pn[1], { button: "right", buttons: 2 });
+                await mouse("mouseReleased", Pn[0], Pn[1], { button: "right", buttons: 0 });
+                await until("the point menu", () => evaluate(`document.body.dataset.pointMenu === "curve" && !document.getElementById("point-menu").hidden`), 10000);
+                await evaluate(`document.getElementById("point-curve").click()`);
+                const pc = await until("a curve point", async () => { const p = await outlineNow(); return p.segments[0].type === "bezier" && p.segments[1].type === "bezier" ? p : null; }, 30000);
+                await noStatusError();
+                await click(Pn);
+                await until("the point selected", async () => (await evaluate(`document.body.dataset.hit`)) === "point", 10000);
+                await key("c", "KeyC", 67);
+                await until("a corner again", async () => { const p = await outlineNow(); return p.segments.length === 5 && p.segments.every((g) => g.type === "line") ? p : null; }, 30000);
+                await key("Delete", "Delete", 46);
+                const p4 = await until("the point removed", async () => { const p = await outlineNow(); return p.segments.length === 4 ? p : null; }, 30000);
+                if (!p4.segments.every((g) => g.type === "line")) throw new Error(`after the delete: ${JSON.stringify(p4)}`);
+                if (!(await saveJson()).nodes.some((n) => n.id === pid)) throw new Error("Delete removed the piece, not the point");
+                await noStatusError();
+                failIfErrors();
+                ok(`point editing: a double click added a point, the menu made it a curve point (${pc.segments[0].type}), C a corner, Delete removed it`);
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);

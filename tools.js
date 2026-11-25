@@ -6,7 +6,7 @@
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
-import { pointsOf, internalPointsOf } from "./view2d.js";
+import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
 const DRAG_PX = 3; // screen pixels: less movement than this is a click, not a drag
@@ -318,6 +318,36 @@ export function sideReadout(drawings, h) {
     return length === null ? null : `${d.label ? `${d.label} ` : ""}side ${h.side + 1}: ${mmText(length)}`;
 }
 
+// The Edit tool's keys on the selected points (spec §3): Delete or Backspace removes them, C
+// makes each a curve point or a corner (whichever it is not). The outline's points when any are
+// selected, else the internal lines' (each line its own batch: the first line's here). {} for none.
+export function pointKey(ctx, op) {
+    const id = selectedId(ctx);
+    if (!id) return {};
+    const sel = ctx.pointSel ?? [];
+    if (sel.length) {
+        const path = outlineOf(ctx, id);
+        if (!path) return {};
+        return op === "remove"
+            ? { point: { id, op, indices: [...sel] } }
+            : { point: { id, op, points: sel.map((index) => ({ index, smooth: !isCurvePoint(path, index) })) } };
+    }
+    const isel = ctx.ipointSel ?? [];
+    if (!isel.length) return {};
+    const line = isel[0].line, path = nodeOf(ctx, id)?.internal?.[line]?.path;
+    if (!path) return {};
+    const mine = isel.filter((q) => q.line === line).map((q) => q.index);
+    return op === "remove"
+        ? { point: { id, line, op, indices: mine } }
+        : { point: { id, line, op, points: mine.map((index) => ({ index, smooth: !isCurvePoint(path, index, isClosedPath(path)) })) } };
+}
+// The point menu's choice (right click on a point): `smooth` true makes it a curve point.
+export function pointMenuOp(hit, smooth) {
+    if (hit?.kind === "point") return { id: hit.id, op: "smooth", points: [{ index: hit.index, smooth }] };
+    if (hit?.kind === "ipoint") return { id: hit.id, line: hit.line, op: "smooth", points: [{ index: hit.index, smooth }] };
+    return null;
+}
+
 // The snaps that make a Ruler click on an edge a point (a two-click measure's end), not the side.
 const POINT_SNAPS = new Set(["end", "vertex", "point", "intersection"]);
 
@@ -466,17 +496,37 @@ const TOOLS = {
                 sent = true;
                 return preview(w);
             },
-            // a click (no preview went out) on a seamed edge selects the seam; a drag commits
+            // a click (no preview went out) on a seamed edge selects the seam, on a point selects it
+            // (Shift adds or takes it away); a drag commits. A double click on an edge, or on an
+            // internal line of the selected piece, inserts a point there (spec §3: the kernel's).
             up(w, h0, mods) {
-                if (box.on) return box.end(mods).then((r) => ({ pointSel: r?.indices ?? [], overlay: { lines: [] } }), () => ({ overlay: { lines: [] } }));
-                if (!hit) return {};
+                if (box.on) return box.end(mods).then((r) => ({ pointSel: r?.indices ?? [], ipointSel: [], overlay: { lines: [] } }), () => ({ overlay: { lines: [] } }));
                 const h = hit; hit = null;
+                if (mods?.dblclick && !sent) {
+                    const at = h0 ?? h;
+                    if (at?.kind === "edge") return { point: { id: at.id, op: "insert", s: at.s }, status: "point added", error: false };
+                    if (at?.kind === "internal" && at.id === selectedId(ctx)) return { point: { id: at.id, line: at.index, op: "insert", at: [...w] }, status: "point added", error: false };
+                }
+                if (!h) return {};
                 if (sent) return locked ? {} : { endPreview: true };
+                if (h.kind === "point") {
+                    const now = new Set(mods?.shift ? chosen : []);
+                    if (mods?.shift && now.has(h.index)) now.delete(h.index); else now.add(h.index);
+                    return { pointSel: [...now].sort((a, b) => a - b), ipointSel: [] };
+                }
+                if (h.kind === "ipoint") {
+                    const key = (q) => `${q.line}:${q.index}`, mine = { line: h.line, index: h.index };
+                    const old = mods?.shift ? ctx.ipointSel ?? [] : [];
+                    const now = old.some((q) => key(q) === key(mine)) ? old.filter((q) => key(q) !== key(mine)) : [...old, mine];
+                    return { pointSel: [], ipointSel: now };
+                }
                 return h.seam ? { select: { kind: "seam", id: h.seam } } : {};
             },
             key(k) {
                 if (k === "Escape" && box.on) { box.cancel(); return { overlay: { lines: [] } }; }
                 if (k === "Escape" && hit) { hit = null; return { cancel: true }; }
+                if (k === "Delete" || k === "Backspace") return pointKey(ctx, "remove");
+                if (k === "c" || k === "C") return pointKey(ctx, "smooth");
                 return {};
             },
         };

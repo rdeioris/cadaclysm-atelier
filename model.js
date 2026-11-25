@@ -2,7 +2,7 @@
 // Pure: no kernel calls. Every function takes the current node list (document_nodes) and
 // returns ops for one batch, so one user action is one undo step.
 // (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
-import { shiftAnchors } from "./sewing.js";
+import { shiftAnchors, splitAnchors, mergeAnchors } from "./sewing.js";
 
 export const FABRIC_FIELDS = [
     "stretch_warp", "stretch_weft", "shear_left", "shear_right",
@@ -138,6 +138,44 @@ export function filletOps(nodes, id, path, insertAt, notches) {
     const list = allowance.length === oldSides && oldSides > 1
         ? [...allowance.slice(0, insertAt), allowance[Math.max(insertAt - 1, 0)], ...allowance.slice(insertAt)] : allowance;
     return [...setOutline(nodes, id, path), ...setPattern(nodes, id, { allowance: list, ...(p.notches ? { notches } : {}) }), ...shiftAnchors(nodes, id, insertAt)];
+}
+
+// Point editing (spec §3), each one batch; the commit's re-anchor (reanchorId) then sets the
+// seams' arc lengths from the anchors written here.
+// A point inserted on side `side` at fraction `t0` of its arc length (kernel.js insertPointOps):
+// the new outline, the split side's allowance width given to both halves, the seam anchors split
+// (sewing.js splitAnchors). The outline is the same curve, so notches keep their arc lengths.
+export function insertPointOps(nodes, id, path, side, t0) {
+    const p = byId(nodes).get(id), oldSides = path.segments.length - 1;
+    const allowance = p.allowance ?? [10];
+    const list = allowance.length === oldSides && oldSides > 1
+        ? [...allowance.slice(0, side + 1), allowance[side], ...allowance.slice(side + 1)] : allowance;
+    return [...setOutline(nodes, id, path), ...(list !== allowance ? setPattern(nodes, id, { allowance: list }) : []), ...splitAnchors(nodes, id, side, t0)];
+}
+// Points removed (kernel.js removePointsOps): `steps` in the order the kernel took them, each
+// {vertex, count (sides before it), w (the first merged side's share)}; each removal drops the
+// allowance entry of the side that starts at the point (the merged side keeps the one before's),
+// and merges the seam anchors (sewing.js mergeAnchors). The notches re-placed by the kernel.
+export function removePointsOps(nodes, id, path, steps, notches) {
+    const p = byId(nodes).get(id);
+    let list = [...(p.allowance ?? [10])], cur = nodes;
+    const seamSets = new Map();
+    for (const { vertex, count, w } of steps) {
+        if (list.length === count && count > 1) list.splice(vertex, 1);
+        const ops = mergeAnchors(cur, id, vertex, count, w);
+        for (const o of ops) seamSets.set(o.id, o);
+        cur = withAdded(cur, ops);
+    }
+    const fields = { ...(p.allowance && list.length !== p.allowance.length ? { allowance: list } : {}), ...(p.notches ? { notches } : {}) };
+    return [...setOutline(nodes, id, path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : []), ...seamSets.values()];
+}
+// Points made curve points or corners: the same sides, so the anchors stand; notches re-placed.
+export const smoothPointsOps = (nodes, id, path, notches) =>
+    [...setOutline(nodes, id, path), ...(byId(nodes).get(id)?.notches ? setPattern(nodes, id, { notches }) : [])];
+// Internal entry `line` of piece `id` with a new path (its point edited).
+export function setInternalPath(nodes, id, line, path) {
+    const p = byId(nodes).get(id);
+    return setPattern(nodes, id, { internal: (p.internal ?? []).map((l, i) => (i === line ? { ...l, path: { start: path.start, segments: path.segments } } : l)) });
 }
 
 // A hole added to piece `id`'s outline (path JSON, closed). Hole edges are not sewn this round.

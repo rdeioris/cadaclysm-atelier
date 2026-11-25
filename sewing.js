@@ -164,3 +164,48 @@ export function shiftAnchors(nodes, id, at) {
     }
     return ops;
 }
+
+// Every seam anchor on piece `id` rewritten by map(end) -> [side, t] (`end` the anchor end
+// {side, t, isTo}): the 3-form when both ends land on one side running forward, else the 4-form.
+function remapAnchors(nodes, id, map) {
+    const ops = [];
+    for (const n of nodes) {
+        if (n.kind !== "garment.seam" || !n.meta?.atelier) continue;
+        const anchor = { ...n.meta.atelier };
+        let moved = false;
+        for (const end of ["a", "b"]) {
+            if (n[end] !== id || !anchor[end]) continue;
+            const [sf, tf, tt, st = sf] = anchor[end];
+            const [a, ta] = map({ side: sf, t: tf, isTo: false }), [b, tb] = map({ side: st, t: tt, isTo: true });
+            const next = a === b && ta <= tb ? [a, ta, tb] : [a, ta, tb, b];
+            if (JSON.stringify(next) !== JSON.stringify(anchor[end])) { anchor[end] = next; moved = true; }
+        }
+        if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
+    }
+    return ops;
+}
+// After a point is inserted on side `side` of piece `id`, a fraction `t0` of its arc length
+// along it (the side splits there into `side` and `side + 1`): every seam anchor on that piece
+// keeps its place -- a fraction on the split side goes to the half it lies on, later sides move
+// up one. A range's start exactly at the new point starts the second half; its end ends the first.
+export function splitAnchors(nodes, id, side, t0) {
+    return remapAnchors(nodes, id, ({ side: s, t, isTo }) => {
+        if (s < side) return [s, t];
+        if (s > side) return [s + 1, t];
+        const first = isTo ? t <= t0 : t < t0;
+        return first ? [s, t0 > 0 ? t / t0 : 0] : [s + 1, t0 < 1 ? (t - t0) / (1 - t0) : 1];
+    });
+}
+// The inverse, after point `vertex` of piece `id`'s loop of `count` sides is removed: the sides
+// before and after it (`vertex - 1` and `vertex`; for point 0 the last side and side 0) become
+// one, `w` the first one's share of their arc length. Its fractions are scaled onto the merged
+// side, and the sides past it move down one. Removing point 0 makes old point 1 the start: every
+// side moves down one, the merged side is the last.
+export function mergeAnchors(nodes, id, vertex, count, w) {
+    const before = (vertex - 1 + count) % count, merged = vertex === 0 ? count - 2 : vertex - 1;
+    return remapAnchors(nodes, id, ({ side: s, t }) => {
+        if (s === before) return [merged, t * w];
+        if (s === vertex) return [merged, w + t * (1 - w)];
+        return [s > vertex ? s - 1 : s, t];
+    });
+}

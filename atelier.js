@@ -8,7 +8,8 @@ import { listen } from "./pkg/view.js";
 import { viewportRects, viewportAt } from "./layout.js";
 import * as model from "./model.js";
 import { PRESETS, presetParams, presetNote } from "./fabrics.js";
-import { makeTool, SNAPPING, typedPoint, typedValues, readout } from "./tools.js";
+import { makeTool, SNAPPING, typedPoint, typedValues, readout, pointMenuOp } from "./tools.js";
+import { isCurvePoint } from "./view2d.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
@@ -26,7 +27,8 @@ const DEFAULT_FABRIC = "cotton_jersey";
 // ---- state --------------------------------------------------------------------------------
 let nodes = [], drawingList = [], drawings = new Map(), seams = [], issues = [];
 let selection = null;         // {kind: "pattern"|"seam"|"fabric"|"avatar", id, ids?}: ids a box selection
-let pointSel = [];            // the selected piece's box-selected point indices (the Edit tool)
+let pointSel = [];            // the selected piece's selected point indices (the Edit tool: a click or a box)
+let ipointSel = [];           // or its internal lines' selected points, [{line, index}]
 let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
 let forms = [];               // the dress forms in assets/forms.json, as the worker read them
 let formLoading = null;       // the form the Form select asked for, until it lands or fails
@@ -120,7 +122,7 @@ function exists(sel) {
 }
 function setSelection(sel) {
     selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}) } : null;
-    pointSel = [];                // the worker drops its own on `select`
+    pointSel = []; ipointSel = [];   // the worker drops its own on `select`
     selSeq++;
     if (selection?.kind === "fabric") pickedFabric = selection.id;
     post({ kind: "select", selection });
@@ -338,12 +340,14 @@ function removeSelected() {
 }
 
 // ---- tools --------------------------------------------------------------------------------
+const postPointSel = () => post({ kind: "pointSel", indices: pointSel, internal: ipointSel });
 function freshTool() {
     const ctx = {
         nodes, drawings, request,
         get fabric() { return currentFabric(); },
         get selection() { return selection; },
         get pointSel() { return pointSel; },
+        get ipointSel() { return ipointSel; },
         get pxToWorld() { return mmPerPx * dprNow(); },
         keep: toolKeep,
     };
@@ -417,6 +421,8 @@ function handle(r) {
     if (r.trace) change("trace", r.trace);
     // and a fillet
     if (r.fillet) change("fillet", r.fillet);
+    // and a point inserted, removed or made a corner / curve point (kernel.js pointOps)
+    if (r.point) change("point", r.point);
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse || r.overlay.labels?.length ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);
@@ -430,7 +436,7 @@ function handle(r) {
         });
     }
     if (r.select !== undefined) setSelection(r.select);
-    if (r.pointSel) { pointSel = r.pointSel; post({ kind: "pointSel", indices: pointSel }); }
+    if (r.pointSel || r.ipointSel) { pointSel = r.pointSel ?? pointSel; ipointSel = r.ipointSel ?? ipointSel; postPointSel(); }
     if (r.done) setTool("edit");
     else if (toolStale && !previewing && !gesture2d()) freshTool();
     syncSnapBase();                       // done, or the overlay emptied: no last point, no lock
@@ -566,6 +572,36 @@ for (const input of [typed.len, typed.ang]) input.addEventListener("keydown", (e
 });
 function fit2d() { post({ kind: "fit2d" }); }
 
+// The Edit tool's point menu (spec §3): a right click on a point of the selected piece offers
+// "Make curve point" or "Make corner", whichever it is not; the kernel makes it (one batch).
+const pmenu = { box: $("point-menu"), hit: null };
+function pointMenu(hit, xy) {
+    closePointMenu();
+    if (!hit || (hit.kind !== "point" && hit.kind !== "ipoint") || hit.id !== selection?.id || selection?.kind !== "pattern") return;
+    const node = nodes.find((n) => n.id === (hit.kind === "point" ? `${hit.id}_outline` : hit.id));
+    const path = hit.kind === "point" ? node?.path : node?.internal?.[hit.line]?.path;
+    if (!path) return;
+    const curve = isCurvePoint(path, hit.index, hit.kind === "point" || model.isClosedPath(path));
+    $("point-curve").hidden = curve; $("point-corner").hidden = !curve;
+    pmenu.hit = hit;
+    pmenu.box.hidden = false;
+    const well = $("well"), c = cv.getBoundingClientRect(), w = well.getBoundingClientRect();
+    const x = (xy ? xy[0] / dprNow() : pointerCss[0]) + c.left - w.left, y = (xy ? xy[1] / dprNow() : pointerCss[1]) + c.top - w.top;
+    pmenu.box.style.left = `${Math.max(0, Math.min(x + 4, well.clientWidth - pmenu.box.offsetWidth))}px`;
+    pmenu.box.style.top = `${Math.max(0, Math.min(y + 4, well.clientHeight - pmenu.box.offsetHeight))}px`;
+    document.body.dataset.pointMenu = curve ? "corner" : "curve";
+    (curve ? $("point-corner") : $("point-curve")).focus();
+}
+function closePointMenu() { if (!pmenu.box.hidden) { pmenu.box.hidden = true; pmenu.hit = null; document.body.dataset.pointMenu = ""; } }
+for (const [id, smooth] of [["point-curve", true], ["point-corner", false]]) $(id).addEventListener("click", () => {
+    const op = pointMenuOp(pmenu.hit, smooth);
+    closePointMenu();
+    cv.focus();
+    if (op) { cancelPreview(); change("point", op); }
+});
+pmenu.box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closePointMenu(); cv.focus(); } });
+pmenu.box.addEventListener("focusout", (e) => { if (!pmenu.box.contains(e.relatedTarget)) closePointMenu(); });
+
 // The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the
 // router below claims it), so the camera does not orbit; right and middle drag and the wheel
 // still move it.
@@ -583,7 +619,7 @@ for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("
 // with the pattern point and the View's pick. A left press in the 3D window with Pin or Drag on
 // is that tool's. Everything else is the View's camera input; a hover over the 2D window is
 // also sent as `pointer2d` (the worker hovers the piece under it).
-let space = false, shiftHeld = false, drag2d = false, lastUp = null;
+let space = false, shiftHeld = false, drag2d = false, lastUp = null, rightDown = null;
 let ups2d = 0;                            // 2D releases sent, not yet answered: the gesture is still the tool's
 let pan2d = null;                         // the pointer panning the 2D window (the View's), while it does
 let in2d = false;                         // a hover was sent since the pointer last left the 2D window
@@ -646,6 +682,8 @@ listen(cv, (ev) => {
             return;
         }
         if (vp === 1 && ev.button === 1) ev = { ...ev, button: 0 };          // middle-drag pans the 2D window
+        // a right press in 2D pans; let go without moving, it is a click: the point menu (Edit)
+        rightDown = vp === 1 && ev.button === 2 ? { id: ev.pointerId, x: ev.x, y: ev.y } : null;
         if (vp === 0 && ev.button === 0) down3d = [ev.x, ev.y];
     }
     const claim = ev.pointerId !== undefined ? claims.get(ev.pointerId) : undefined;
@@ -675,6 +713,10 @@ listen(cv, (ev) => {
         if (vpNow === 1 && pan2d === null) move2d(ev);
         else if (vpNow !== 1) leave2d();
         if (pan2d === null) cursorAt(vpNow);
+    }
+    if (ev.kind === "up" && rightDown && rightDown.id === ev.pointerId) {
+        if (Math.hypot(ev.x - rightDown.x, ev.y - rightDown.y) < CLICK_PX * dprNow() && toolName === "edit") send2d("context", ev, mods2d(ev));
+        rightDown = null;
     }
     if (ev.kind === "up" && down3d) {                                    // a click without a drag picks in 3D
         if (Math.hypot(ev.x - down3d[0], ev.y - down3d[1]) < CLICK_PX * dprNow()) post({ kind: "pick3d", x: ev.x, y: ev.y, seq: selSeq });
@@ -721,6 +763,7 @@ function at2dAnswer(m) {
     document.body.dataset.hit = m.hit?.kind ?? "";
     document.body.dataset.snap = m.snap?.kind ?? "";
     document.body.dataset.snapAngle = m.snap?.lockedAngle == null ? "" : String(Math.round(m.snap.lockedAngle));
+    if (m.phase === "context") { pointMenu(m.hit, xy); return; }
     // no point (the window hidden since, or the worker failed): a release still ends the
     // gesture, at the last point answered, so no preview is left open
     if (!m.world) { if (m.phase === "up" && tool && lastWorld) apply(tool.up(lastWorld, m.hit, mods)); return; }
@@ -818,8 +861,10 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     if (e.key === "f" || e.key === "F") { fit2d(); return; }
-    // Delete (and Backspace in the edit tool) removes the selected piece, with its seams, or seam
-    if ((e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
+    // Delete (and Backspace in the edit tool) removes the selected points (the tool's key), else
+    // the selected piece, with its seams, or seam
+    const pointsChosen = toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0);
+    if (!pointsChosen && (e.key === "Delete" || (e.key === "Backspace" && toolName === "edit")) && removeSelected()) { e.preventDefault(); return; }
     if (e.key === "Backspace" || e.key === "Enter") e.preventDefault();
     const k = e.key;
     afterUps(() => {
@@ -943,8 +988,10 @@ worker.onmessage = ({ data: m }) => {
 
 // The selected outline's point count: box-selected point indices hold only while it stands.
 const pointCount = () => (selection?.kind === "pattern" ? nodes.find((n) => n.id === `${selection.id}_outline`)?.path?.segments?.length ?? 0 : 0);
+// The selected piece's internal lines' point counts: internal point selections hold while they stand.
+const internalSig = () => (selection?.kind === "pattern" ? (nodes.find((n) => n.id === selection.id)?.internal ?? []).map((l) => l.path?.segments?.length ?? 0).join(",") : "");
 function onDoc(m) {
-    const points0 = pointCount();
+    const points0 = pointCount(), internal0 = internalSig();
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
@@ -953,7 +1000,7 @@ function onDoc(m) {
     // a paste's or duplicate's new pieces, once they are in
     if (selectAfter && m.seq >= selectAfter.seq) { const sel = selectAfter.sel; selectAfter = null; if (exists(sel)) setSelection(sel); else if (kept !== selection) setSelection(kept); }
     else if (kept !== selection) setSelection(kept);
-    else if (pointSel.length && pointCount() !== points0) { pointSel = []; post({ kind: "pointSel", indices: [] }); }
+    else if ((pointSel.length && pointCount() !== points0) || (ipointSel.length && internalSig() !== internal0)) { pointSel = []; ipointSel = []; postPointSel(); }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
     // A fresh tool for the new nodes, unless a gesture (and its previews) is under way.
     if (previewing || gesture2d()) toolStale = true; else freshTool();

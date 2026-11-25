@@ -261,7 +261,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const ed = makeTool("edit", ctx({ nodes, selection: sel }));
     ed.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
     assert.deepEqual(ed.move([101, 0], null, {}), {}, "less than a drag: no preview");
-    assert.deepEqual(ed.up([101, 0], null, {}), {});
+    assert.deepEqual(ed.up([101, 0], null, {}), { pointSel: [1], ipointSel: [] }, "no endPreview: the click selects the point");
     let asked = 0;
     const tr = makeTool("transform", ctx({ nodes, selection: sel, request: async (k, p) => { asked++; return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) }); } }));
     tr.down([5, 5], { kind: "pattern", id: "p1" }, {});
