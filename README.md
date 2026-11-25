@@ -191,9 +191,9 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - On a form with landmarks (assets/forms.json) the arm slots wrap a sleeve round the arm and the
   front and back hang from the shoulder line; on any other avatar (a STEP or STL of your own)
   the slots are the fractions of its bounds.
-- DXF import brings in outlines, allowances, grain lines and notches. Internal lines and holes
-  are dropped (the kernel has no getter for them yet; DXF export writes holes), and so are the
-  3D slots: imported pieces lie on the floor until arranged.
+- DXF import brings in outlines, holes, allowances, grain lines, notches, internal lines and
+  folds. A dart comes back as a plain internal line, and the 3D slots are not in the file:
+  imported pieces lie on the floor until arranged.
 - Holes: a hole's points cannot be moved and its edges cannot be sewn yet. A hole smaller than
   twice the allowance gets no cut line (the status bar says so); a hole's cut line uses the
   piece's first allowance.

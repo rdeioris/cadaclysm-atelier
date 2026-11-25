@@ -12,6 +12,8 @@ const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
 const STEP = 1;          // outline sample spacing for picking, mm
 const NOTCH_KINDS = ["slit", "v", "t", "castle", "u"];
+// garment_pattern_internal_kind: 0 Line, 1 Fold, 2 Dart
+const INTERNAL_KINDS = ["line", "fold", "dart"];
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 const text = (e) => String(e && e.message ? e.message : e);
 const HOLE_GAP = 0.05;    // mm: a hole nearer the outline or another hole than this touches it
@@ -46,7 +48,9 @@ export function forPage(d) {
 const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "profile_fillet_corner", "profile_piece_count",
     "profile_piece", "profile_chain", "profile_close_loop", "profile_beziers", "profile_contains", "profile_offset", "face", "mesh",
     // A1 (spec §3, §5): point editing and the notch marks
-    "profile_insert_vertex", "profile_remove_vertex", "profile_smooth_vertex", "garment_pattern_notch_lines"];
+    "profile_insert_vertex", "profile_remove_vertex", "profile_smooth_vertex", "garment_pattern_notch_lines",
+    // A2 (spec §6): DXF import keeps internal lines and holes
+    "garment_pattern_internal_count", "garment_pattern_internal_kind", "garment_pattern_internal"];
 
 // The kernel's seam-length warning (garment_issue: severity 1 = warning, kind 10 =
 // ISSUE_SEAM_LENGTH_MISMATCH): CLO's ease rule, a seam whose sides differ by more than 5 %.
@@ -1163,7 +1167,15 @@ export class Atelier {
                 // a garment's pattern names must be distinct: suffix a repeat
                 const label = m.freeLabel(nodes, this.f("garment_pattern_name")(r, pid));
                 const add = m.addPattern(nodes, { label, path, fabric, allowance, grain: [gx, gy] });
-                add.ops.find((o) => o.node?.kind === "garment.pattern").node.notches = notches;
+                const node = add.ops.find((o) => o.node?.kind === "garment.pattern").node;
+                node.notches = notches;
+                // internal lines (0 line, 1 fold, 2 dart); the holes came in with the outline
+                const internal = [];
+                for (let i = 0, n = this.f("garment_pattern_internal_count")(r, pid); i < n; i++) {
+                    const l = this.pathOf(this.f("garment_pattern_internal")(r, pid, i));
+                    internal.push({ kind: INTERNAL_KINDS[this.f("garment_pattern_internal_kind")(r, pid, i)] ?? "line", path: { start: l.start, segments: l.segments } });
+                }
+                if (internal.length) node.internal = internal;
                 ops.push(...add.ops);
                 // keep `nodes` in step so the next id and the garment's list are right
                 nodes = nodes.concat(add.ops.filter((o) => o.op === "add").map((o) => o.node));
