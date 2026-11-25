@@ -88,6 +88,27 @@ The tools, with their keys where they have one:
 - **Ctrl+C** copies the selected pieces, with the seams between them, to the app's own clipboard;
   **Ctrl+V** pastes them 30 mm along x and y as "‹label› copy" (each further paste 30 mm more),
   off their slots; **Ctrl+D** (and the panel's **Duplicate**) copies and pastes in one step.
+- **Points** in **Edit**: a double click on an outline edge adds a point there; **Delete** (or
+  **Backspace**) removes the selected points in one undo step; a right click on a point opens a
+  menu with **Make curve point** / **Make corner**, and **C** toggles the selected points between
+  the two. A point the kernel refuses (one that would leave too few sides, say) changes nothing,
+  and the status names it. Seams stay on their sides; notches keep their place along the outline.
+- **Notch** places a notch on an edge, of the kind and depth last chosen (a slit, 6 mm deep, at
+  first). The 2D window draws each of the five kinds as cut: **Slit**, **V**, **T**, **Castle**
+  and **U**. A click on a notch in **Edit** selects it; the panel then sets its **Kind**,
+  **Depth** (mm) and **At** (mm along the outline) or removes it, and the kind and depth set
+  there become the Notch tool's next ones.
+- **Sym** makes a symmetric pair: on the selected piece two clicks give an axis, as **Mirror**
+  does, and the mirrored copy is added, linked. An edit of either piece rebuilds the other
+  (outline, holes, internal lines, notches, grain) in the same undo step, live during a drag;
+  moving one moves the other the mirrored way, and moving both moves the pair as one. The
+  panel's **Unlink** (on either piece) makes them independent; deleting one unlinks the other,
+  and **Cut** unlinks first.
+- **Unfold** makes a piece whole: a click on a straight side takes it as the fold, and the piece
+  becomes the half plus its mirror, the fold drawn dashed across it. Editing either half rebuilds
+  the whole from that half (the fold's two ends slide only along the fold). The panel's **Fold
+  back** returns the half, with its own internal lines and notches (seams on the mirrored side
+  are dropped, and the status names them); **Unlink** keeps the whole as an ordinary piece.
 
 **Slots**: Front, Back, the sides and arms; Hood left / Hood right beside the head of a form
 that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).
@@ -133,8 +154,18 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 
 - On the CPU the drape runs at 2-5 frames a second; the View draws at the display rate
   meanwhile and the cloth moves as frames arrive.
-- On the GPU the cloth is one View item in one colour (the first piece's fabric): its pieces
-  are not coloured apart and the selection accent does not show on it.
+- On the GPU the cloth is one View item, coloured per vertex: each piece in its own fabric's
+  colour (the fit map, when on, recolours it). Unlike the CPU cloth, it does not take the
+  selection accent.
+- Box select in **Edit** picks the selected piece's outline points only, not its internal lines'
+  points or handles.
+- **Unfold** renumbers the piece: the whole starts where the fold side ended, so its sides
+  (and the point numbers in status messages) are not the half's old ones.
+- An edit that changes both halves of an unfolded piece at once (points on either side of the
+  fold moved together) keeps the first half's change and rebuilds the other half from it.
+  Internal lines and notches added to the whole are not mirrored.
+- **Sym** refuses a piece that is linked or unfolded already; **Unfold** refuses a linked piece,
+  an unfolded one, a curved side and a piece of fewer than three sides (the status says which).
 - On the GPU the global intersection analysis (GIA) is on by default, as in the View; the GIA
   button turns it off (faster a frame) and back on. The CPU path always runs it.
 - On the GPU a seam's weld lands up to about 2 frames later than on the CPU (it waits for the
