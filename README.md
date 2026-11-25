@@ -139,7 +139,10 @@ slots do. The Slot select shows such a piece as **On avatar**; it is refreshed l
 or Z, a ring to turn it about its own normal, x or y, the centre square to move it in the
 camera's plane; **Shift** snaps to 10 mm and 15°, **Escape** cancels the drag. A wrapped piece's
 wrap axis moves and turns with it. The release is one undo step; the piece's slot becomes
-**Custom (3D)** (kept as it is by later edits and a new avatar), and the pieces on it follow.
+**Custom (3D)**, and the pieces on it follow. A new avatar leaves a custom piece where it is; a
+2D edit, move or transform of it keeps its frame's axes and its centre's place in 3D (the frame
+shifts so the piece's bounds centre stays on its 3D point; a wrapped piece keeps its wrap and the
+shift goes round the limb and along it), in the edit's undo step.
 
 ## Live drape
 
@@ -197,14 +200,18 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - On the GPU a seam's weld lands up to about 2 frames later than on the CPU (it waits for the
   View's next round trip).
 - A settled shirt still has a few particles jittering at 2-10 m/s (the health line's max speed).
-- Before Simulate the 3D window draws each piece flat at its frame: a sleeve wrapped round an
-  arm shows as a flat slab along the arm until the cloth is built.
 - On a form with landmarks (assets/forms.json) the arm slots wrap a sleeve round the arm and the
   front and back hang from the shoulder line; on any other avatar (a STEP or STL of your own)
   the slots are the fractions of its bounds.
 - DXF import brings in outlines, holes, allowances, grain lines, notches, internal lines and
   folds. A dart comes back as a plain internal line, and the 3D slots are not in the file:
   imported pieces lie on the floor until arranged.
+- The gizmo's size follows the piece (0.45 of its larger 2D side, 80 to 260 mm), not the
+  camera: zoomed far out it is small, zoomed in on a big piece it can run off the window.
+- A gizmo ring seen edge on (its axis across the view) turns by the pointer's travel along the
+  ring's tangent at the grabbed point: an approximation, less exact than a ring facing the camera.
+- The gizmo answers a press only once the hover pick has named the part under the pointer (one
+  round trip to the View's worker): a press made before that answer orbits the camera instead.
 - Holes: a hole's points cannot be moved and its edges cannot be sewn yet. A hole smaller than
   twice the allowance gets no cut line (the status bar says so); a hole's cut line uses the
   piece's first allowance.

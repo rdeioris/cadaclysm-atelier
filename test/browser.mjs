@@ -3,9 +3,11 @@
 // for the worker's `ready`, then with real pointer and key events: draws a rectangle, drags a
 // corner, maximises, arranges, edits the properties (typing + Tab keeps the focus), adds a
 // library fabric, draws a second rectangle and sews the two with "Sew sides", picks the seam in
-// 2D, deletes it and a piece (each undone), moves a piece with the Move tool, types an
-// allowance and saves with Ctrl+S (the download is read back), New and Open, refuses an STL
-// avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Then
+// 2D, deletes it and a piece (each undone), sews an M:N group (deleted, ungrouped, undone),
+// moves a piece with the Move tool, types an allowance and saves with Ctrl+S (the download is
+// read back), New and Open, loads an STL avatar, loads the T-shirt sample, places its Front on
+// the avatar and drags it with the 3D gizmo (each undone), exports it as DXF (4 BLOCKs) and
+// imports that back, and imports a DXF with an internal line, a fold and a hole. Then
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
 // of a piece while it runs (re-meshed), Pause, Reset, on the cloth engine the page picked (the GPU on
 // WebGPU, else the CPU worker; #sim-engine checked). Then the 2D tools on a new garment, ending
@@ -25,6 +27,9 @@
 //     ATELIER_V3_ONLY=1 ...                              # only the V3 block (custom forms), after the page is ready
 //     ATELIER_A2_ONLY=1 ...                              # only the A2 block (place on avatar, the gizmo), on the sample
 //     ATELIER_SHOT_GIZMO=gizmo.png ...                   # also the gizmo over the sample's Front, its X arrow hovered
+//     ATELIER_SHOT_PLACE=place.png ...                   # also a sleeve placed on an arm by Place (wrapped round it)
+//     ATELIER_SHOT_MN=mn.png ...                         # also the M:N group selected in 2D (its seams numbered)
+//     ATELIER_SHOT_DXF=dxf.png ...                       # also the imported DXF piece with its internal lines and hole
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -42,6 +47,8 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { loadKernel } from "./package.mjs";
 import { stlOf } from "./stl.mjs";
+import { Atelier } from "../kernel.js";
+import * as mm from "../model.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -381,6 +388,40 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok(`Place on avatar: a click at ${placedAt} put the Front on an at: slot ("On avatar"); one undo`);
+                if (process.env.ATELIER_SHOT_PLACE) {
+                    // the Left sleeve placed by a click on an arm, wrapped round it (a click elsewhere: flat)
+                    const pick = (label) => evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === ${JSON.stringify(label)}).click()`);
+                    await pick("Left sleeve");
+                    await until("the sleeve's panel", () => evaluate(`${field("slot")}?.value === "left_arm"`), 30000);
+                    await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                    let how = null;
+                    const tries = [];
+                    for (const fy of [0.3, 0.35, 0.4, 0.25, 0.45]) for (const fx of [0.62, 0.66, 0.7, 0.58, 0.74, 0.38, 0.34, 0.3, 0.42, 0.26]) tries.push([fx, fy]);
+                    for (const [fx, fy] of tries) {
+                        await evaluate(`document.getElementById("status-text").textContent = ""`);
+                        await click([qx + qw * fx, qy + qh * fy]);
+                        const t = await until("Place: an answer", async () => (await st()) || null, 30000);
+                        if (t.includes("wrapped round the arm")) { how = `wrapped, a click at ${fx},${fy}`; break; }
+                        if (t.startsWith("placed ")) { await key("z", "KeyZ", 90, 2); await until("the sleeve's slot back", () => evaluate(`${field("slot")}?.value === "left_arm"`), 30000); }
+                    }
+                    if (!how) {
+                        await evaluate(`document.getElementById("status-text").textContent = ""`);
+                        await click([qx + qw * placedAt[0], qy + qh * placedAt[1]]);
+                        await until("Place: an answer", async () => (await st()) || null, 30000);
+                        how = "flat (no arm click wrapped)";
+                    }
+                    await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                    await sleep(500); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_PLACE, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_PLACE}: the Left sleeve placed ${how}`);
+                    await key("z", "KeyZ", 90, 2);
+                    await until("the sleeve's slot back", () => evaluate(`${field("slot")}?.value === "left_arm"`), 30000);
+                    await pick("Front");
+                    await until("the Front's panel again", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                    await noStatusError();
+                    failIfErrors();
+                }
 
                 // the gizmo (spec §3) over the selected Front: a drag of its X arrow moves it, the
                 // slot becomes custom, one undo takes it back; Escape mid-drag puts it back
@@ -612,6 +653,12 @@ async function check(cdp, base) {
                 const pickGroup = () => evaluate(`[...document.querySelectorAll('#browser-seams li[data-kind=seam]')].find((li) => /M:N/.test(li.textContent)).click()`);
                 await pickGroup();
                 await until("the group's panel", () => evaluate(`!!${field("ungroup")} && /Seam group/.test(document.getElementById("props").textContent)`), 30000);
+                if (process.env.ATELIER_SHOT_MN) {
+                    await sleep(500); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_MN, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_MN}`);
+                }
                 await key("Delete", "Delete", 46);
                 await until("the group deleted", async () => (await seamCount()) === 1 && !(await groupItem()), 30000);
                 await key("z", "KeyZ", 90, 2);
@@ -837,6 +884,44 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok("DXF export: 4 BLOCKs; imported back: 4 pieces");
+
+            // a DXF with an internal line, a fold and a hole (A2 spec §6), written by the kernel's
+            // AAMA writer from a garment built in Node: imported, the piece keeps all three
+            {
+                const k = await loadKernel();
+                const params = Object.fromEntries(mm.FABRIC_FIELDS.map((n) => [n, 1]));
+                const src = new Atelier(k);
+                src.reset(mm.newDocumentOps({ slug: "x", label: "X", params }));
+                const outer = mm.rectPath(0, 0, 300, 200), hole = mm.rectPath(180, 60, 60, 80);
+                src.apply(mm.addPattern(src.nodes(), { label: "Panel", path: { ...outer, holes: [{ start: hole.start, segments: hole.segments }] }, fabric: "f_x", allowance: 10 }).ops, "panel");
+                src.apply(mm.addInternal(src.nodes(), "p1", mm.openPath([[30, 30], [120, 30], [120, 160]]), "line"), "line");
+                src.apply(mm.addInternal(src.nodes(), "p1", mm.openPath([[270, 20], [270, 180]]), "fold"), "fold");
+                writeFileSync(join(downloads, "inner.dxf"), src.toDxf());
+                src.free();
+            }
+            await evaluate(`document.getElementById("menu-new").click()`);
+            await until("an empty document for the DXF", async () => (await patternCount()) === 0, 30000);
+            await pickInto("menu-import-dxf", join(downloads, "inner.dxf"), ".dxf");
+            await until("the imported panel", async () => (await patternCount()) === 1, 30000);
+            await noStatusError();
+            {
+                const got = await saveNow();
+                const p = got.nodes.find((n) => n.kind === "garment.pattern");
+                const path = got.nodes.find((n) => n.id === p.outline).path;
+                const kinds = (p.internal ?? []).map((l) => l.kind).sort().join(",");
+                if ((path.holes ?? []).length !== 1) throw new Error(`the imported panel has ${(path.holes ?? []).length} holes, not 1`);
+                if (kinds !== "fold,line") throw new Error(`the imported panel's internal lines: ${kinds}`);
+            }
+            if (process.env.ATELIER_SHOT_DXF) {
+                await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
+                await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                await sleep(1000); await frames();
+                const { data } = await send("Page.captureScreenshot", { format: "png" });
+                writeFileSync(process.env.ATELIER_SHOT_DXF, Buffer.from(data, "base64"));
+                ok(`screenshot ${process.env.ATELIER_SHOT_DXF}`);
+            }
+            failIfErrors();
+            ok("DXF import: a piece with an internal line, a fold and a hole keeps all three");
 
             // 7. the live drape on the sample
             await sample();
