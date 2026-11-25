@@ -768,7 +768,7 @@ async function check(cdp, base) {
                     const v = await until("the map's hover answered", async () => { const d = await evaluate(`document.body.dataset.mapValue ?? "__"`); return d === "__" ? null : { d }; }, 30000);
                     if (v.d !== "") { read = await evaluate(`document.getElementById("map-value").textContent`); break; }
                 }
-                if (!read || !/^Strain (-?\d+(\.\d+)? %|: no value here)$/.test(read)) throw new Error(`the hover read-out: ${read}`);
+                if (!read || !/^Strain( -?\d+(\.\d+)? %|: no value here)$/.test(read)) throw new Error(`the hover read-out: ${read}`);
                 await sleep(500);
                 await frames();
                 if (process.env.ATELIER_SHOT_MAP) {
