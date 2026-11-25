@@ -321,7 +321,12 @@ async function check(cdp, base) {
                 ok(`a garment drapes on the posed form: ${await health()}`);
                 await evaluate(`document.getElementById("sim-toggle").click()`);
                 await until("paused", async () => (await simState()) !== "running", 60000);
+                // a shipped form picked: the Body panel closes and the document forgets the form
+                await setField("form", "f-M");
+                await until("f-M back", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M" && !${field("build")}`), 60000);
+                if (await formKey()) throw new Error("a shipped form still names a built one");
                 failIfErrors();
+                ok("a shipped form picked: the Body panel closes");
             }
             // 1. ready: the new document has one fabric, no patterns, and the avatar
             const clothWanted = (process.env.ATELIER_CLOTH ?? "").toLowerCase();

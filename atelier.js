@@ -183,8 +183,11 @@ function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
     if (selection.kind === "avatar" && f.key === "form" && raw === CUSTOM) { openBody(); return; }
-    if (selection.kind === "avatar" && f.key === "form" && avatar?.landmarks?.form) { bodyDraft = null; change("form", { spec: null }); }   // a shipped pick: no rebuild over it
-    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
+    if (selection.kind === "avatar" && f.key === "form") {      // a shipped pick: the Body panel closes, no rebuild over it
+        bodyDraft = null; if (avatar) avatar.draft = null;
+        if (avatar?.landmarks?.form) change("form", { spec: null });
+    }
+    if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } else renderProps(); return; }
     if (selection.kind === "avatar" && bodyDraft && isBodyKey(f.key)) { bodyEdit(f, raw); return; }
     const value = f.type === "text" || f.type === "colour" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
