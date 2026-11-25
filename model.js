@@ -276,6 +276,7 @@ export function pieceOps(nodes, id, r, ids = [id]) {
     if (n?.internal || r.internal?.length) fields.internal = r.internal ?? [];
     if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
     if (r.grain) fields.grain = r.grain;
+    if (n?.pins?.length && r.pins) fields.pins = r.pins;
     let meta = n?.meta;
     if (r.unfold && meta?.atelier?.unfold) meta = atelierMeta(meta, "unfold", r.unfold);
     const link = meta?.atelier?.link;
@@ -309,6 +310,7 @@ export function pasteOps(nodes, clip, placed) {
         Object.assign(add.node, rest, { grain: placed[i].grain ?? rest.grain ?? [0, 1] });
         if (placed[i].internal?.length) add.node.internal = placed[i].internal; else delete add.node.internal;
         if (placed[i].notches?.length) add.node.notches = placed[i].notches; else delete add.node.notches;
+        if (placed[i].pins?.length) add.node.pins = placed[i].pins; else delete add.node.pins;
         if (meta) {
             const atelier = { ...(meta.atelier ?? {}) };
             delete atelier.slot;

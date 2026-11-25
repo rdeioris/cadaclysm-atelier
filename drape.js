@@ -228,7 +228,8 @@ export function translatePath(path, d) {
 // since) is put back by the offset it moved, so a re-mesh maps its points onto the old
 // triangles. `base` the nodes the cloth was meshed from (outlines in its frame), `nodes` the
 // garment now, `offsets` pattern id -> [dx, dy] so far (updated in place).
-// -> the ops that set every moved outline back into the cloth's frame (none when nothing moved).
+// -> the ops that set every moved outline, with its internal lines and saved pins, back into the
+// cloth's frame (none when nothing moved).
 export function frameOps(base, nodes, offsets) {
     const byId = (ns) => new Map(ns.map((n) => [n.id, n]));
     const b = byId(base), n = byId(nodes);
@@ -239,14 +240,23 @@ export function frameOps(base, nodes, offsets) {
         if (!was || !now) continue;
         const moved = pathOffset(was, now);
         if (moved) {
-            if (moved[0] || moved[1]) { offsets.set(p.id, moved); ops.push({ op: "set", id: p.outline, fields: { path: was } }); }
+            if (moved[0] || moved[1]) { offsets.set(p.id, moved); ops.push({ op: "set", id: p.outline, fields: { path: was } }, ...pieceBack(p, moved)); }
             else offsets.delete(p.id);
             continue;
         }
         const off = offsets.get(p.id);
-        if (off) ops.push({ op: "set", id: p.outline, fields: { path: translatePath(now, [-off[0], -off[1]]) } });
+        if (off) ops.push({ op: "set", id: p.outline, fields: { path: translatePath(now, [-off[0], -off[1]]) } }, ...pieceBack(p, off));
     }
     return ops;
+}
+// What else of piece `p` the document holds in its own frame, moved back by `off`: its internal
+// lines (a 2D move carries them with the outline: kernel.js transformedPiece) and its saved pins
+// (Drape.pinPlace saves them where the piece stands).
+function pieceBack(p, off) {
+    const fields = {}, back = [-off[0], -off[1]];
+    if (p.internal?.length) fields.internal = p.internal.map((l) => (l.path ? { ...l, path: translatePath(l.path, back) } : l));
+    if (p.pins?.length) fields.pins = p.pins.map((q) => [q[0] + back[0], q[1] + back[1]]);
+    return Object.keys(fields).length ? [{ op: "set", id: p.id, fields }] : [];
 }
 
 // ---- phases, health, rate --------------------------------------------------------------------

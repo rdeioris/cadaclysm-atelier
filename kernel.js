@@ -501,7 +501,7 @@ export class Atelier {
     // with its holes through profile_transform2d, each internal line through the same matrix, each
     // notch re-placed at its mapped point on the new outline, and the grain the matrix's linear
     // part applied and normalised. From the committed piece during a preview (as transformed()).
-    // -> {path, internal, notches, grain}
+    // -> {path, internal, notches, grain, pins?}
     transformedPiece(id, m6) {
         const byId = m.byId(this.open ? this.open.nodes : this.nodes()), node = byId.get(id), path = byId.get(`${id}_outline`)?.path;
         if (!node || !path) throw new Error(`no pattern ${id}`);
@@ -522,6 +522,8 @@ export class Atelier {
         const [gx, gy] = node.grain ?? [0, 1], tx = m6[0] * gx + m6[1] * gy, ty = m6[3] * gx + m6[4] * gy, gl = Math.hypot(tx, ty);
         if (!(gl > 0)) throw new Error("the transform collapses the piece");
         const r = { path: out, internal, notches, grain: [tx / gl, ty / gl] };
+        // the saved pins (S1, pattern space) go with the piece
+        if (node.pins?.length) r.pins = node.pins.map(map);
         // spec §6: a link's axis through the same matrix (model.pieceOps keeps it only when the
         // partner moves too), and an unfold's axis and half with it
         const axisThrough = ([x0, y0, x1, y1]) => [...map([x0, y0]), ...map([x1, y1])];

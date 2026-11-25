@@ -508,7 +508,11 @@ const TOOLS = {
             // internal line of the selected piece, inserts a point there (spec §3: the kernel's).
             up(w, h0, mods) {
                 if (box.on) return box.end(mods).then((r) => ({ pointSel: r?.indices ?? [], ipointSel: [], overlay: { lines: [] } }), () => ({ overlay: { lines: [] } }));
-                const h = hit; hit = null;
+                // a drag commits the preview at the release point: moves still in flight when the
+                // pointer was let go are dropped (the page keeps one at a time), so the last one
+                // previewed may be short of it
+                const h = hit, last = h && sent && !locked ? preview(w) : null;
+                hit = null;
                 if (mods?.dblclick && !sent) {
                     const at = h0 ?? h;
                     if (at?.kind === "edge") return { point: { id: at.id, op: "insert", s: at.s }, status: "point added", error: false };
@@ -518,7 +522,7 @@ const TOOLS = {
                 // simulation properties, simprops.js); a double click still inserts a point
                 if (!h && !mods?.dblclick && h0?.kind === "internal" && h0.id === selectedId(ctx)) return { select: { kind: "internal", id: h0.id, index: h0.index } };
                 if (!h) return {};
-                if (sent) return locked ? {} : { endPreview: true };
+                if (sent) return locked ? {} : { ...last, endPreview: true };
                 if (h.kind === "point") {
                     const now = new Set(mods?.shift ? chosen : []);
                     if (mods?.shift && now.has(h.index)) now.delete(h.index); else now.add(h.index);

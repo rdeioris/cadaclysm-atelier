@@ -194,4 +194,17 @@ const transform = (a, ids, key, value) => {
         a.free();
     }
 }
+// a piece's saved pins (S1, pattern space) go with it: moved, and onto a pasted copy
+{
+    const a = fresh();
+    a.apply(m.setPattern(a.nodes(), "p1", { pins: [[20, 20], [70, 30]] }), "pins");
+    a.commit(m.pieceOps(a.nodes(), "p1", a.transformedPiece("p1", [1, 0, 15, 0, 1, -5])), "move", ["p1"]);
+    nearAll(node(a, "p1").pins.flat(), [35, 15, 85, 25]);
+    assert.equal(node(a, "p2").pins, undefined, "a piece without pins gets none");
+    const clip = m.copyPieces(a.nodes(), ["p1"]);
+    const r = m.pasteOps(a.nodes(), clip, a.piecesThrough(clip.pieces, [1, 0, 30, 0, 1, 30]));
+    a.commit(r.ops, "paste");
+    nearAll(node(a, r.ids[0]).pins.flat(), [65, 45, 115, 55]);
+    a.free();
+}
 console.log("transform-kernel: ok");

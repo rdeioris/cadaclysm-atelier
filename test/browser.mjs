@@ -391,7 +391,8 @@ async function check(cdp, base) {
             // the edit tool drags a corner: previews, then one commit; the piece grows
             const width = () => evaluate(`Number(/size\\s*(\\d+)/.exec(document.getElementById("props").textContent)?.[1])`);
             const w0 = await width();
-            await mouse("mouseMoved", b[0], b[1], { buttons: 0 });
+            // the selected piece's edit points are drawn a frame after the selection: hover until the corner answers
+            await until("the corner under the pointer", async () => { await mouse("mouseMoved", b[0], b[1], { buttons: 0 }); await sleep(100); return (await evaluate(`document.body.dataset.hit ?? ""`)) === "point"; }, 30000);
             await mouse("mousePressed", b[0], b[1]);
             for (let i = 1; i <= 6; i++) { await mouse("mouseMoved", b[0] + i * 10, b[1]); await sleep(30); }
             await mouse("mouseReleased", b[0] + 60, b[1]);
@@ -1562,18 +1563,19 @@ async function check(cdp, base) {
                 await noStatusError();
                 ok("Fold line: drawn across a piece, selected, its angle set to 90");
                 const tacks = async () => (await saveJson()).nodes.filter((n) => n.kind === "garment.tack");
-                const items0 = Number(await evaluate(`document.body.dataset.items2d`));
                 await evaluate(`document.querySelector('#tools2d [data-tool=tack]').click()`);
                 await click(screenOf([c0[0] + 62, c0[1] + 12]));
                 await click(screenOf([c0[0] + 20, c0[1] + 12]));
                 await until("the tack", async () => (await tacks()).length === 1, 30000);
                 const [tk] = await tacks();
                 if (tk.a !== rightHalf || tk.b === rightHalf || Math.abs(tk.a_at[0] - c0[0] - 62) > 3) throw new Error(`the tack: ${JSON.stringify(tk)}`);
-                await until("the tack drawn", async () => Number(await evaluate(`document.body.dataset.items2d`)) >= items0 + 2, 30000);
                 await until("the tack selected", () => evaluate(`/^Tack/.test(document.querySelector("#props h3")?.textContent ?? "")`), 30000);
+                // drawn: its items leave the scene with it (the selected line's edit points went with the tack's selection)
+                const itemsTack = Number(await evaluate(`document.body.dataset.items2d`));
                 await key("Escape", "Escape", 27);
                 await key("Delete", "Delete", 46);
                 await until("the tack deleted", async () => (await tacks()).length === 0, 30000);
+                await until("the tack's drawing gone", async () => Number(await evaluate(`document.body.dataset.items2d`)) <= itemsTack - 2, 30000);
                 if ((await saveJson()).nodes.find((n) => n.id === "garment").tacks !== undefined) throw new Error("the garment kept an empty tacks list");
                 await noStatusError();
                 failIfErrors();
@@ -1601,7 +1603,7 @@ async function check(cdp, base) {
                 await until("the piece selected", () => evaluate(`!!document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]')?.classList.contains("on")`), 30000);
                 await evaluate(`document.querySelector('#tools2d [data-tool=internal]').click()`);
                 await click(screenAt([o[0] + 30, o[1] + 30]));
-                await drag(screenAt([o[0] + 90, o[1] + 65]), screenAt([o[0] + 125, o[1] + 65]));
+                await drag(screenAt([o[0] + 90, o[1] + 65]), screenAt([o[0] + 125, o[1] + 65]), 8, 200);   // the press lands before the moves (a slow software frame)
                 await click(screenAt([o[0] + 170, o[1] + 30]));
                 await key("Enter", "Enter", 13);
                 const d1 = await until("the internal line", async () => { const d = await saveJson(); return d.nodes.find((n) => n.id === pid)?.internal?.length ? d : null; }, 30000);
@@ -1615,7 +1617,7 @@ async function check(cdp, base) {
                     const hit = await evaluate(`document.body.dataset.hit`);
                     if (hit !== "ihandle") throw new Error(`the internal handle's hover answered ${hit}, not ihandle`);
                 }
-                await drag(screenAt(c1), screenAt([c1[0], c1[1] + 20]));
+                await drag(screenAt(c1), screenAt([c1[0], c1[1] + 20]), 8, 200);
                 const d2 = await until("the handle moved", async () => {
                     const d = await saveJson();
                     const g = d.nodes.find((n) => n.id === pid).internal[0].path.segments[1];
@@ -1664,8 +1666,9 @@ async function check(cdp, base) {
                 await noStatusError();
                 if (Math.abs(p5.segments[0].to[1] - o[1]) > 1e-6 || Math.abs(p5.segments[0].to[0] - o[0] - 60) > 2) throw new Error(`the new point is at ${p5.segments[0].to}`);
                 const Pn = screenAt(p5.segments[0].to);
-                await worldOf(Pn);
-                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error("the new point's hover is not a point");
+                // the new point's edit point is drawn a frame after the commit (a slow software frame): hover until it answers
+                await until("the new point's hover", async () => (await hoverInfo(Pn)).hit === "point", 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: the hover answers ${(await hoverInfo(Pn)).hit}, not a point`); });
                 await mouse("mousePressed", Pn[0], Pn[1], { button: "right", buttons: 2 });
                 await mouse("mouseReleased", Pn[0], Pn[1], { button: "right", buttons: 0 });
                 await until("the point menu", () => evaluate(`document.body.dataset.pointMenu === "curve" && !document.getElementById("point-menu").hidden`), 10000);
