@@ -19,6 +19,7 @@ import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
 import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
 import { TapeTool, cmText } from "./tape3d.js";
+import { CUSTOM, draftFrom, bodyCommit, isBodyKey } from "./bodypanel.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -32,6 +33,8 @@ let pointSel = [];            // the selected piece's box-selected point indices
 let avatar = null;            // {name, bounds, landmarks, forms}: landmarks the forms.json entry, or null
 let forms = [];               // the dress forms in assets/forms.json, as the worker read them
 let formLoading = null;       // the form the Form select asked for, until it lands or fails
+let bodyDraft = null;         // the Body panel's draft (bodypanel.js) while "Custom form…" is open
+let formAskedAt = null;       // when Build or Apply was hit: the browser test reads the time to the form shown
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
@@ -179,7 +182,10 @@ const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Av
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
+    if (selection.kind === "avatar" && f.key === "form" && raw === CUSTOM) { openBody(); return; }
+    if (selection.kind === "avatar" && f.key === "form" && avatar?.landmarks?.form) { bodyDraft = null; change("form", { spec: null }); }   // a shipped pick: no rebuild over it
     if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } return; }
+    if (selection.kind === "avatar" && bodyDraft && isBodyKey(f.key)) { bodyEdit(f, raw); return; }
     const value = f.type === "text" || f.type === "colour" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
@@ -191,13 +197,29 @@ function commitField(f, raw) {
         if (f.key === "duplicate" && ops[0]?.op === "add") { pickedFabric = ops[0].node.id; setSelection({ kind: "fabric", id: ops[0].node.id }); }
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
 }
+// "Custom form…": the Body panel, its draft from the form shown (or chart f-M at Rest)
+function openBody() {
+    bodyDraft ??= draftFrom(avatar?.landmarks?.form ?? null);
+    if (avatar) avatar.draft = bodyDraft;
+    status("Custom form: set the measurements and the pose, then Build form");
+    renderProps();
+}
+// A Body-panel edit: the draft changes; Build and Apply write the form into the document
+function bodyEdit(f, raw) {
+    const r = bodyCommit(bodyDraft, f.key, raw);
+    bodyDraft = r.draft;
+    if (avatar) avatar.draft = bodyDraft;
+    if (r.error) { status(r.error, true); renderProps(); return; }
+    if (r.build) { formAskedAt = performance.now(); change("form", { spec: r.build }); status("building the form…"); }
+    renderProps();
+}
 function fieldRow(f) {
     const dt = document.createElement("dt");
     dt.textContent = f.unit ? `${f.label} (${f.unit})` : f.label;
     if (f.tip) dt.title = f.tip;
     const dd = document.createElement("dd");
     let input;
-    if (f.type === "readonly") dd.textContent = String(f.value);
+    if (f.type === "readonly") { dd.textContent = String(f.value); if (f.measured) dd.classList.add("measured"); }
     else if (f.type === "action") {
         input = document.createElement("button");
         input.textContent = f.label;
@@ -889,12 +911,20 @@ worker.onmessage = ({ data: m }) => {
         case "forms": forms = m.forms ?? []; if (avatar) avatar.forms = forms; break;
         case "avatar":
             avatar = { name: m.name, bounds: m.bounds, landmarks: m.landmarks ?? null, forms };
+            // a built form (meta atelier.form): the Body panel shows its spec; a shipped one closes it
+            bodyDraft = avatar.landmarks?.form ? draftFrom(avatar.landmarks.form) : null;
+            avatar.draft = bodyDraft;
+            document.body.dataset.form = m.formKey ?? "";
+            if (m.formKey && formAskedAt !== null) { document.body.dataset.formMs = String(Math.round(performance.now() - formAskedAt)); formAskedAt = null; }
+            if (m.formKey) { document.body.dataset.formWorkerMs = String(Math.round(m.timings?.worker ?? 0)); status(`form built: ${m.triangles} triangles${m.separate?.length ? `; separate: ${m.separate.join("; ")}` : ""}`); }
             document.body.dataset.avatarHead = avatar.landmarks?.head ? "1" : "0";     // the browser test reads it
             if (formLoading === m.name) { formLoading = null; status(`${m.name} loaded`); }
             renderBrowser();
             if (selection?.kind === "avatar") renderProps();
             break;
         case "status": status(m.text); break;
+        case "formBuilding": status("building the form…"); break;
+        case "formFailed": formAskedAt = null; break;
         case "sim": onSim(m); break;
         case "at2d": onAt2d(m); break;
         case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;

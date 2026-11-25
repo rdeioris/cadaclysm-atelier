@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { loadKernel } from "./package.mjs";
-import { buildForm, concatParts, positionsBox, MESH_TOL } from "../dressform.js";
+import { buildForm, concatParts, positionsBox, MESH_TOL, FormCache, measureGirths, specKey } from "../dressform.js";
 import { startFrom } from "../form-grade.js";
 import { PRESETS } from "../form-pose.js";
 
@@ -111,6 +111,36 @@ for (const [name, pose] of Object.entries(PRESETS)) {
     if (name === "Rest" || name === "T-pose") console.log(`  timings f-M ${name}: ${JSON.stringify(ms(r.timings))}`);
 }
 console.log(`ok - every preset builds closed (first build ${Math.round(firstMs)} ms)`);
+
+// the cache: a pose change rebuilds only the limbs that moved, and gives what a fresh build gives
+const cache = new FormCache(8);
+const restSpec = spec("female", "M", { pose: PRESETS.Rest });
+const first = buildForm(k, restSpec, cache);
+assert.deepEqual(first.cached, []);
+const kneeSpec = spec("female", "M", { pose: { ...PRESETS.Rest, left_leg: { abduction: 0, flexion: 0, knee: 60 } } });
+const t1 = performance.now();
+const knee = buildForm(k, kneeSpec, cache);
+const kneeMs = performance.now() - t1;
+assert.deepEqual(knee.cached, ["body", "left_arm", "right_arm", "right_leg"], "only the left leg is rebuilt");
+const fresh = buildForm(k, kneeSpec);
+assert.deepEqual(bytes(concatParts(knee.parts).positions), bytes(concatParts(fresh.parts).positions), "cached = fresh");
+assert.deepEqual(buildForm(k, restSpec, cache).cached, ["body", "left_arm", "right_arm", "left_leg", "right_leg"], "back to Rest: all cached");
+assert.equal(specKey(restSpec), specKey({ ...restSpec, pose: null }), "Rest and no pose are one form");
+console.log(`ok - the cache: a knee bend rebuilds one leg (${Math.round(kneeMs)} ms)`);
+
+// the tape's girths on the built form (hull, at the landmark heights) are within 2 % of the asked-for
+let worstGirth = 0;
+for (const [body, m] of [["female", startFrom("female", "M")], ["male", startFrom("male", "XL")],
+    ["female", { bust: 95, waist: 70, hip: 104, neck: 34, shoulder: 39, height: 165 }]]) {
+    const r = buildForm(k, { body, measurements: m });
+    const gi = measureGirths(k, r.parts.find((p) => p.name === "body"), r.grade, m);
+    for (const [key, { asked, measured }] of Object.entries(gi)) {
+        const off = Math.abs(measured - asked) / asked;
+        worstGirth = Math.max(worstGirth, off);
+        assert.ok(off < 0.02, `${body} ${key}: ${measured} cm for ${asked}`);
+    }
+}
+console.log(`ok - measured girths within ${(100 * worstGirth).toFixed(2)} % of the asked-for (2 % allowed)`);
 
 // joined builds: each part folds with join, or reports what stayed separate (minutes each)
 if (LONG) {

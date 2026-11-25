@@ -3,6 +3,7 @@
 import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
+import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 export const DEFAULT_MESH = 20;   // the kernel's default particle_distance (cloth_default_options()[0])
@@ -28,12 +29,13 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
         if (!avatar) return [];
         const size = [0, 1, 2].map((i) => (avatar.bounds[i + 3] - avatar.bounds[i]).toFixed(0)).join(" × ");
         const forms = avatar.forms?.length
-            ? [{ key: "form", label: "Form", unit: "", type: "select", value: avatar.name, options: avatar.forms.map((f) => ({ value: f.name, label: f.label ?? f.name })) }]
+            ? [{ key: "form", label: "Form", unit: "", type: "select", value: avatar.draft || avatar.landmarks?.form ? CUSTOM : avatar.name, options: formOptions(avatar.forms) }]
             : [];
         return [
             { key: "name", label: "Name", unit: "", type: "readonly", value: avatar.name },
             ...forms,
             { key: "bounds", label: "Size", unit: "mm", type: "readonly", value: size },
+            ...(avatar.draft ? [...bodyFields(avatar.draft, avatar), ...poseFields(avatar.draft)] : []),
             { key: "load", label: "Load STEP", unit: "", type: "action", value: null },
         ];
     }

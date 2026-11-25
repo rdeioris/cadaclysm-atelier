@@ -115,7 +115,7 @@ assert.throws(() => opsFor({ kind: "pattern", id: "p1" }, nodes, "slot", "front"
     assert.ok(form, "a Form field");
     assert.equal(form.type, "select");
     assert.equal(form.value, "f-M");
-    assert.deepEqual(form.options, [{ value: "f-M", label: "f-M" }, { value: "f-M-head", label: "f-M with head" }]);
+    assert.deepEqual(form.options, [{ value: "f-M", label: "f-M" }, { value: "f-M-head", label: "f-M with head" }, { value: "custom", label: "Custom form…" }]);
     const none = fieldsFor({ kind: "avatar", id: "avatar" }, [], new Map(), { name: "x", bounds: [0, 0, 0, 1, 1, 1] });
     assert.equal(none.find((f) => f.key === "form"), undefined, "no forms list: no Form field");
 }

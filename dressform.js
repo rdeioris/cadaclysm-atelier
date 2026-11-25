@@ -2,7 +2,8 @@
 // tools/dressform.py's geometry (torso loft, neck cap or head, frustum-and-ball arms), plus full
 // legs and poses (form-pose.js says where every part goes). Takes the kernel module `k`, as
 // Atelier(k) does. Every handle made here is freed here, a throw included.
-import { gradeForm, girths as gradeGirths, validateMeasurements } from "./form-grade.js";
+import { gradeForm, girths as gradeGirths, validateMeasurements, LANDMARK } from "./form-grade.js";
+import { tapeLength } from "./tape3d.js";
 import {
     armSkeleton, legSkeleton, handSections, thighStubSections, headSections, upFrame, segmentFrame,
     normalisePose, validatePose, formLandmarks,
@@ -148,39 +149,90 @@ export function meshParts(k, solids, tol = MESH_TOL) {
 /** Free solids not meshed (a build that throws part-way). */
 export function freeSolids(k, solids) { const K = calls(k); for (const s of solids) K.sfree(s.solid); }
 
+// ---- the form spec: what the document saves (meta atelier.form) and the cache keys ----
+export const SPEC_VERSION = 1;
+const MEASURES = ["bust", "waist", "hip", "neck", "shoulder", "height"];
+/** {v, body, measurements (fixed key order), head, pose (all 12 angles)}: one text per form. */
+export function normaliseSpec(spec) {
+    return {
+        v: SPEC_VERSION, body: spec.body,
+        measurements: Object.fromEntries(MEASURES.map((k) => [k, spec.measurements?.[k]])),
+        head: !!spec.head, pose: normalisePose(spec.pose ?? null),
+    };
+}
+export const specKey = (spec) => (spec ? JSON.stringify(normaliseSpec(spec)) : null);
+
+/**
+ * A two-layer LRU of built meshes: the body by its measurements, each limb by the body's key and
+ * its own angles, so a pose change rebuilds only the limbs that moved. The meshes it hands out
+ * are its own: copy them before transferring their buffers.
+ */
+export class FormCache {
+    constructor(size = 8) { this.size = size; this.body = new Map(); this.limb = new Map(); }
+    static take(map, key) { const v = map.get(key); if (v) { map.delete(key); map.set(key, v); } return v; }
+    put(map, key, v) { map.set(key, v); while (map.size > this.size) map.delete(map.keys().next().value); }
+}
+
 /**
  * Build a form: spec = {body, measurements (cm; height = stature), head, legs = true, pose = null,
  * tol, joins}. -> {parts: meshes, landmarks, girths (cm, the graded sections'), timings (ms),
- * separate: {stage: [parts a refused join left on their own]}}.
+ * separate: {stage: [parts a refused join left on their own]}, cached: [stages from the cache]}.
+ * With a FormCache, stages it holds are not built again.
  *
  * joins: "none" (the default) leaves every part its own closed solid: the collider is the union
  * of the meshes either way, and a join costs seconds (2-13 s each in wasm, about 23 of them: a
  * joined f-M takes minutes, as the script's 77 s natively), far over the 5 s a build may take.
  * "all" folds each part (body, each limb) with join, falling back per part as the script does.
  */
-export function buildForm(k, spec) {
+export function buildForm(k, spec, cache = null) {
     const { body, measurements, head = false, legs = true, pose = null, tol = MESH_TOL, joins = JOINS } = spec;
     if (joins !== "none" && joins !== "all") throw new Error(`joins must be "none" or "all", not ${joins}`);
     const bad = validateMeasurements(measurements) ?? validatePose(pose);
     if (bad) throw new Error(bad);
     const g = gradeForm(body, measurements);
     const p = normalisePose(pose);
-    const timings = {}, separate = {}, parts = [];
+    const timings = {}, separate = {}, parts = [], cached = [];
+    const bodyKey = JSON.stringify({ v: SPEC_VERSION, body, measurements: normaliseSpec(spec).measurements, head: !!head, legs: !!legs, tol, joins });
     const t0 = now();
-    const stage = (name, make) => {
-        const t = now(), r = make();
-        timings[name] = now() - t;
-        separate[name] = r.separate;
-        const ms = now();
-        parts.push(...meshParts(k, r.solids, tol));
-        timings[`${name} mesh`] = now() - ms;
+    const stage = (name, map, key, make) => {
+        let hit = cache && FormCache.take(map, key);
+        if (hit) cached.push(name);
+        else {
+            const t = now(), r = make();
+            timings[name] = now() - t;
+            const ms = now();
+            hit = { parts: meshParts(k, r.solids, tol), separate: r.separate };
+            timings[`${name} mesh`] = now() - ms;
+            cache?.put(map, key, hit);
+        }
+        separate[name] = hit.separate;
+        parts.push(...hit.parts);
     };
-    stage("body", () => buildBody(k, g, { head, legs, joins }));
-    for (const side of ["left", "right"]) stage(`${side}_arm`, () => buildLimb(k, g, side, "arm", p[`${side}_arm`], { joins }));
-    if (legs) for (const side of ["left", "right"]) stage(`${side}_leg`, () => buildLimb(k, g, side, "leg", p[`${side}_leg`], { joins }));
+    stage("body", cache?.body, bodyKey, () => buildBody(k, g, { head, legs, joins }));
+    const limbs = [["left", "arm"], ["right", "arm"], ...(legs ? [["left", "leg"], ["right", "leg"]] : [])];
+    for (const [side, kind] of limbs) {
+        const angles = p[`${side}_${kind}`];
+        stage(`${side}_${kind}`, cache?.limb, `${bodyKey}|${side}|${kind}|${JSON.stringify(angles)}`, () => buildLimb(k, g, side, kind, angles, { joins }));
+    }
     timings.total = now() - t0;
     const landmarks = formLandmarks(g, { head, legs, pose });
-    return { parts, landmarks, girths: gradeGirths(g), timings, separate, grade: g };
+    return { parts, landmarks, girths: gradeGirths(g), timings, separate, cached, grade: g };
+}
+
+/**
+ * The tape's girths on the body part's mesh at the bust, waist and hip sections (a real tape:
+ * the loop's convex hull), in cm, beside the asked-for ones: {bust: {asked, measured}, ...}.
+ * The point is the graded section's front, (0, y, zc + b); the plane is horizontal.
+ */
+export function measureGirths(k, bodyMesh, g, asked) {
+    const out = {};
+    for (const key of ["bust", "waist", "hip"]) {
+        const [y, , b, zc] = g.sections[LANDMARK[key]];
+        const pts = k.cadaclysm_blacksmith_cloth_tape_girth(bodyMesh.positions, bodyMesh.indices,
+            Float64Array.from([0, y, zc + b]), Float64Array.from([0, 1, 0]), true);
+        out[key] = { asked: asked[key], measured: tapeLength(pts, true) / 10 };
+    }
+    return out;
 }
 
 /** Every part's mesh in one {positions, normals, indices}: the View item and the collider. */
