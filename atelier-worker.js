@@ -447,12 +447,14 @@ function changed(seq) {
     syncForm();
 }
 
-// `form` is the forms.json entry (its landmarks) for a dress form from assets; a user's STEP
-// passes none, so a file that happens to be called f-M does not inherit f-M's landmarks.
-async function loadAvatar(bytes, name, form = null) {
+// `form` is the forms.json entry (its landmarks) for a dress form from assets; a user's STEP or
+// STL passes none, so a file that happens to be called f-M does not inherit f-M's landmarks.
+// `format` is the reader's: "step" or "stl" (arrange.js avatarFormat). An STL is a mesh scene:
+// its collider comes from its triangles as a STEP's does.
+async function loadAvatar(bytes, name, form = null, format = "step") {
     const v = viewer;
     // read and show first: a bad file keeps the avatar already there, and frees what it made
-    const scene = open(new Uint8Array(bytes), "step", undefined, "native");
+    const scene = open(new Uint8Array(bytes), format, undefined, "native");
     let b, id;
     try {
         b = sceneBox(scene.vertices(), scene.origin());
@@ -675,7 +677,7 @@ self.onmessage = async ({ data }) => {
             case "new": atelier.reset(data.ops); changed(data.seq); break;
             case "importDxf": atelier.apply(atelier.fromDxf(data.text, data.fabric), "import"); changed(data.seq); break;
             case "exportDxf": post({ kind: "dxf", text: atelier.toDxf() }); break;
-            case "avatar": await loadAvatar(data.bytes, data.name); break;
+            case "avatar": await loadAvatar(data.bytes, data.name, null, data.format ?? "step"); break;
             case "avatarAsset": await loadShippedForm(data.name); break;
             // Build / Apply: the form's spec into the document (one undo step); syncForm builds it
             case "form": atelier.apply([atelier.formMetaOp(data.spec ?? null)], data.spec ? "build form" : "shipped form"); changed(data.seq); break;

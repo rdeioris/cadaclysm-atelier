@@ -23,6 +23,8 @@ Men's XS, S, M, L, XL (f-XS ... m-XL), each graded from its size chart by `tools
 `--forms-only --forms assets/forms.json`, never typed by hand. The file also carries each form's landmarks (body
 top, shoulder line, arms, head), which the slots place pieces by. The form is the session's,
 not the garment's: Save does not write it, and Open keeps the avatar that is loaded.
+**Avatar** also loads a dress form of your own, a STEP (`.stp`, `.step`) or an STL (`.stl`, read
+as a mesh); its triangles are the cloth's collider either way. Such a file has no landmarks.
 
 ## The package
 
@@ -174,8 +176,8 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - Before Simulate the 3D window draws each piece flat at its frame: a sleeve wrapped round an
   arm shows as a flat slab along the arm until the cloth is built.
 - On a form with landmarks (assets/forms.json) the arm slots wrap a sleeve round the arm and the
-  front and back hang from the shoulder line; on any other STEP avatar the slots are the old
-  fractions of its bounds.
+  front and back hang from the shoulder line; on any other avatar (a STEP or STL of your own)
+  the slots are the fractions of its bounds.
 - DXF import brings in outlines, allowances, grain lines and notches. Internal lines and holes
   are dropped (the kernel has no getter for them yet; DXF export writes holes), and so are the
   3D slots: imported pieces lie on the floor until arranged.
@@ -193,7 +195,6 @@ and stop, `atelierFilm.garment()` reads the document without a download,
   switching to a form with no head. The piece keeps its frame and the Slot select shows the
   stale value until another slot is picked.
 - Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
-- Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
 - Forms with a head: only f-M so far.
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both

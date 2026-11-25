@@ -13,7 +13,7 @@ import { isCurvePoint } from "./view2d.js";
 import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
-import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
+import { arrangeSlots, avatarFormat, fabricColours, isSelected, survivingSelection } from "./arrange.js";
 import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
@@ -1017,10 +1017,9 @@ const menu = {
     importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text, fabric: currentFabric() }); }); },
     exportDxf() { document.activeElement?.blur(); post({ kind: "exportDxf" }); },
     avatar() {
-        pickFile(".stp,.step", async (f) => {
-            if (/\.stl$/i.test(f.name)) { status("STL avatars need the kernel's STL reader; use STEP for now", true); return; }
+        pickFile(".stp,.step,.stl", async (f) => {
             const bytes = await f.arrayBuffer();
-            post({ kind: "avatar", bytes, name: f.name.replace(/\.[^.]+$/, "") }, [bytes]);
+            post({ kind: "avatar", bytes, name: f.name.replace(/\.[^.]+$/, ""), format: avatarFormat(f.name) }, [bytes]);
         });
     },
 };

@@ -17,6 +17,9 @@ export const SLOTS = {
     right_arm:  { label: "Right arm",  origin: [-0.2, 0.8, 0.5],   x: [0, 0, 1],  y: [0, 1, 0] },
 };
 
+// The reader's format for an avatar file: "stl" for .stl, else "step" (.stp, .step).
+export const avatarFormat = (name) => (/\.stl$/i.test(name) ? "stl" : "step");
+
 // A read scene's axis-aligned box (min xyz, max xyz) in the file's coordinates: its
 // vertices are nine floats each (position, normal, colour), relative to origin().
 export function sceneBox(vertices, origin, stride = 9) {

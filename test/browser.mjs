@@ -38,6 +38,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { loadKernel } from "./package.mjs";
+import { stlOf } from "./stl.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -593,14 +595,20 @@ async function check(cdp, base) {
             failIfErrors();
             ok("New, then Open: two patterns, one seam, two fabrics back");
 
-            // an STL avatar is refused with a message until the kernel reads STL
-            const stlFile = join(downloads, "tetra.stl");
-            writeFileSync(stlFile, "solid t\nendsolid t\n");
-            await pickInto("menu-avatar", stlFile, ".stp");
-            await until("the STL message", () => evaluate(`/STL avatars need/.test(document.getElementById("status-text").textContent)`), 30000);
-            if ((await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent`)) !== "f-M") throw new Error("the avatar changed");
+            // an STL avatar (spec §7): f-M written as an STL through the kernel's reader loads, with
+            // no landmarks; the Form select below brings f-M back
+            const stlFile = join(downloads, "f-M-stl.stl");
+            {
+                const k = await loadKernel();
+                const sc = k.open(new Uint8Array(readFileSync(join(root, "assets", "f-M.stp"))), "step", undefined, "native");
+                try { writeFileSync(stlFile, stlOf(sc)); } finally { sc.free(); }
+            }
+            await pickInto("menu-avatar", stlFile, ".stl");
+            await until("the STL avatar", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M-stl"`), 60000);
+            if ((await evaluate(`document.body.dataset.avatarHead`)) !== "0") throw new Error("the STL avatar has a head");
+            await noStatusError();
             failIfErrors();
-            ok("STL avatar refused, f-M kept");
+            ok("STL avatar: f-M as an STL loads");
 
             // the Form select: f-M with head loads, its landmarks carry a head; back to f-M
             await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
