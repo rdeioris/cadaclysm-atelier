@@ -24,6 +24,14 @@ Men's XS, S, M, L, XL (f-XS ... m-XL), each graded from its size chart by `tools
 top, shoulder line, arms, head), which the slots place pieces by. The form is the session's,
 not the garment's: Save does not write it, and Open keeps the avatar that is loaded.
 
+**Weaves.** `assets/weaves/` holds the weave library: plain, twill, denim, jersey, rib, fleece,
+satin and canvas, each a seamless 512 x 512 diffuse (near-white: the fabric colour tints it),
+normal (OpenGL, green up) and roughness (glTF: roughness in G) tile, with `weaves.json` giving
+each tile's size in mm and its default roughness and sheen. The tiles are procedural, from each
+weave's structure, and every value is an estimate. `python tools/weaves.py` (numpy and Pillow)
+regenerates them; `python tools/weaves.py --check` compares a regeneration with the files and
+checks the seams, the diffuse bounds, the normals' length and the labels.
+
 ## The package
 
 `npm run setup` puts the cadaclysm web package's `pkg/` folder (the kernel and the View as
