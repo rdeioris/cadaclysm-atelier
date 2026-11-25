@@ -7,6 +7,7 @@
 import { makeSewingTool } from "./sewing.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
 import { pointsOf } from "./view2d.js";
+import { SIM_TOOLS, SIM_SNAPPING } from "./simtools.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
 const DRAG_PX = 3; // screen pixels: less movement than this is a click, not a drag
@@ -214,7 +215,7 @@ export const readout = (last, cursor) => (last && cursor ? `${Math.hypot(cursor[
 
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
-    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain"]);
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "grain", ...SIM_SNAPPING]);
 
 const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
@@ -315,6 +316,9 @@ const TOOLS = {
             down(w, h, mods) {
                 if (!h && selectedId(ctx)) { box.start(w, mods); return {}; }
                 if (h?.kind === "pattern") return { select: { kind: "pattern", id: h.id } };
+                // an internal line or a tack: its own properties (the simulation's, simprops.js)
+                if (h?.kind === "internal") return { select: { kind: "internal", id: h.id, index: h.index } };
+                if (h?.kind === "tack") return { select: { kind: "tack", id: h.id } };
                 if (h && (h.kind === "point" || h.kind === "handle" || h.kind === "edge")) {
                     id = h.id; path0 = outlineOf(ctx, id);
                     if (!path0) return {};
@@ -570,6 +574,7 @@ const TOOLS = {
 
 export function makeTool(name, ctx) {
     if (name === "segment" || name === "free") return makeSewingTool(name, ctx);
+    if (Object.hasOwn(SIM_TOOLS, name)) return SIM_TOOLS[name](ctx);
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
     return TOOLS[name](ctx);
 }

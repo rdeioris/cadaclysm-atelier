@@ -101,6 +101,7 @@ export function hitOf(what, pick, drawings, pieceAt = null) {
         case "seam": return edge(what.pattern, { seam: what.id });
         case "internal": return { kind: "internal", id: what.id, index: what.index };
         case "hole": return { kind: "hole", id: what.id, index: what.index };
+        case "tack": return { kind: "tack", id: what.id };
         case "label": return { kind: "pattern", id: (at && pieceAt?.(at)) ?? what.id };
         case "fill": case "grain": case "notch": case "cut": return { kind: "pattern", id: what.id };
         default: return null;

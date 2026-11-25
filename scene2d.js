@@ -100,7 +100,8 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             h.cut.forEach((c, j) => out.push({ key: `${id}/holecut/${k}/${j}`, show: "lines", data: segs(c, true, z.line), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig }));
         });
         (d.internal ?? []).forEach((l, k) => out.push({
-            key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line), colour: sel ? ACCENT : INTERNAL,
+            key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line),
+            colour: sel || (selection?.kind === "internal" && selection.id === id && selection.index === k) ? ACCENT : INTERNAL,
             dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig,
         }));
         if (notchAt.length) {
