@@ -3,6 +3,7 @@
 // returns ops for one batch, so one user action is one undo step.
 // (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
 import { shiftAnchors } from "./sewing.js";
+import { removeTacks, tacksOn } from "./tacks.js";
 
 export const FABRIC_FIELDS = [
     "stretch_warp", "stretch_weft", "shear_left", "shear_right",
@@ -87,6 +88,7 @@ export function duplicateFabric(nodes, id) {
     for (let j = 2; labels.has(label); j++) label = `${base} ${j}`;
     const node = { id: `${id}_${k}`, kind: "garment.fabric", label };
     for (const f of FABRIC_FIELDS) node[f] = src[f];
+    if (src.shrinkage) node.shrinkage = [...src.shrinkage];
     if (src.meta) node.meta = JSON.parse(JSON.stringify(src.meta));
     return { id: node.id, ops: [{ op: "add", node }] };
 }
@@ -106,12 +108,13 @@ export function addPattern(nodes, { label, path, fabric, layer = 0, allowance = 
 }
 
 export const removePattern = (nodes, id) => removePatterns(nodes, [id]);
-// Several pieces, their seams and outlines in one batch (one undo step): a seam between two of
-// them is removed once.
+// Several pieces, their seams, tacks and outlines in one batch (one undo step): a seam between
+// two of them is removed once.
 export function removePatterns(nodes, ids) {
     const seams = nodes.filter((n) => n.kind === "garment.seam" && (ids.includes(n.a) || ids.includes(n.b))).map((n) => n.id);
     return [
         ...garmentOps(nodes, listOf(nodes, "patterns").filter((p) => !ids.includes(p)), listOf(nodes, "seams").filter((s) => !seams.includes(s))),
+        ...removeTacks(nodes, tacksOn(nodes, ids)),
         ...seams.map((s) => ({ op: "remove", id: s })),
         ...ids.flatMap((id) => [{ op: "remove", id }, { op: "remove", id: `${id}_outline` }]),
     ];
@@ -204,6 +207,8 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
     const patterns = g.patterns.filter((p) => !ids.includes(p)).flatMap((p) => (p === id ? ids : [p]));
     ops.push({ op: "set", id: "garment", fields: { patterns, seams: g.seams.filter((s) => !dropped.includes(s)) } });
     for (const s of dropped) ops.push({ op: "remove", id: s });
+    // a tack on the cut piece goes with it (its point is on one of the new pieces: tack it again)
+    ops.push(...removeTacks(cur, tacksOn(cur, [id])));
     ops.push({ op: "remove", id }, { op: "remove", id: `${id}_outline` });
     if (sew) {
         // its id is new against every seam before the batch, the dropped ones too (a status names those)

@@ -9,7 +9,8 @@ nodes.push({ id: "p1", kind: "garment.pattern", label: "Front", fabric: "f_cotto
 const drawings = new Map([["p1", { sides: [0, 100, 150, 250, 300], bounds: [0, 0, 100, 50] }]]);
 
 const pf = fieldsFor({ kind: "pattern", id: "p1" }, nodes, drawings);
-assert.deepEqual(pf.map((f) => f.key), ["label", "fabric", "layer", "allowance", "grain", "particle_distance", "slot", "remove"]);
+// (frozen, strengthen and pressure: the simulation's rows, simprops.test.mjs)
+assert.deepEqual(pf.map((f) => f.key), ["label", "fabric", "layer", "allowance", "grain", "particle_distance", "slot", "frozen", "strengthen", "pressure", "remove"]);
 {
     const mesh = pf.find((f) => f.key === "particle_distance");
     assert.equal(mesh.label, "Mesh");
