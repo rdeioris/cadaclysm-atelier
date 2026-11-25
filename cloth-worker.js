@@ -6,6 +6,7 @@
 import { load } from "./pkg/index.js";
 import { Drape } from "./cloth.js";
 import { MAX_STEP_MS } from "./drape.js";
+import { MAP_EVERY_MS } from "./fitmap.js";
 
 const ready = (async () => {
     const module = await load();
@@ -22,6 +23,7 @@ let running = false;
 let pending = null;          // the newest garment update not yet applied: {text, ops}
 let looping = false;
 let budget = Infinity;        // frames a film step may still take
+let map = null, mapAt = -Infinity;   // the fit map ({code, min, max}) and when its colours were last sent
 const text = (e) => String(e && e.message ? e.message : e);
 const send = (msg, transfer) => port.postMessage(msg, transfer ?? []);
 
@@ -30,11 +32,23 @@ function topology() {
     const positions = drape.positions();
     send({ kind: "topology", ...t, positions, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, stale: drape.stale },
         [t.triangles.buffer, t.vertexPatterns.buffer, positions.buffer]);
+    colours(true);
+}
+// The fit map's colours and values (fitmap.js), at most every MAP_EVERY_MS unless `now`; null colours: the map is off.
+function colours(now = false) {
+    if (!drape?.live || (!map && !now)) return;
+    const t = performance.now();
+    if (!now && t - mapAt < MAP_EVERY_MS) return;
+    mapAt = t;
+    if (!map) { send({ kind: "colours", colours: null, values: null }); return; }
+    const values = drape.f("cloth_strain")(drape.h, map.code), c = drape.f("cloth_strain_colours")(drape.h, map.code, map.min, map.max);
+    send({ kind: "colours", colours: c, values }, [c.buffer, values.buffer]);
 }
 function frame(health, ms) {
     const positions = drape.positions();
     send({ kind: "frame", positions, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, health, ms, running, stale: drape.stale },
         [positions.buffer]);
+    colours();
 }
 function state(extra = {}) { send({ kind: "state", running, live: !!drape?.live, stale: drape?.stale ?? null, ...extra }); }
 
@@ -97,6 +111,7 @@ async function onPort({ data }) {
                 break;
             }
             case "drag": if (drape?.live) drape.drag(data.vertex, data.target); break;
+            case "map": map = data.map; colours(true); break;
         }
     } catch (e) {
         if (data.kind === "build") running = false;
