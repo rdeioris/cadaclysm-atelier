@@ -144,6 +144,50 @@ wrap axis moves and turns with it. The release is one undo step; the piece's slo
 shifts so the piece's bounds centre stays on its 3D point; a wrapped piece keeps its wrap and the
 shift goes round the limb and along it), in the edit's undo step.
 
+## Grading
+
+You draft one size, the **base**, and grade the others from it by rules on the outline's points,
+as in CLO. The size table and the rules are in the document (Save and Open keep them); an older
+Atelier opening a graded file sees the current size alone.
+
+- **Sizes…** in the 2D strip opens the size table: add a size (type its name, Enter), rename
+  one, move it earlier or later, remove it (its rules go with it), and choose the **base**.
+  Each change is one undo step. A new base re-expresses every rule against it, and its outline
+  becomes the drafted one. The first size added is the base.
+- **The size select** beside it lists the sizes, the base marked. Picking one switches every
+  graded piece in one undo step ("size L"): each outline becomes its base with every point moved
+  by its rule for that size, its Bézier handles with it. Notches keep their fraction of their
+  side, internal lines follow the least-squares affine fit of the points' moves, seams stay on
+  their sides (M:N groups re-distribute), placed pieces stay on their slots, and a linked
+  partner or an unfolded whole is rebuilt from its half. A size the kernel refuses (an outline
+  that would cross itself) changes nothing, and the status names the piece.
+- **Editing in the base size** works as before: the base follows each edit, and a point added
+  or removed shifts the rules (a new point on a side takes the rule between its neighbours).
+  **Cut** and **Cut & sew** grade both new pieces: a point on an old point takes its rule, one on
+  a side the rules interpolated along it, a cutter's bend inside the piece the affine fit.
+- **In another size** an **Edit** drag of an outline point (or a side) sets the moved points'
+  rules for that size: the new place minus the base's. Every other change of the shape is
+  refused with "edit the shape in the base size (M)": a handle (refused at the press), adding,
+  removing or smoothing a point, Fillet and Cut. Internal lines, notches and seams stay editable.
+- **The grade table**: with one outline point selected (Edit), the panel lists every size's
+  dx and dy (mm), the base row fixed at 0, 0 and the current size marked; typing into a row
+  sets that rule, one undo step. With several points selected, **Copy rule to…** copies the
+  chosen point's rules (every size) to the others, and with two, **Distribute** gives the points
+  between them (the shorter way round) rules interpolated by length along the outline, every
+  size. **Proportional…** (any selection) asks for a width and height change per size step,
+  20 mm and 10 mm say, and grades every point of the selected pieces by its place from their
+  bounds' centre, scaled by the steps from the base.
+- **Show sizes** draws every other size's outline of the selected pieces at once, dashed and
+  thin in a ramp of the accent (the smallest faintest), over the current outline: CLO's graded
+  nest. It is computed as a switch would be, without committing, and is not saved.
+
+Limits: holes are not graded (they keep the base size in every size); an arc whose two ends
+have different rules may be refused (its centre moves by their mean, which the kernel's checks
+may not accept); a mirroring transform (Flip, Mirror) in a size
+other than the base may be refused; Show sizes draws a linked partner or an unfolded whole in
+the sizes it has been switched to since it was made (its rules are recorded per size from its
+half); DXF export writes the current size only.
+
 ## Live drape
 
 **Simulate** in the 3D strip meshes the garment and runs the kernel's cloth solver on it: the

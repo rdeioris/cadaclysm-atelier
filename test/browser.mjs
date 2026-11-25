@@ -13,7 +13,8 @@
 // WebGPU, else the CPU worker; #sim-engine checked). Then the 2D tools on a new garment, ending
 // with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
 // internal square by dialog converted to a hole, another traced out as a piece, and a corner
-// filleted to a typed radius. Each step prints ok. Any console error or uncaught exception, in
+// filleted to a typed radius; then grading: sizes by the Sizes dialog, Proportional, a drag in L, the grade table,
+// size switches, Show sizes and undo. Each step prints ok. Any console error or uncaught exception, in
 // the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
@@ -30,6 +31,7 @@
 //     ATELIER_SHOT_PLACE=place.png ...                   # also a sleeve placed on an arm by Place (wrapped round it)
 //     ATELIER_SHOT_MN=mn.png ...                         # also the M:N group selected in 2D (its seams numbered)
 //     ATELIER_SHOT_DXF=dxf.png ...                       # also the imported DXF piece with its internal lines and hole
+//     ATELIER_SHOT_GRADE=grade.png ATELIER_SHOT_NEST=nest.png  # A3: the grade table of a graded corner, the graded nest (Show sizes)
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -1915,6 +1917,106 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok("unfold: a click on the left side made the piece whole (6 sides, twice as wide); Fold back gave the half");
+
+                // ---- grading (A3): sizes by the dialog (typed, reordered), Proportional…, an Edit drag in L
+                // sets the corner's rule, the grade table types one, switches, Show sizes, undo ----
+                const docNow = async () => (await saveJson()).nodes;
+                const tableNow = async () => (await docNow()).find((n) => n.id === "garment").meta?.atelier?.grading ?? null;
+                const rulesNow = async () => (await docNow()).find((n) => n.id === pid).meta?.atelier?.grade?.rules ?? {};
+                await evaluate(`document.getElementById("sizes-open").click()`);
+                if (!(await evaluate(`document.getElementById("sizes-dialog").open`))) throw new Error("Sizes… did not open its dialog");
+                for (const name of ["M", "L", "XL", "S"]) {
+                    const n0 = await evaluate(`document.querySelectorAll("#sizes-list li").length`);
+                    await evaluate(`document.getElementById("sizes-name").focus()`);
+                    await send("Input.insertText", { text: name });
+                    await key("Enter", "Enter", 13);
+                    await until(`size ${name} in the dialog`, () => evaluate(`document.querySelectorAll("#sizes-list li").length === ${n0 + 1}`), 30000);
+                }
+                // S up three times: S M L XL; each move one batch
+                for (let i = 0; i < 3; i++) {
+                    const order = await evaluate(`[...document.querySelectorAll("#sizes-list input[type=text]")].map((e) => e.value).join(",")`);
+                    await evaluate(`[...document.querySelectorAll("#sizes-list li")].at(${3 - i}).querySelector("button").click()`);
+                    await until("the size moved up", () => evaluate(`[...document.querySelectorAll("#sizes-list input[type=text]")].map((e) => e.value).join(",") !== ${JSON.stringify(order)}`), 30000);
+                }
+                const t0 = await tableNow();
+                if (JSON.stringify(t0) !== JSON.stringify({ sizes: ["S", "M", "L", "XL"], base: "M", current: "M" })) throw new Error(`the size table: ${JSON.stringify(t0)}`);
+                await evaluate(`document.getElementById("sizes-close").click()`);
+                const options = await evaluate(`[...document.getElementById("size-select").options].map((o) => o.textContent).join(",")`);
+                if (options !== "S,M (base),L,XL") throw new Error(`the size select: ${options}`);
+                // Proportional… on the selected piece: 20 mm wide, 10 high a size step
+                await evaluate(`document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]').click()`);
+                await until("the Proportional button", () => evaluate(`!!${field("grade-proportional")}`), 10000);
+                await evaluate(`${field("grade-proportional")}.click()`);
+                await until("the step dialog", () => evaluate(`document.getElementById("size-dialog").open && document.getElementById("size-w").value === "20"`), 10000);
+                await evaluate(`document.getElementById("size-ok").click()`);
+                const outM = await pathOf(pid), vM = [outM.start, ...outM.segments.slice(0, -1).map((g) => g.to)];
+                const tr = vM.findIndex((q) => Math.abs(q[0] - o[0] - 200) < 1e-6 && Math.abs(q[1] - o[1] - 100) < 1e-6);
+                if (tr < 0) throw new Error(`no top right corner in ${JSON.stringify(vM)}`);
+                await until("the proportional rules", async () => JSON.stringify((await rulesNow())[tr]) === JSON.stringify({ S: [-10, -5], L: [10, 5], XL: [20, 10] }), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await rulesNow())}`); });
+                if (JSON.stringify(await pathOf(pid)) !== JSON.stringify(outM)) throw new Error("rules set in M moved the outline");
+                // switch to L: the corner moves by its rule
+                const pickSize = (s) => evaluate(`(() => { const e = document.getElementById("size-select"); e.value = ${JSON.stringify(s)}; e.dispatchEvent(new Event("change")); })()`);
+                await pickSize("L");
+                await until("size L", async () => hasPoint(await pathOf(pid), [o[0] + 210, o[1] + 105], 1e-6), 30000);
+                if (await evaluate(`document.body.dataset.size`) !== "L") throw new Error("the select does not show L");
+                // an Edit drag of the corner in L sets its L rule (+10 mm more in x)
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const cL = screenAt([o[0] + 210, o[1] + 105]);
+                await worldOf(cL);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error(`the L corner hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await drag(cL, screenAt([o[0] + 220, o[1] + 105]));
+                const dragged = await until("the drag's L rule", async () => { const r = (await rulesNow())[tr]; return r && Math.abs(r.L[0] - 20) < 2 && r.L[0] !== 10 ? r : null; }, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await rulesNow())}; status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); });
+                if (JSON.stringify(dragged.XL) !== "[20,10]" || JSON.stringify(dragged.S) !== "[-10,-5]") throw new Error(`the drag changed other sizes: ${JSON.stringify(dragged)}`);
+                await noStatusError();
+                // the grade table: a click selects the corner; its rows; dx typed in L
+                const cL2 = screenAt([o[0] + 200 + dragged.L[0], o[1] + 100 + dragged.L[1]]);
+                await worldOf(cL2);
+                await click(cL2);
+                await until("the grade table", () => evaluate(`!!${field("grade-dx-L")}`), 10000);
+                const rows = await evaluate(`[...document.querySelectorAll("#props table.grade tr")].slice(1).map((r) => [...r.querySelectorAll("td")].map((c) => c.querySelector("input")?.value ?? c.textContent).join(" "))`);
+                if (rows[1] !== "M (base) 0 0" || !rows[3].startsWith("XL 20 10")) throw new Error(`the grade rows: ${JSON.stringify(rows)}`);
+                if (!(await evaluate(`${field("grade-dx-M")}.disabled`))) throw new Error("the base row is editable");
+                await typeInto("grade-dx-L", "25");
+                await key("Enter", "Enter", 13);
+                await until("the typed rule", async () => (await rulesNow())[tr]?.L?.[0] === 25, 30000);
+                await until("L follows the typed rule", async () => hasPoint(await pathOf(pid), [o[0] + 225, o[1] + 100 + dragged.L[1]], 1e-6), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok(`grading: sizes added and reordered in the dialog (S M L XL), Proportional… 20 x 10, an Edit drag in L set the corner's rule (${dragged.L.map((v) => v.toFixed(1)).join(", ")}), the table typed 25`);
+                if (process.env.ATELIER_SHOT_GRADE) {          // fitted: screenAt is stale after it (nothing below uses it)
+                    await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                    await sleep(1000); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_GRADE, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_GRADE}`);
+                }
+                // Show sizes: the other sizes' outlines of the selected piece, not saved; M back to the base
+                await evaluate(`document.getElementById("show-sizes").click()`);
+                await until("the graded nest", () => evaluate(`document.body.dataset.nest === "${pid}:S,${pid}:M,${pid}:XL"`), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: nest "${await evaluate(`document.body.dataset.nest`)}"`); });
+                if (process.env.ATELIER_SHOT_NEST) {
+                    await sleep(1000); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_NEST, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_NEST}`);
+                }
+                if ((await docNow()).some((n) => JSON.stringify(n.meta ?? {}).includes("showSizes"))) throw new Error("Show sizes was saved");
+                await pickSize("M");
+                await until("size M", async () => JSON.stringify(await pathOf(pid)) === JSON.stringify(outM), 30000);
+                await until("the nest in M", () => evaluate(`document.body.dataset.nest === "${pid}:S,${pid}:L,${pid}:XL"`), 30000);
+                // undo: back in L (the switch one step), then the typed rule undone
+                await evaluate(`document.activeElement?.blur()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("undo: size L again", async () => (await tableNow()).current === "L" && await evaluate(`document.body.dataset.size === "L"`), 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("undo: the typed rule gone", async () => Math.abs((await rulesNow())[tr].L[0] - dragged.L[0]) < 1e-9, 30000);
+                await evaluate(`document.getElementById("show-sizes").click()`);
+                await until("the nest off", () => evaluate(`document.body.dataset.nest === ""`), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("grading: switched M (the base outline back), Show sizes drew S, M / L, XL; Ctrl+Z undid the switch, then the typed rule");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
