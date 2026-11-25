@@ -13,7 +13,9 @@ import { load, open, version, licenseInfo, View } from "./pkg/index.js";
 import { receiveControls } from "./pkg/view.js";
 import * as k from "./pkg/index.js";
 import { Atelier, forPage, linkOf } from "./kernel.js";
-import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, WrappedMeshCache } from "./arrange.js";
+import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, WrappedMeshCache, atSlot, slotFields, nearestTriangle } from "./arrange.js";
+import { reslotOps } from "./reslot.js";
+import { setPattern } from "./model.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
 import { unionBounds, boxPiece, mmPerPx } from "./view2d.js";
@@ -370,6 +372,7 @@ function simCommand(action, data = {}) {
 // cloth and takes the nearest sim vertex of the piece hit.
 let pressId = 0;
 async function tool3d(data) {
+    if (data.tool === "place") { if (data.phase === "down") await placeOnAvatar(data); return; }
     if (data.phase === "down") {
         const press = ++pressId;
         dragging = null;
@@ -398,6 +401,34 @@ async function tool3d(data) {
         if (dragging) clothPort.postMessage({ kind: "drag", vertex: dragging.vertex, target: null });
         dragging = null;
     }
+}
+
+// Place on avatar (spec §4): a click on the avatar puts the selected piece there. The pick gives
+// the point; the normal is the collider's triangle under it, turned toward the eye. One batch:
+// the piece and the pieces on it (they follow, as a re-placed host's do).
+async function placeOnAvatar(data) {
+    const id = selection?.kind === "pattern" ? selection.id : null;
+    if (!id) { post({ kind: "status", text: "Place on avatar: select a pattern piece first" }); return; }
+    if (atelier.previewing) return;
+    const p = await viewer.pick(0, ...at3d(data));
+    if (!avatar || !p?.point || p.item !== avatar.id) { post({ kind: "status", text: "Place on avatar: click the avatar" }); return; }
+    const hit = avatarCollider ? nearestTriangle(avatarCollider.positions, avatarCollider.indices, p.point) : null;
+    if (!hit) { post({ kind: "error", text: "Place on avatar: the avatar has no collider triangles" }); return; }
+    const basis = dragBasis(viewer.camera(0), p.point, rects?.[0]?.[3] ?? canvasRef?.height ?? 800);
+    const b = avatar.bounds, away = basis?.eye ?? [(b[0] + b[3]) / 2, (b[1] + b[4]) / 2, (b[2] + b[5]) / 2];
+    const sign = basis?.eye ? 1 : -1;      // toward the eye, or away from the avatar's centre
+    let n = hit.normal;
+    if (sign * n.reduce((s, v, i) => s + v * (away[i] - p.point[i]), 0) < 0) n = n.map((v) => -v);
+    const nodes = atelier.nodes(), node = nodes.find((x) => x.id === id), drawings = atelier.slotBounds();
+    const bounds = drawings.get(id)?.bounds;
+    if (!bounds) { post({ kind: "error", text: "Place on avatar: the piece has no outline to place" }); return; }
+    const slot = atSlot(p.point, n, data.wrap !== false);
+    const fields = slotFields(node, slot, b, bounds, { landmarks: avatar.landmarks, up: basis?.up ?? null });
+    const after = nodes.map((x) => (x.id === id ? { ...x, ...fields } : x));
+    const follow = reslotOps(after, drawings, atelier.avatar ?? { bounds: b, landmarks: avatar.landmarks }, new Set([id])).ops.filter((o) => o.id !== id);
+    atelier.apply([...setPattern(nodes, id, fields), ...follow], "place on avatar");
+    changed();
+    post({ kind: "status", text: `placed ${node.label ?? id} on the avatar${fields.wrap ? ", wrapped round the arm" : ""}` });
 }
 
 // ---- the fit map and the Tape tool (fitmap.js, tape3d.js) ---------------------------------------

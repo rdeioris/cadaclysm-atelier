@@ -2,7 +2,7 @@
 // Pure (no DOM, no kernel), so Node tests it. atelier.js draws the fields and posts the ops.
 import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
-import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
+import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR, AT_LABEL, CUSTOM_LABEL } from "./arrange.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
 import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
 
@@ -67,6 +67,10 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             ...Object.entries(SLOTS).map(([value, s]) => ({ value, label: s.label })),
             ...(avatar?.landmarks?.head ? Object.entries(HOOD_SLOTS).map(([value, s]) => ({ value, label: s.label })) : []),
             ...placed.map((x) => ({ value: `on:${x.id}`, label: `On ${x.label ?? x.id}` }))];
+        // a point picked on the avatar (Place on avatar) or a gizmo placement: shown, not offered
+        const cur = n.meta?.atelier?.slot;
+        if (cur?.startsWith("at:")) slots.push({ value: cur, label: AT_LABEL });
+        if (cur === "custom") slots.push({ value: "custom", label: CUSTOM_LABEL });
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
             { key: "fabric", label: "Fabric", unit: "", type: "select", value: n.fabric ?? "", options: fabrics },

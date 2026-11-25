@@ -667,7 +667,7 @@ for (const [id, smooth] of [["point-curve", true], ["point-corner", false]]) $(i
 pmenu.box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closePointMenu(); cv.focus(); } });
 pmenu.box.addEventListener("focusout", (e) => { if (!pmenu.box.contains(e.relatedTarget)) closePointMenu(); });
 
-// The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the
+// The 3D tools (Pin, Drag, Place on avatar): with one on, a left press in the 3D window is the tool's (the
 // router below claims it), so the camera does not orbit; right and middle drag and the wheel
 // still move it.
 let tool3d = null;
@@ -676,6 +676,7 @@ function setTool3d(name) {
     if (tool3d && tape.on) tapeDo(tape.toggle());
     for (const b of document.querySelectorAll("[data-tool3d]")) b.classList.toggle("on", b.dataset.tool3d === tool3d);
     $("well").classList.toggle("tool3d", !!tool3d);
+    document.body.dataset.tool3d = tool3d ?? "";
 }
 for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("click", () => setTool3d(b.dataset.tool3d));
 
@@ -775,7 +776,7 @@ listen(cv, (ev) => {
         }
         if (vp === 0 && ev.button === 0 && tool3d) {
             claims.set(ev.pointerId, "3d");
-            post({ kind: "tool3d", tool: tool3d, phase: "down", x: ev.x, y: ev.y });
+            post({ kind: "tool3d", tool: tool3d, phase: "down", x: ev.x, y: ev.y, wrap: $("place-wrap").checked });
             return;
         }
         if (vp === 1 && ev.button === 1) ev = { ...ev, button: 0 };          // middle-drag pans the 2D window

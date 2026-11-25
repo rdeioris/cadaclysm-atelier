@@ -92,6 +92,9 @@ footer { padding: 4px 14px; color: var(--dim); font-size: 12px; background: var(
 /* the fit map's select and legend (fitmap.js), the Tape tool's options (tape3d.js) */
 .strip select { background: #2c3036; color: var(--text); border: 1px solid var(--line); border-radius: 4px; font: inherit; font-size: 12px; padding: 1px 3px; }
 .tape-opts { display: none; gap: 3px; align-items: center; }
+.place-opts { display: none; gap: 3px; align-items: center; }
+body[data-tool3d=place] .place-opts { display: inline-flex; }
+.place-opts label { font-size: 12px; color: var(--dim); display: inline-flex; align-items: center; gap: 2px; }
 body[data-tape=path] .tape-opts, body[data-tape=girth] .tape-opts { display: inline-flex; }
 .tape-opts label { font-size: 12px; color: var(--dim); display: inline-flex; align-items: center; gap: 2px; }
 #map-legend { position: absolute; left: 8px; bottom: 8px; z-index: 2; background: rgba(35, 38, 43, .88); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; font-size: 12px; min-width: 200px; }

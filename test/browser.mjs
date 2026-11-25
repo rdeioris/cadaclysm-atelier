@@ -732,6 +732,35 @@ async function check(cdp, base) {
             failIfErrors();
             ok(`hover dropped in 3D; middle and Space drags pan 2D (${midDx.toFixed(1)}, ${spaceDx.toFixed(1)} mm)`);
 
+            // Place on avatar (spec §4): the Front selected, the Place tool, a click on the avatar
+            // (where no slab covers it); the slot becomes an at: point shown as "On avatar"; one undo
+            {
+                const st = () => evaluate(`document.getElementById("status-text").textContent`);
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === "Front").click()`);
+                await until("the Front's panel", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                if ((await evaluate(`getComputedStyle(document.querySelector(".place-opts")).display`)) === "none") throw new Error("the Wrap toggle is hidden with Place on");
+                if (!(await evaluate(`document.getElementById("place-wrap").checked`))) throw new Error("Wrap is off by default");
+                const [qx, qy, qw, qh] = await windowBox("rect3d");
+                let placedAt = null;
+                for (const [fx, fy] of [[0.5, 0.15], [0.5, 0.2], [0.5, 0.85], [0.45, 0.8], [0.55, 0.8], [0.5, 0.9], [0.5, 0.1], [0.4, 0.5], [0.6, 0.5]]) {
+                    await evaluate(`document.getElementById("status-text").textContent = ""`);
+                    await click([qx + qw * fx, qy + qh * fy]);
+                    const t = await until("Place: an answer", async () => (await st()) || null, 30000);
+                    if (t.startsWith("placed ")) { placedAt = [fx, fy]; break; }
+                }
+                if (!placedAt) throw new Error(`Place on avatar: never on the avatar (${await st()})`);
+                await until("the at: slot", () => evaluate(`${field("slot")}?.value.startsWith("at:")`), 30000);
+                const label = await evaluate(`${field("slot")}.selectedOptions[0].textContent`);
+                if (label !== "On avatar") throw new Error(`the Slot select shows ${label}`);
+                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("the front slot back", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok(`Place on avatar: a click at ${placedAt} put the Front on an at: slot ("On avatar"); one undo`);
+            }
+
             // 6. DXF export: one BLOCK per piece; imported into a new document, four pieces
             await evaluate(`document.getElementById("menu-export-dxf").click()`);
             const dxf = await waitFile("garment.dxf");

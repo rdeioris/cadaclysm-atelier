@@ -101,7 +101,7 @@ export function dragBasis(camera, point, heightPx) {
     if (!eye) return null;
     const depth = camera.orthographic ? camera.distance : dot([0, 1, 2].map((k) => point[k] - eye[k]), forward);
     const perPixel = (2 * Math.max(depth, 1e-6) * Math.tan(HALF_FOV)) / Math.max(heightPx, 1);
-    return { right, up, perPixel };
+    return { right, up, perPixel, forward, eye };
 }
 
 // Where a drag that started at `start` (world) has moved to, after the pointer moved (dx, dy)

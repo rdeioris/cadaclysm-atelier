@@ -129,6 +129,11 @@ never puts a piece on another one: that is the Slot select's pick.
 A placed piece stays on its slot: a 2D edit, move or transform of it re-places it in the same
 undo step (a 2D move re-centres it there; it does not move it in 3D), and the pieces on it
 follow. A new avatar re-places every placed piece, one undo step ("re-arrange on the form").
+**Place** in the 3D strip (place on avatar): with a piece selected, a click on the avatar puts
+it there, its centre over the point, standing 30 mm out along the body's normal (8 mm more a
+layer), its y the world's up (the camera's up on a near-horizontal surface such as a shoulder's
+top). With **Wrap** on (the default) a click on an arm wraps the piece round that arm, as the arm
+slots do. The Slot select shows such a piece as **On avatar**; it is refreshed like any slot.
 
 ## Live drape
 
