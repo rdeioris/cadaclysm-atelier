@@ -27,7 +27,7 @@ export const fixedSlot = (slot) => !slot || slot === "none" || slot === "custom"
  * frame and wrap are already there (to 1e-9) gives no op, so a re-slot on the same form changes
  * nothing. `only` (a Set of ids) re-places just those pieces, and the "on:" pieces whose host
  * (or its host, and so on) was re-placed; null re-places every placed piece. A custom slot is
- * never re-placed (fixedSlot).
+ * never re-placed (fixedSlot); one in `only` still brings its "on:" pieces along.
  * -> {ops, moved: [ids], skipped: [{id, reason}]} (a hood slot on a form without a head, say).
  */
 export function reslotOps(nodes, drawings, avatar, only = null) {
@@ -50,7 +50,8 @@ export function reslotOps(nodes, drawings, avatar, only = null) {
     const onSlot = [];
     for (const n of patterns) {
         const slot = n.meta?.atelier?.slot;
-        if (fixedSlot(slot)) continue;
+        // a custom piece in `only` was moved by the caller (the gizmo): its "on:" pieces follow it
+        if (fixedSlot(slot)) { if (slot === "custom" && only?.has(n.id)) placed.add(n.id); continue; }
         if (slot.startsWith("on:")) onSlot.push(n); else if (!only || only.has(n.id)) place(n, slot);
     }
     // "on:" pieces once their host stands: a host may itself sit on another piece

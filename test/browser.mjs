@@ -23,6 +23,8 @@
 //     ATELIER_SHOT_POSED=posed.png ATELIER_HOODIE=<hoodie.json>  # V3: a garment opened, the form at A-pose with
 //                                                        # the left knee bent (ATELIER_KNEE, default 30), draped
 //     ATELIER_V3_ONLY=1 ...                              # only the V3 block (custom forms), after the page is ready
+//     ATELIER_A2_ONLY=1 ...                              # only the A2 block (place on avatar, the gizmo), on the sample
+//     ATELIER_SHOT_GIZMO=gizmo.png ...                   # also the gizmo over the sample's Front, its X arrow hovered
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -352,7 +354,96 @@ async function check(cdp, base) {
             if (!clothWanted && !adapter) console.log("note - no WebGPU adapter in this browser: the cloth runs on the CPU");
             await until("the default fabric", async () => (await count("fabrics", "fabric")) === 1, 30000);
             await until("the avatar", async () => (await count("avatar", "avatar")) === 1, 60000);
+            // Place on avatar (spec §4) and the gizmo (spec §3) on the sample's Front (A2 lane;
+            // ATELIER_A2_ONLY=1 runs it alone, on the sample, after the page is ready)
+            const a2Block = async () => {
+                const st = () => evaluate(`document.getElementById("status-text").textContent`);
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === "Front").click()`);
+                await until("the Front's panel", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                if ((await evaluate(`getComputedStyle(document.querySelector(".place-opts")).display`)) === "none") throw new Error("the Wrap toggle is hidden with Place on");
+                if (!(await evaluate(`document.getElementById("place-wrap").checked`))) throw new Error("Wrap is off by default");
+                const [qx, qy, qw, qh] = await windowBox("rect3d");
+                let placedAt = null;
+                for (const [fx, fy] of [[0.5, 0.15], [0.5, 0.2], [0.5, 0.85], [0.45, 0.8], [0.55, 0.8], [0.5, 0.9], [0.5, 0.1], [0.4, 0.5], [0.6, 0.5]]) {
+                    await evaluate(`document.getElementById("status-text").textContent = ""`);
+                    await click([qx + qw * fx, qy + qh * fy]);
+                    const t = await until("Place: an answer", async () => (await st()) || null, 30000);
+                    if (t.startsWith("placed ")) { placedAt = [fx, fy]; break; }
+                }
+                if (!placedAt) throw new Error(`Place on avatar: never on the avatar (${await st()})`);
+                await until("the at: slot", () => evaluate(`${field("slot")}?.value.startsWith("at:")`), 30000);
+                const label = await evaluate(`${field("slot")}.selectedOptions[0].textContent`);
+                if (label !== "On avatar") throw new Error(`the Slot select shows ${label}`);
+                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("the front slot back", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok(`Place on avatar: a click at ${placedAt} put the Front on an at: slot ("On avatar"); one undo`);
+
+                // the gizmo (spec §3) over the selected Front: a drag of its X arrow moves it, the
+                // slot becomes custom, one undo takes it back; Escape mid-drag puts it back
+                const handles = async () => {
+                    // settled: the same twice, 300 ms apart (an undo's redraw may still be on its way)
+                    let h = null;
+                    await until("the gizmo's handles", async () => { const was = h; await sleep(300); h = await evaluate(`document.body.dataset.gizmo || null`); return h && h === was; }, 30000);
+                    const [vx, vy] = await evaluate(`(() => { const r = document.getElementById("view").getBoundingClientRect(); return [r.left, r.top]; })()`);
+                    const dpr = await evaluate("devicePixelRatio");
+                    return Object.fromEntries(Object.entries(JSON.parse(h)).filter(([, p]) => p).map(([k, p]) => [k, [vx + p[0] / dpr, vy + p[1] / dpr]]));
+                };
+                const grab = async (part) => {
+                    const at = (await handles())[part];
+                    if (!at) throw new Error(`the gizmo has no ${part} handle`);
+                    const seen = [];
+                    for (const [ox, oy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [2, 2], [-2, -2]]) {
+                        await evaluate(`document.body.dataset.gizmoHover = "?"`);
+                        await mouse("mouseMoved", at[0] + ox, at[1] + oy, { buttons: 0 });
+                        const hv = await until("the gizmo hover", async () => { const v = await evaluate(`document.body.dataset.gizmoHover`); return v === "?" ? null : v || "none"; }, 10000);
+                        seen.push(hv);
+                        if (hv === part) return [at[0] + ox, at[1] + oy];
+                    }
+                    throw new Error(`the gizmo's ${part} is not under its handle at ${at} (hovers: ${seen.join(", ")}; handles ${await evaluate(`document.body.dataset.gizmo`)})`);
+                };
+                let g = await grab("tx");
+                if (process.env.ATELIER_SHOT_GIZMO) {
+                    await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_GIZMO, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_GIZMO}`);
+                }
+                await mouse("mousePressed", g[0], g[1]);
+                for (let i = 1; i <= 6; i++) { await mouse("mouseMoved", g[0] + 10 * i, g[1]); await sleep(40); }
+                await until("the drag's read-out", async () => /^move along X \d/.test(await st()) || null, 30000);
+                const readout = await st();
+                await mouse("mouseReleased", g[0] + 60, g[1]);
+                await until("the custom slot", () => evaluate(`${field("slot")}?.value === "custom"`), 30000);
+                const glabel = await evaluate(`${field("slot")}.selectedOptions[0].textContent`);
+                if (glabel !== "Custom (3D)") throw new Error(`the Slot select shows ${glabel} after a gizmo move`);
+                await until("the gizmo move's status", async () => /^moved Front in 3D/.test(await st()) || null, 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("the front slot back after the gizmo's undo", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                // Escape mid-drag: nothing committed
+                g = await grab("tx");
+                await mouse("mousePressed", g[0], g[1]);
+                for (let i = 1; i <= 4; i++) { await mouse("mouseMoved", g[0] + 10 * i, g[1]); await sleep(40); }
+                await until("the second drag's read-out", async () => /^move along X \d/.test(await st()) || null, 30000);
+                await key("Escape", "Escape", 27);
+                await until("the cancel", async () => (await st()) === "gizmo move cancelled" || null, 30000);
+                await mouse("mouseReleased", g[0] + 40, g[1]);
+                await sleep(300);
+                if ((await evaluate(`${field("slot")}?.value`)) !== "front") throw new Error("Escape did not cancel the gizmo move");
+                await noStatusError();
+                failIfErrors();
+                ok(`gizmo: an X arrow drag (${readout}) made the slot custom; Ctrl+Z undid it; Escape cancels a drag`);
+            };
             if (process.env.ATELIER_V3_ONLY === "1") { await v3(); failIfErrors(); ok("V3 block alone"); return; }
+            if (process.env.ATELIER_A2_ONLY === "1") {
+                await evaluate(`document.getElementById("menu-sample").click()`);
+                await until("the T-shirt", async () => (await patternCount()) === 4, 30000);
+                await until("the sample's Front in 3D", () => evaluate(`!!document.getElementById("view").dataset.rect3d`), 30000);
+                await a2Block(); failIfErrors(); ok("A2 block alone"); return;
+            }
             const robots = await evaluate(`document.querySelector('meta[name=robots]')?.content`);
             if (robots !== "noindex") throw new Error(`robots meta is ${robots}`);
             const fps = await evaluate(`document.getElementById("fps").textContent`);
@@ -732,34 +823,7 @@ async function check(cdp, base) {
             failIfErrors();
             ok(`hover dropped in 3D; middle and Space drags pan 2D (${midDx.toFixed(1)}, ${spaceDx.toFixed(1)} mm)`);
 
-            // Place on avatar (spec §4): the Front selected, the Place tool, a click on the avatar
-            // (where no slab covers it); the slot becomes an at: point shown as "On avatar"; one undo
-            {
-                const st = () => evaluate(`document.getElementById("status-text").textContent`);
-                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === "Front").click()`);
-                await until("the Front's panel", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
-                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
-                if ((await evaluate(`getComputedStyle(document.querySelector(".place-opts")).display`)) === "none") throw new Error("the Wrap toggle is hidden with Place on");
-                if (!(await evaluate(`document.getElementById("place-wrap").checked`))) throw new Error("Wrap is off by default");
-                const [qx, qy, qw, qh] = await windowBox("rect3d");
-                let placedAt = null;
-                for (const [fx, fy] of [[0.5, 0.15], [0.5, 0.2], [0.5, 0.85], [0.45, 0.8], [0.55, 0.8], [0.5, 0.9], [0.5, 0.1], [0.4, 0.5], [0.6, 0.5]]) {
-                    await evaluate(`document.getElementById("status-text").textContent = ""`);
-                    await click([qx + qw * fx, qy + qh * fy]);
-                    const t = await until("Place: an answer", async () => (await st()) || null, 30000);
-                    if (t.startsWith("placed ")) { placedAt = [fx, fy]; break; }
-                }
-                if (!placedAt) throw new Error(`Place on avatar: never on the avatar (${await st()})`);
-                await until("the at: slot", () => evaluate(`${field("slot")}?.value.startsWith("at:")`), 30000);
-                const label = await evaluate(`${field("slot")}.selectedOptions[0].textContent`);
-                if (label !== "On avatar") throw new Error(`the Slot select shows ${label}`);
-                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
-                await key("z", "KeyZ", 90, 2);
-                await until("the front slot back", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
-                await noStatusError();
-                failIfErrors();
-                ok(`Place on avatar: a click at ${placedAt} put the Front on an at: slot ("On avatar"); one undo`);
-            }
+            await a2Block();
 
             // 6. DXF export: one BLOCK per piece; imported into a new document, four pieces
             await evaluate(`document.getElementById("menu-export-dxf").click()`);

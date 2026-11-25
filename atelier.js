@@ -676,9 +676,20 @@ function setTool3d(name) {
     if (tool3d && tape.on) tapeDo(tape.toggle());
     for (const b of document.querySelectorAll("[data-tool3d]")) b.classList.toggle("on", b.dataset.tool3d === tool3d);
     $("well").classList.toggle("tool3d", !!tool3d);
-    document.body.dataset.tool3d = tool3d ?? "";
+    document.body.dataset.active3d = tool3d ?? "";
 }
 for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("click", () => setTool3d(b.dataset.tool3d));
+
+// The 3D gizmo (gizmo.js): the worker draws it over the selected placed piece and says where
+// (`gizmo`); a hover in the 3D window asks which part is under the pointer (one in flight), and
+// a left press on a part, with no 3D tool on, is the gizmo's drag (the router claims it).
+let gizmoShown = false, gizmoPart = null, gizmoDragging = false, gizmoSeq = 0;
+const gizmoHovers = new Latest((ev) => post({ kind: "gizmoHover", x: ev.x, y: ev.y, seq: ++gizmoSeq }));
+function onGizmo(m) {
+    gizmoShown = !!m.id;
+    if (!gizmoShown) { gizmoPart = null; gizmoHovers.drop(); }
+    document.body.dataset.gizmo = m.id && m.handles ? JSON.stringify(m.handles) : "";
+}
 
 // The fit map (fitmap.js): the select, the legend over the 3D window's corner, the value under
 // the pointer (one hover pick in flight). The Tape tool (tape3d.js): its clicks are 3D picks
@@ -747,7 +758,7 @@ function leave2d() {
 cv.addEventListener("pointerleave", leave2d);
 // The cursor of the window under the pointer: a crosshair in 2D (grabbing while it pans), a
 // crosshair in 3D while Pin or Drag is on.
-function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && (tool3d || tape.on) ? "crosshair" : ""; }
+function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && (tool3d || tape.on) ? "crosshair" : vp === 0 && (gizmoPart || gizmoDragging) ? "grab" : ""; }
 // Tab leaves the canvas (listen would keep it there; the app binds no Tab on the canvas)
 $("well").addEventListener("keydown", (e) => { if (e.key === "Tab" && !e.target.closest?.("#typed")) e.stopPropagation(); }, true);
 function flushMove() {
@@ -772,6 +783,11 @@ listen(cv, (ev) => {
         if (vp === 1 && ev.button === 0 && !space && tool) {
             claims.set(ev.pointerId, "2d"); drag2d = true; moveNext = null;
             send2d("down", ev, mods2d(ev));
+            return;
+        }
+        if (vp === 0 && ev.button === 0 && !tool3d && !tape.on && gizmoShown && gizmoPart) {
+            claims.set(ev.pointerId, "gizmo"); gizmoDragging = true;
+            post({ kind: "tool3d", tool: "gizmo", part: gizmoPart, phase: "down", x: ev.x, y: ev.y, shift: shiftHeld || !!ev.shift });
             return;
         }
         if (vp === 0 && ev.button === 0 && tool3d) {
@@ -800,6 +816,11 @@ listen(cv, (ev) => {
         keyHold.sent(seq2d);
         return;
     }
+    if (claim === "gizmo") {
+        if (ev.kind !== "move") { claims.delete(ev.pointerId); gizmoDragging = false; }
+        post({ kind: "tool3d", tool: "gizmo", phase: ev.kind === "move" ? "move" : "up", x: ev.x, y: ev.y, shift: shiftHeld || !!ev.shift });
+        return;
+    }
     if (claim === "3d") {
         if (ev.kind !== "move") claims.delete(ev.pointerId);
         post({ kind: "tool3d", tool: tool3d, phase: ev.kind === "cancel" ? "up" : ev.kind, x: ev.x, y: ev.y });
@@ -812,6 +833,8 @@ listen(cv, (ev) => {
         else if (vpNow !== 1) leave2d();
         if (pan2d === null) cursorAt(vpNow);
         if (fit.on && vpNow === 0 && !down3d) mapHovers.push(ev);
+        if (gizmoShown && vpNow === 0 && !down3d && !tool3d && !tape.on) gizmoHovers.push(ev);
+        else if (gizmoPart && vpNow !== 0) gizmoPart = null;
     }
     if (ev.kind === "up" && rightDown && rightDown.id === ev.pointerId) {
         if (Math.hypot(ev.x - rightDown.x, ev.y - rightDown.y) < CLICK_PX * dprNow() && toolName === "edit") send2d("context", ev, mods2d(ev));
@@ -942,6 +965,8 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Shift" && !e.repeat) { shiftHeld = true; syncSnapBase(); }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === " ") { space = true; e.preventDefault(); return; }
+    // a gizmo drag: Escape puts the piece back where it was
+    if (e.key === "Escape" && gizmoDragging) { e.preventDefault(); gizmoDragging = false; post({ kind: "tool3d", tool: "gizmo", phase: "escape" }); return; }
     // the Tape's path being drawn: Enter keeps it, Escape drops it
     if (tape.current && (e.key === "Enter" || e.key === "Escape")) { e.preventDefault(); tapeDo(e.key === "Enter" ? tape.end() : tape.escape()); return; }
     if (e.key === "Escape") {
@@ -1088,6 +1113,8 @@ worker.onmessage = ({ data: m }) => {
             if (selection?.kind === "avatar") renderProps();
             break;
         case "status": status(m.text); break;
+        case "gizmo": onGizmo(m); break;
+        case "gizmoHover": gizmoHovers.done(); gizmoPart = m.part ?? null; document.body.dataset.gizmoHover = gizmoPart ?? ""; break;
         case "formBuilding": status("building the form…"); break;
         case "formFailed": formAskedAt = null; break;
         case "sim": onSim(m); break;

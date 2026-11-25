@@ -15,6 +15,7 @@ import * as k from "./pkg/index.js";
 import { Atelier, forPage, linkOf } from "./kernel.js";
 import { drawFrame, frame12, showSeams, isSelected, ItemMap, fabricColours, ACCENT, sceneBox, WrappedMeshCache, atSlot, slotFields, nearestTriangle } from "./arrange.js";
 import { reslotOps } from "./reslot.js";
+import { GIZMO_LAYER, GIZMO_COLOURS, GIZMO_HOVER, PARTS, gizmoPivot, gizmoSize, gizmoShapes, gizmoDrag, gizmoOps, ringHandle, RING } from "./gizmo.js";
 import { setPattern } from "./model.js";
 import { splitByPattern, gather, nearestVertex, dragBasis, dragTarget, avatarMesh, healthOf, RateMeter } from "./drape.js";
 import { specs2d, Items2d, Overlay2d, LAYER_2D } from "./scene2d.js";
@@ -135,7 +136,7 @@ function setRects(r) {
     rects = r;
     if (!first) { viewer.setViewportRects(r); return; }
     viewer.setViewports([
-        { rect: r[0], camera: { kind: "orbit" }, grid: "front", layerMask: 1 << 0 },
+        { rect: r[0], camera: { kind: "orbit" }, grid: "front", layerMask: (1 << 0) | (1 << GIZMO_LAYER) },
         { rect: r[1], camera: { kind: "ortho", basis: "top", centre: [400, 300, 0], radius: 500 }, grid: "top", layerMask: 1 << LAYER_2D },
     ]);
     viewer.setViewportLabel(0, "3D", {});
@@ -146,6 +147,7 @@ function setRects(r) {
     frame3d();
     refresh2d();
     fit2d();
+    if (gizmo) postGizmo();
 }
 
 function refresh2d() {
@@ -240,6 +242,7 @@ function refresh3d() {
     const { shown, error } = showSeams(viewer, atelier.seams(), frames, selection, wraps);
     for (const s of shown) { drawn.push(s.item); items.set(s.item, { kind: "seam", id: s.id }); seamLines.set(s.id, s); }
     if (sim.meshes.length) flatVisible(false);
+    drawGizmo();
     first ??= error;
     if (first) post({ kind: "error", text: String(first.message ?? first) });
 }
@@ -318,6 +321,7 @@ function onTopology(t) {
     sim.live = true; sim.building = false; sim.meshGen++;
     dragging = null;
     flatVisible(false);
+    drawGizmo();
     showPins();
     simPost();
 }
@@ -341,7 +345,7 @@ function onCloth({ data: m }) {
             case "state":
                 sim.running = m.running; sim.stale = m.stale ?? sim.stale;
                 if (!m.running) { sim.rate.clear(); sim.stops++; }
-                if (!m.live) { sim.live = false; sim.building = false; sim.stale = null; removeCloth(); }
+                if (!m.live) { sim.live = false; sim.building = false; sim.stale = null; removeCloth(); drawGizmo(); }
                 // film: draw the stop's frame now, so a step resolves on a frame the View has drawn
                 if (sim.film && !m.running) { viewer.draw(); sim.drawn = viewer.stats().framesDrawn; }
                 if (m.error) { sim.building = false; post({ kind: "error", text: `simulation: ${m.error}` }); }
@@ -373,6 +377,7 @@ function simCommand(action, data = {}) {
 let pressId = 0;
 async function tool3d(data) {
     if (data.tool === "place") { if (data.phase === "down") await placeOnAvatar(data); return; }
+    if (data.tool === "gizmo") { gizmoEvent(data); return; }
     if (data.phase === "down") {
         const press = ++pressId;
         dragging = null;
@@ -429,6 +434,103 @@ async function placeOnAvatar(data) {
     atelier.apply([...setPattern(nodes, id, fields), ...follow], "place on avatar");
     changed();
     post({ kind: "status", text: `placed ${node.label ?? id} on the avatar${fields.wrap ? ", wrapped round the arm" : ""}` });
+}
+
+// ---- the 3D gizmo (gizmo.js, spec §3) -----------------------------------------------------------
+// Over the selected placed piece while the cloth is not live: arrows, rings and the centre
+// square on a layer of their own, on top. A drag previews the piece's frame (and wrap); the
+// release commits it, one undo step, the slot "custom" and the pieces on it following.
+let gizmo = null;                        // { id, pivot, size, radius, parts: part -> item, handles }
+let gizmoItems = [];
+let gz = null;                           // the drag: { id, part, start, pivot, basis, c, grab, nodes, ops }
+function drawGizmo() {
+    if (!viewer || !atelier) return;
+    for (const id of gizmoItems) { viewer.remove(id); items.items.delete(id); }
+    gizmoItems = [];
+    const was = gizmo?.id ?? null;
+    gizmo = null;
+    const id = selection?.kind === "pattern" && !(selection.ids?.length > 1) ? selection.id : null;
+    const node = id ? atelier.nodes().find((n) => n.id === id) : null;
+    const bounds = node ? atelier.drawings().find((d) => d.id === id)?.bounds : null;
+    if (sim.live || !node || !node.frame || node.frame === "xy" || !bounds) { if (was !== null) postGizmo(); return; }
+    const pivot = gizmoPivot(node, bounds), size = gizmoSize(bounds), shapes = gizmoShapes(pivot, node.frame, size);
+    const parts = {};
+    for (const part of PARTS) {
+        const item = part === "plane" ? viewer.showPoints(shapes.plane, GIZMO_COLOURS.plane, 12) : viewer.showLines(shapes[part], GIZMO_COLOURS[part]);
+        viewer.setItemLayer(item, GIZMO_LAYER);
+        viewer.setOnTop?.(item, true);
+        items.set(item, { kind: "gizmo", part });
+        parts[part] = item;
+        gizmoItems.push(item);
+    }
+    gizmo = { id, pivot, size, radius: RING * size, parts, handles: shapes.handles };
+    if (gz?.part) paintGizmo(gz.part);
+    postGizmo();
+}
+// Where a press grabs each part, in canvas device pixels (the browser test presses there).
+function gizmoHandles() {
+    const o = rects?.[0] ?? [0, 0], c = viewer.project(0, gizmo.pivot);
+    if (!c) return null;
+    const at = (p) => { const s = viewer.project(0, p); return s ? [s[0] + o[0], s[1] + o[1]] : null; };
+    const out = { plane: [c[0] + o[0], c[1] + o[1]] };
+    for (const part of ["tx", "ty", "tz"]) out[part] = at(gizmo.handles[part]);
+    const arrows = ["tx", "ty", "tz"].filter((p) => out[p]).map((p) => [out.plane[0], out.plane[1], out[p][0], out[p][1]]);
+    for (const part of ["rn", "rx", "ry"]) out[part] = ringHandle(gizmo.handles[part].map(at).filter(Boolean), out.plane, arrows);
+    return out;
+}
+function postGizmo() { post({ kind: "gizmo", id: gizmo?.id ?? null, handles: gizmo ? gizmoHandles() : null }); }
+function paintGizmo(hover) {
+    if (!gizmo) return;
+    for (const [part, item] of Object.entries(gizmo.parts)) viewer.setColour(item, part === hover ? GIZMO_HOVER : GIZMO_COLOURS[part]);
+}
+async function gizmoHover(data) {
+    let part = null;
+    if (gizmo && !gz) {
+        const p = await viewer.pick(0, ...at3d(data));
+        const w = p ? items.resolve(p.item) : null;
+        part = w?.kind === "gizmo" ? w.part : null;
+        paintGizmo(part);
+    }
+    post({ kind: "gizmoHover", seq: data.seq, part });
+}
+const GIZMO_VERB = { tx: "move along X", ty: "move along Y", tz: "move along Z", plane: "move", rn: "turn about the normal", rx: "turn about x", ry: "turn about y" };
+function gizmoEvent(data) {
+    if (data.phase === "down") {
+        gz = null;
+        if (!gizmo || sim.live || atelier.previewing || !GIZMO_VERB[data.part]) return;
+        const node = atelier.nodes().find((n) => n.id === gizmo.id);
+        const basis = dragBasis(viewer.camera(0), gizmo.pivot, rects?.[0]?.[3] ?? canvasRef?.height ?? 800);
+        const c = viewer.project(0, gizmo.pivot);
+        if (!node || !basis || !c) { post({ kind: "status", text: "the gizmo needs the orbit camera" }); return; }
+        const [x, y] = at3d(data);
+        gz = {
+            id: gizmo.id, part: data.part, start: { frame: node.frame, wrap: node.wrap ?? null }, pivot: gizmo.pivot, basis, c,
+            grab: [x - c[0], y - c[1]], radius: gizmo.radius, nodes: atelier.nodes(), ops: null, label: node.label ?? node.id,
+        };
+        paintGizmo(data.part);
+        post({ kind: "status", text: `${GIZMO_VERB[data.part]}: Shift snaps (10 mm, 15°), Escape cancels` });
+    } else if (data.phase === "move" && gz) {
+        const g = gz, [x, y] = at3d(data);
+        const r = gizmoDrag(g.part, g.start, g.pivot, { basis: g.basis, grab: g.grab, now: [x - g.c[0], y - g.c[1]], radius: g.radius, shift: !!data.shift });
+        const ops = gizmoOps(g.nodes, g.id, r, atelier.slotBounds(), atelier.avatar);
+        try { atelier.preview(ops); g.ops = ops; } catch (e) { post({ kind: "error", text: String(e.message ?? e) }); }
+        changed();
+        const what = g.part[0] === "r" ? `${((r.angle * 180) / Math.PI).toFixed(1)}°` : `${Math.hypot(...r.shift).toFixed(1)} mm`;
+        post({ kind: "status", text: `${GIZMO_VERB[g.part]} ${what}` });
+    } else if (data.phase === "up" && gz) {
+        const g = gz;
+        gz = null;
+        if (!g.ops) { paintGizmo(null); return; }        // a press without a move
+        atelier.endPreview(false);
+        try { atelier.apply(g.ops, "move in 3D"); }
+        finally { changed(); }
+        post({ kind: "status", text: `moved ${g.label} in 3D: its slot is custom` });
+    } else if (data.phase === "escape" && gz) {
+        const g = gz;
+        gz = null;
+        if (g.ops) { atelier.endPreview(false); changed(); } else paintGizmo(null);
+        post({ kind: "status", text: "gizmo move cancelled" });
+    }
 }
 
 // ---- the fit map and the Tape tool (fitmap.js, tape3d.js) ---------------------------------------
@@ -711,7 +813,9 @@ self.onmessage = async ({ data }) => {
             case "avatarAsset": await loadShippedForm(data.name); break;
             // Build / Apply: the form's spec into the document (one undo step); syncForm builds it
             case "form": atelier.apply([atelier.formMetaOp(data.spec ?? null)], data.spec ? "build form" : "shipped form"); changed(data.seq); break;
-            case "select": selection = data.selection ?? null; pointSel = []; ipointSel = []; paintSelection(); refresh2d(); break;
+            case "select": selection = data.selection ?? null; pointSel = []; ipointSel = []; paintSelection(); refresh2d(); drawGizmo(); break;
+            // always answered: the page keeps one gizmo hover in flight
+            case "gizmoHover": await gizmoHover(data).catch(() => post({ kind: "gizmoHover", seq: data.seq, part: null })); break;
             case "pick3d": {
                 const p = await viewer.pick(0, data.x - (rects?.[0]?.[0] ?? 0), data.y - (rects?.[0]?.[1] ?? 0));
                 // the Tape tool's click: the point and what it is on

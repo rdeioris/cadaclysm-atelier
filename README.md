@@ -134,6 +134,12 @@ it there, its centre over the point, standing 30 mm out along the body's normal 
 layer), its y the world's up (the camera's up on a near-horizontal surface such as a shoulder's
 top). With **Wrap** on (the default) a click on an arm wraps the piece round that arm, as the arm
 slots do. The Slot select shows such a piece as **On avatar**; it is refreshed like any slot.
+**The gizmo**: with one placed piece selected and no cloth, the 3D window draws a gizmo over it
+(at its centre; a sleeve's on its wrap axis). Drag an arrow to move the piece along world X, Y
+or Z, a ring to turn it about its own normal, x or y, the centre square to move it in the
+camera's plane; **Shift** snaps to 10 mm and 15°, **Escape** cancels the drag. A wrapped piece's
+wrap axis moves and turns with it. The release is one undo step; the piece's slot becomes
+**Custom (3D)** (kept as it is by later edits and a new avatar), and the pieces on it follow.
 
 ## Live drape
 
