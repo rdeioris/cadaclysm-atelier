@@ -5,8 +5,8 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
-import { pointsOf } from "./view2d.js";
+import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
+import { pointsOf, internalPointsOf } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
 const DRAG_PX = 3; // screen pixels: less movement than this is a click, not a drag
@@ -27,13 +27,16 @@ function newPattern(ctx, label, path, extra = {}) {
     return { ops: r.ops, select: { kind: "pattern", id: r.id }, done: true };
 }
 
-// Move point i by d: the vertex, the closing segment's `to` for i = 0, and the handles attached to it.
-function movePoint(path, i, d) {
+// Move point i by d: the vertex, the closing segment's `to` for i = 0 (a closed path), and the
+// handles attached to it. An open path's point i ends segment i - 1 and starts segment i.
+export function movePoint(path, i, d, closed = true) {
     const n = path.segments.length;
     if (i === 0) path.start = add(path.start, d);
-    const ends = path.segments[(i - 1 + n) % n];
-    ends.to = add(ends.to, d);
-    if (ends.type === "bezier") ends.c2 = add(ends.c2, d);
+    if (i > 0 || closed) {
+        const ends = path.segments[(i - 1 + n) % n];
+        ends.to = add(ends.to, d);
+        if (ends.type === "bezier") ends.c2 = add(ends.c2, d);
+    }
     const starts = path.segments[i];
     if (starts?.type === "bezier") starts.c1 = add(starts.c1, d);
 }
@@ -156,18 +159,30 @@ export function boxShape(ctx, shape, place) {
 }
 
 // Click points, drag for a curve into the point, click the first point to close: place(path, firstHit).
-export function polygonShape(ctx, place) {
+// `open` (an internal line): no closing click; Enter or a double click ends the path, which runs
+// from the first point to the last (a lone point places nothing: place(null, firstHit)).
+export function polygonShape(ctx, place, { open = false } = {}) {
     const { CLOSE, DRAG } = tols(ctx);
     const pts = [], out = [], inn = []; // out[i]: handle leaving point i; inn[i]: handle entering it
     let downAt = null, dragTo = null, first = null;
     const overlay = (cursor) => line(cursor ? [...pts, cursor] : pts);
+    const reset = () => { pts.length = 0; out.length = 0; inn.length = 0; first = null; };
     const close = () => {
         const curves = pts.map((p, i) => {
             const j = (i + 1) % pts.length;
             return out[i] || inn[j] ? { c1: out[i] ?? p, c2: inn[j] ?? pts[j] } : null;
         });
         const r = place(polyPath(pts, curves), first);
-        pts.length = 0; out.length = 0; inn.length = 0; first = null;
+        reset();
+        return { ...r, overlay: { lines: [] } };
+    };
+    const finish = () => {
+        // a click on the last point before Enter, or a double click's first click on it: placed once
+        const n = pts.length;
+        if (n > 2 && dist(pts[n - 1], pts[n - 2]) < DRAG && !out[n - 1] && !inn[n - 1]) { pts.pop(); out.length = inn.length = pts.length; }
+        const curves = pts.slice(1).map((p, k) => (out[k] || inn[k + 1] ? { c1: out[k] ?? pts[k], c2: inn[k + 1] ?? p } : null));
+        const r = place(pts.length >= 2 ? openPath(pts, curves) : null, first);
+        reset();
         return { ...r, overlay: { lines: [] } };
     };
     return {
@@ -177,20 +192,22 @@ export function polygonShape(ctx, place) {
             dragTo = w;
             return { overlay: overlay(downAt) };
         },
-        up(w) {
+        up(w, h, mods) {
             if (!downAt) return {};
             const p = downAt; downAt = null;
             const drag = dragTo && dist(w, p) >= DRAG ? w : null;
             dragTo = null;
-            if (!drag && pts.length && dist(p, pts[0]) <= CLOSE) return pts.length >= 3 ? close() : {};
+            if (open && !drag && (mods?.dblclick || mods?.detail === 2)) return finish();
+            if (!open && !drag && pts.length && dist(p, pts[0]) <= CLOSE) return pts.length >= 3 ? close() : {};
             pts.push(p);
             if (drag) { out[pts.length - 1] = [...drag]; inn[pts.length - 1] = [2 * p[0] - drag[0], 2 * p[1] - drag[1]]; }
             return { overlay: overlay() };
         },
         lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
         key(k) {
-            if (k === "Escape") { pts.length = 0; out.length = 0; inn.length = 0; first = null; return { overlay: { lines: [] }, done: true }; }
+            if (k === "Escape") { reset(); return { overlay: { lines: [] }, done: true }; }
             if (k === "Backspace") { pts.pop(); out.length = inn.length = pts.length; return { overlay: overlay() }; }
+            if (k === "Enter" && open) return finish();
             return {};
         },
     };
@@ -358,8 +375,15 @@ const TOOLS = {
         };
         const box = boxGesture(ctx, "points");
         let chosen = new Set();
+        let lines0 = null;        // an internal point's or handle's drag: the piece's internal list when it began
         const preview = (w) => {
             const d = [w[0] - start[0], w[1] - start[1]];
+            if (lines0) {
+                const lines = clone(lines0), path = lines[hit.line].path;
+                if (hit.kind === "ipoint") movePoint(path, hit.index, d, isClosedPath(path));
+                else { const s = path.segments[hit.index]; s[hit.which] = add(s[hit.which], d); }
+                return { preview: setPattern(ctx.nodes, id, { internal: lines }) };
+            }
             const path = clone(path0);
             // a press on one of the box-selected points moves every selected point
             if (hit.kind === "point") {
@@ -371,7 +395,15 @@ const TOOLS = {
         return {
             down(w, h, mods) {
                 if (!h && selectedId(ctx)) { box.start(w, mods); return {}; }
-                if (h?.kind === "pattern") return { select: { kind: "pattern", id: h.id } };
+                if (h?.kind === "pattern" || (h?.kind === "internal" && h.id !== selectedId(ctx))) return { select: { kind: "pattern", id: h.id } };
+                // an internal line's point or handle (drawn on the selected piece only, spec §4)
+                if (h && (h.kind === "ipoint" || h.kind === "ihandle")) {
+                    const internal = nodeOf(ctx, h.id)?.internal;
+                    if (!internal?.[h.line]?.path) return {};
+                    id = h.id; lines0 = internal; path0 = null; start = w; hit = h; sent = false; locked = false;
+                    return {};
+                }
+                lines0 = null;
                 if (h && (h.kind === "point" || h.kind === "handle" || h.kind === "edge")) {
                     id = h.id; path0 = outlineOf(ctx, id);
                     if (!path0) return {};
@@ -493,34 +525,17 @@ const TOOLS = {
         };
     },
 
+    // An internal line on the selected piece (else the piece under the first press), drawn as the
+    // Polygon tool draws: a click a corner, a drag a curve point with mirrored handles (spec §4);
+    // open, ended by Enter or a double click.
     internal(ctx) {
-        const { DRAG } = tols(ctx);
-        const pts = [];
-        const commit = () => {
-            const id = selectedId(ctx);
-            if (!id || pts.length < 2) { pts.length = 0; return { done: true }; }
-            if (pts.length > 2 && dist(pts[pts.length - 1], pts[pts.length - 2]) < DRAG) pts.pop();
+        return polygonShape(ctx, (path, hit) => {
+            const id = selectedId(ctx) ?? hit?.id ?? null;
+            if (!id) return { status: "select the piece first", done: true };
+            if (!path) return { done: true };
             const old = nodeOf(ctx, id)?.internal ?? [];
-            const path = { start: [...pts[0]], segments: pts.slice(1).map((to) => ({ type: "line", to: [...to] })) };
-            pts.length = 0;
             return { ops: setPattern(ctx.nodes, id, { internal: [...old, { kind: "line", path }] }), done: true };
-        };
-        return {
-            down() { return {}; },
-            move(w) { return pts.length ? { overlay: line([...pts, w]) } : {}; },
-            up(w, h, mods) {
-                if (mods?.dblclick || mods?.detail === 2) return commit();
-                pts.push(w);
-                return { overlay: line(pts) };
-            },
-            key(k) {
-                if (k === "Enter") return commit();
-                if (k === "Escape") { pts.length = 0; return { overlay: { lines: [] }, done: true }; }
-                if (k === "Backspace") { pts.pop(); return { overlay: line(pts) }; }
-                return {};
-            },
-            lastPoint() { return pts.length ? [...pts.at(-1)] : null; },
-        };
+        }, { open: true });
     },
 
     notch(ctx) {

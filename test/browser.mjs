@@ -1344,6 +1344,54 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok("cut: one piece became two; cut & sew: two more and one seam joining them; a miss refused");
             }
+            // ---- curved internal line (A1 task A5): Internal with a drag places a curve point; Edit drags its handle ----
+            {
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty garment", async () => (await patternCount()) === 0, 30000);
+                const [ux, uy, uw, uh] = await windowBox("rect2d");
+                const Q = [ux + uw * 0.25, uy + uh * 0.85];
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                lastSeen = await evaluate(`document.body.dataset.world ?? ""`);
+                const w1 = await worldOf([Q[0] + 1, Q[1]]), w2 = await worldOf([Q[0] + 51, Q[1]]);
+                const mm = 50 / (w2[0] - w1[0]);
+                if (!(Q[0] + 200 * mm < ux + uw && Q[1] - 100 * mm > uy)) throw new Error("the 200 x 100 piece does not fit the 2D window");
+                const wQ = [w1[0] - 1 / mm, w1[1]];
+                const screenAt = ([x, y]) => [Q[0] + (x - wQ[0]) * mm, Q[1] - (y - wQ[1]) * mm];
+                await byDialog("rectangle", Q, 200, 100);
+                await until("the piece", async () => (await patternCount()) === 1, 30000);
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].at(-1).click()`);
+                const d0 = await saveJson();
+                const pid = d0.nodes.find((n) => n.kind === "garment.pattern").id;
+                const o = d0.nodes.find((n) => n.id === `${pid}_outline`).path.start;
+                await until("the piece selected", () => evaluate(`!!document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]')?.classList.contains("on")`), 30000);
+                await evaluate(`document.querySelector('#tools2d [data-tool=internal]').click()`);
+                await click(screenAt([o[0] + 30, o[1] + 30]));
+                await drag(screenAt([o[0] + 90, o[1] + 65]), screenAt([o[0] + 125, o[1] + 65]));
+                await click(screenAt([o[0] + 170, o[1] + 30]));
+                await key("Enter", "Enter", 13);
+                const d1 = await until("the internal line", async () => { const d = await saveJson(); return d.nodes.find((n) => n.id === pid)?.internal?.length ? d : null; }, 30000);
+                await noStatusError();
+                const line0 = d1.nodes.find((n) => n.id === pid).internal[0].path;
+                if (line0.segments.length !== 2 || !line0.segments.every((g) => g.type === "bezier")) throw new Error(`the internal line is ${JSON.stringify(line0)}, not two cubics`);
+                // Edit (armed by the line's end): the handle out of the curve point answers as an internal handle; a drag moves it
+                const c1 = line0.segments[1].c1;
+                await worldOf(screenAt(c1));
+                {
+                    const hit = await evaluate(`document.body.dataset.hit`);
+                    if (hit !== "ihandle") throw new Error(`the internal handle's hover answered ${hit}, not ihandle`);
+                }
+                await drag(screenAt(c1), screenAt([c1[0], c1[1] + 20]));
+                const d2 = await until("the handle moved", async () => {
+                    const d = await saveJson();
+                    const g = d.nodes.find((n) => n.id === pid).internal[0].path.segments[1];
+                    return Math.abs(g.c1[1] - c1[1] - 20) < 2 ? d : null;
+                }, 30000);
+                const line1 = d2.nodes.find((n) => n.id === pid).internal[0].path;
+                if (JSON.stringify(line1.segments[0]) !== JSON.stringify(line0.segments[0])) throw new Error("the handle's drag moved the other segment");
+                await noStatusError();
+                failIfErrors();
+                ok("curved internal line: a drag places a curve point; Edit drags its handle");
+            }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
                 await sleep(1000);

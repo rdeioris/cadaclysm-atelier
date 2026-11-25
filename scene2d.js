@@ -10,7 +10,7 @@
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
 import { seamColour } from "./sewing.js";
-import { pointsOf, notchNormals, xformHandles } from "./view2d.js";
+import { pointsOf, internalPointsOf, notchNormals, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
 export const ACCENT = "#ff7a1a";
@@ -150,6 +150,19 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
                 out.push({ key: `${id}/tangents`, show: "lines", data: tangents, colour: ACCENT, onTop: true, what: { kind: "tangents", id, handles: p.handles, points: p.points }, sig: JSON.stringify(tangents) });
                 out.push({ key: `${id}/handles`, show: "points", data: xyz(p.handles.map((h) => h.at), z.seam), colour: ACCENT, size: 7, pointStyle: { shape: "diamond", hollow: false },
                     onTop: true, what: { kind: "handles", id, handles: p.handles }, sig: JSON.stringify(p.handles) + r });
+            }
+            // the internal lines' points (hollow) and handles: dragged by the Edit tool (spec §4)
+            const ip = internalPointsOf(nodes, id);
+            if (ip.points.length) {
+                const at = ip.points.map((q) => q.at);
+                out.push({ key: `${id}/ipoints`, show: "points", data: xyz(at, z.seam), colour: "#ffffff", size: 7, pointStyle: { shape: "square", hollow: true },
+                    onTop: true, what: { kind: "ipoints", id, refs: ip.points.map(({ line, index }) => ({ line, index })) }, sig: JSON.stringify(at) + r });
+                if (ip.handles.length) {
+                    const tangents = ip.handles.flatMap((h) => [h.from, h.to].filter((i) => i !== undefined).flatMap((i) => [at[i][0], at[i][1], z.seam, h.at[0], h.at[1], z.seam]));
+                    if (tangents.length) out.push({ key: `${id}/itangents`, show: "lines", data: tangents, colour: ACCENT, onTop: true, what: { kind: "itangents", id, handles: ip.handles, points: at }, sig: JSON.stringify(tangents) });
+                    out.push({ key: `${id}/ihandles`, show: "points", data: xyz(ip.handles.map((h) => h.at), z.seam), colour: ACCENT, size: 6, pointStyle: { shape: "diamond", hollow: true },
+                        onTop: true, what: { kind: "ihandles", id, handles: ip.handles }, sig: JSON.stringify(ip.handles) + r });
+                }
             }
         }
     }

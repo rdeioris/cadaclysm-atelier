@@ -48,6 +48,15 @@ export function polyPath(points, curves = []) {
     });
     return { start: pt(points[0]), segments };
 }
+// An open path through `points` (an internal line): curves[i] = {c1, c2} makes the segment from
+// point i to point i + 1 a cubic, else it is a line.
+export function openPath(points, curves = []) {
+    const segments = points.slice(1).map((p, i) => {
+        const c = curves[i];
+        return c ? { type: "bezier", c1: pt(c.c1), c2: pt(c.c2), to: pt(p) } : { type: "line", to: pt(p) };
+    });
+    return { start: pt(points[0]), segments };
+}
 
 export const rectPath = (x, y, w, h) => polyPath([[x, y], [x + w, y], [x + w, y + h], [x, y + h]]);
 

@@ -4,7 +4,7 @@
 // column-major, entry 4 * col + row -- to go between its device pixels and pattern millimetres
 // (as the forge's projection.js does), and turns a pick answer into the hit a tool takes. Pure:
 // no View, no kernel, no DOM.
-import { segmentEnd } from "./model.js";
+import { segmentEnd, isClosedPath } from "./model.js";
 
 const unit3 = (v) => { const l = Math.hypot(v[0], v[1], v[2]); return l < 1e-20 ? [0, 0, 1] : [v[0] / l, v[1] / l, v[2] / l]; };
 function axes(r) {
@@ -80,6 +80,37 @@ export function pointsOf(nodes, id) {
     return out;
 }
 
+/** Piece `id`'s internal lines' edit handles (open lines and closed shapes, spec §4): each path
+ *  point as {line, index, at} (a closed shape's end, its start again, is not repeated), and the
+ *  Bézier and conic control points as {line, index (the segment), which, at, from, to} with
+ *  `from`/`to` indices into `points` (their tangent lines' other ends). A point an arc or a NURBS
+ *  span ends at is left out, as on the outline (plan ruling 13). */
+export function internalPointsOf(nodes, id) {
+    const out = { points: [], handles: [] };
+    const entries = (nodes ?? []).find((n) => n.id === id)?.internal ?? [];
+    entries.forEach((entry, line) => {
+        const path = entry?.path, segs = path?.segments ?? [], n = segs.length;
+        if (!n) return;
+        const closed = isClosedPath(path), count = closed ? n : n + 1, next = (i) => (closed ? (i + 1) % n : i + 1);
+        const locked = new Set();
+        segs.forEach((seg, i) => { if (seg.type === "arc" || seg.type === "nurbs") locked.add(i).add(next(i)); });
+        const flat = new Map();
+        for (let k = 0; k < count; k++) {
+            if (locked.has(k)) continue;
+            flat.set(k, out.points.length);
+            out.points.push({ line, index: k, at: [...(k === 0 ? path.start : segmentEnd(segs[k - 1]))] });
+        }
+        segs.forEach((seg, i) => {
+            const a = flat.get(i), b = flat.get(next(i));
+            if (seg.type === "bezier") {
+                out.handles.push({ line, index: i, which: "c1", at: [...seg.c1], from: a });
+                out.handles.push({ line, index: i, which: "c2", at: [...seg.c2], from: b });
+            } else if (seg.type === "conic") out.handles.push({ line, index: i, which: "control", at: [...seg.control], from: a, to: b });
+        });
+    });
+    return out;
+}
+
 /** A pick answer, resolved through the item map's entry `what`, as the tools' hit. A label's
  *  text runs past its piece's edge and the View picks text over the fill under it, so a label
  *  answers `pieceAt(point)` -- the highest piece whose outline holds the point (the kernel's,
@@ -97,6 +128,10 @@ export function hitOf(what, pick, drawings, pieceAt = null) {
         case "points": return { kind: "point", id: what.id, index: pick.node };
         case "handles": { const h = what.handles?.[pick.node]; return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
         case "tangents": { const h = tangentHandle(what, at); return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
+        // an internal line's points and handles (internalPointsOf)
+        case "ipoints": { const q = what.refs?.[pick.node]; return q ? { kind: "ipoint", id: what.id, line: q.line, index: q.index } : null; }
+        case "ihandles": { const h = what.handles?.[pick.node]; return h ? { kind: "ihandle", id: what.id, line: h.line, index: h.index, which: h.which } : null; }
+        case "itangents": { const h = tangentHandle(what, at); return h ? { kind: "ihandle", id: what.id, line: h.line, index: h.index, which: h.which } : null; }
         case "sew": return edge(what.id, {});
         case "seam": return edge(what.pattern, { seam: what.id });
         case "internal": return { kind: "internal", id: what.id, index: what.index };

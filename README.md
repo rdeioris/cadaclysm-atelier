@@ -57,8 +57,12 @@ The tools, with their keys where they have one:
 
 - **Rect** (S), **Polygon** (H) and **Ellipse** (E): an ellipse drags corner to corner, Shift
   for a circle; a click without a drag asks for its size (so does a rectangle's).
-- **Internal** (G) draws an internal line on the selected piece (Enter or a double click ends
-  it); **Int □**, **Int ○** and **Int ⬠** draw an internal rectangle, ellipse or polygon.
+- **Internal** (G) draws an internal line on the selected piece as **Polygon** draws: a click
+  places a corner, a drag places a curve point with mirrored handles; Enter or a double click
+  ends it (Backspace drops the last point). **Int □**, **Int ○** and **Int ⬠** draw an internal
+  rectangle, ellipse or polygon. In **Edit**, the selected piece shows its internal lines' points
+  (hollow squares) and Bézier handles (hollow diamonds): a drag moves one, the handles on either
+  side of a point riding along; each drag is one undo step.
 - **Hole □**, **Hole ○** and **Hole ⬠** cut a rectangular, elliptical or polygonal hole in a
   piece; **To hole** turns an internal closed shape into a hole.
 - **Cut** splits a piece along an internal line, or along a cutter drawn across the selected
