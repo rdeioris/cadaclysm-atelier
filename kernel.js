@@ -81,8 +81,8 @@ export class Atelier {
         const fresh = this.problems().filter((p) => !old.has(key(p)));
         return fresh.length ? fresh.map((p) => `${p.id}: ${p.message}`).join("; ") : null;
     }
-    // `ops` as one commit, with `reanchorId` the seams re-anchored to that pattern's new sides in
-    // the same commit (one undo step). A change that makes something fail that did not before is
+    // `ops` as one commit, with `reanchorId` (one pattern id or a list) the seams re-anchored to
+    // that pattern's new sides in the same commit (one undo step). A change that makes something fail that did not before is
     // refused: the batch is aborted, the kernel is as it was, and the error says why.
     // -> {removed: the seams the re-anchor removed}
     commit(ops, message, reanchorId = null, before = this.problems()) {
@@ -92,10 +92,12 @@ export class Atelier {
         try {
             this.f("document_apply")(this.d, batch(ops), null);
             this.evaluate();
-            if (reanchorId && m.byId(this.nodes()).has(reanchorId) && !this.newProblems(before)) {
-                const r = reanchor(this.nodes(), new Map([[reanchorId, { sides: this.sidesOf(reanchorId) }]]), reanchorId);
+            // several pieces (a transform of a multi-selection): each one's seams in turn
+            for (const rid of [reanchorId ?? []].flat()) {
+                if (!m.byId(this.nodes()).has(rid) || this.newProblems(before)) continue;
+                const r = reanchor(this.nodes(), new Map([[rid, { sides: this.sidesOf(rid) }]]), rid);
                 if (r.ops.length) { this.f("document_apply")(this.d, batch(r.ops), null); this.evaluate(); }
-                out.removed = r.removed;
+                out.removed.push(...r.removed);
             }
             const bad = this.newProblems(before);
             if (bad) throw new Error(bad);
@@ -443,6 +445,34 @@ export class Atelier {
     }
     // m6 is the kernel's row-major 2x3: x' = m0 x + m1 y + m2, y' = m3 x + m4 y + m5.
     transformed(id, m6) { return this.mapped(id, (p) => this.f("profile_transform2d")(p, Float64Array.from(m6))); }
+    // The whole piece `id` through m6 (spec §2; the general form of mirroredPiece): the outline
+    // with its holes through profile_transform2d, each internal line through the same matrix, each
+    // notch re-placed at its mapped point on the new outline, and the grain the matrix's linear
+    // part applied and normalised. From the committed piece during a preview (as transformed()).
+    // -> {path, internal, notches, grain}
+    transformedPiece(id, m6) {
+        const byId = m.byId(this.open ? this.open.nodes : this.nodes()), node = byId.get(id), path = byId.get(`${id}_outline`)?.path;
+        if (!node || !path) throw new Error(`no pattern ${id}`);
+        return this.pieceThrough(node, path, m6);
+    }
+    // The same for a piece given as its node and outline path (a clipboard's copy, which need not
+    // be in the document any more).
+    pieceThrough(node, path, m6) {
+        const f = this.f, mat = Float64Array.from(m6);
+        const through = (q) => this.withPath(q, (p) => this.pathOf(f("profile_transform2d")(p, mat)));
+        const out = through(path);
+        const internal = (node.internal ?? []).map((l) => { const p = through(l.path); return { ...l, path: { start: p.start, segments: p.segments } }; });
+        const map = ([x, y]) => [m6[0] * x + m6[1] * y + m6[2], m6[3] * x + m6[4] * y + m6[5]];
+        const notches = !node.notches?.length ? [] : this.withPath({ start: path.start, segments: path.segments }, (old) => this.withPath({ start: out.start, segments: out.segments }, (p) => {
+            const samples = this.samplesOf(p), sides = this.sideStarts(p, f("profile_length")(p, ACC)[0], out.segments.length);
+            return node.notches.map((nt) => { const at = f("profile_point_at_length")(old, nt.at, ACC); return { ...nt, at: arcAt(samples, sides, map([at[0], at[1]])).s }; });
+        }));
+        const [gx, gy] = node.grain ?? [0, 1], tx = m6[0] * gx + m6[1] * gy, ty = m6[3] * gx + m6[4] * gy, gl = Math.hypot(tx, ty);
+        if (!(gl > 0)) throw new Error("the transform collapses the piece");
+        return { path: out, internal, notches, grain: [tx / gl, ty / gl] };
+    }
+    // Clipboard pieces ([{node, path}]) through m6: what a paste places. -> [{path, internal, notches, grain}]
+    piecesThrough(pieces, m6) { return pieces.map((p) => this.pieceThrough(p.node, p.path, m6)); }
     // The axis is two points on the line, [x0, y0, x1, y1], as the Mirror tool sends it (tools.js);
     // profile_mirror takes a point and a direction.
     mirrored(id, [x0, y0, x1, y1]) { return this.mapped(id, (p) => this.f("profile_mirror")(p, x0, y0, x1 - x0, y1 - y0)); }

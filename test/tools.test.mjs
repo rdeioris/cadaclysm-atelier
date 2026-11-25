@@ -123,11 +123,12 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const r = await t.up([0, 50], null, {});
     assert.equal(r.ops.find((o) => o.node?.kind === "garment.pattern").node.label, "Front (mirror) 3");
 }
-// transform: kernel translate, row-major matrix, one request in flight
+// transform: kernel translate, row-major matrix, one request in flight; the kernel answers
+// whole pieces (kernel.js transformedPiece)
 {
     const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
     const asked = []; let inflight = 0, maxInflight = 0;
-    const request = async (k, p) => { asked.push([k, p]); maxInflight = Math.max(maxInflight, ++inflight); await new Promise((r) => setTimeout(r, 5)); inflight--; return m.rectPath(p.matrix[2], p.matrix[5], 100, 50); };
+    const request = async (k, p) => { asked.push([k, p]); maxInflight = Math.max(maxInflight, ++inflight); await new Promise((r) => setTimeout(r, 5)); inflight--; return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) }); };
     const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
     t.down([5, 5], { kind: "pattern", id: "p1" }, {});
     t.move([10, 5], null, {}); t.move([15, 5], null, {}); const last = t.move([25, 15], null, {});
@@ -188,7 +189,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.deepEqual(await bad.up([10, 0], null, {}), {});
     // Escape cancels; a reply arriving after the cancel is never a preview
     let release;
-    const slow = makeTool("transform", ctx({ nodes, selection: sel, request: () => new Promise((r) => { release = () => r(m.rectPath(10, 0, 100, 50)); }) }));
+    const slow = makeTool("transform", ctx({ nodes, selection: sel, request: () => new Promise((r) => { release = () => r({ path: m.rectPath(10, 0, 100, 50) }); }) }));
     slow.down([0, 0], { kind: "pattern", id: "p1" }, {});
     const pending = slow.move([10, 0], null, {});
     assert.deepEqual(slow.key("Escape"), { cancel: true });
@@ -237,7 +238,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
 // fix round 2: a duplicate move after the reply, then a new move and up
 {
     const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
-    const request = async (k, p) => m.rectPath(p.matrix[2], p.matrix[5], 100, 50);
+    const request = async (k, p) => ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) });
     const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
     t.down([0, 0], { kind: "pattern", id: "p1" }, {});
     await t.move([10, 0], null, {});
@@ -262,7 +263,7 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     assert.deepEqual(ed.move([101, 0], null, {}), {}, "less than a drag: no preview");
     assert.deepEqual(ed.up([101, 0], null, {}), {});
     let asked = 0;
-    const tr = makeTool("transform", ctx({ nodes, selection: sel, request: async (k, p) => { asked++; return m.rectPath(p.matrix[2], p.matrix[5], 100, 50); } }));
+    const tr = makeTool("transform", ctx({ nodes, selection: sel, request: async (k, p) => { asked++; return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) }); } }));
     tr.down([5, 5], { kind: "pattern", id: "p1" }, {});
     assert.deepEqual(await tr.up([5, 5], null, {}), {});
     assert.equal(asked, 0);
@@ -326,8 +327,8 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const request = async (kind, p) => {
         asked.push([kind, p]);
         if (kind === "pickRect") return { ids: [] };
-        if (kind === "transformAll") return Object.fromEntries(p.ids.map((id) => [id, m.rectPath((id === "p1" ? 0 : 200) + p.matrix[2], p.matrix[5], 100, 50)]));
-        return m.rectPath(p.matrix[2], p.matrix[5], 100, 50);
+        if (kind === "transformAll") return Object.fromEntries(p.ids.map((id) => [id, { path: m.rectPath((id === "p1" ? 0 : 200) + p.matrix[2], p.matrix[5], 100, 50) }]));
+        return ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50) });
     };
     const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
     t.down([500, 500], null, { px: [10, 10] });
@@ -471,4 +472,24 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
 }
 assert.equal(SHORTCUTS.S.tool, "rectangle");
 assert.deepEqual(toolOfKey({ key: "z", ctrlKey: true }), { command: "undo" });
+// A2: Move previews the whole piece the kernel answers -- outline, internal lines, notches, grain
+{
+    const line = { kind: "line", path: { start: [10, 10], segments: [{ type: "line", to: [40, 10] }] } };
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) },
+        { id: "p1", kind: "garment.pattern", outline: "p1_outline", internal: [line], notches: [{ at: 30, kind: "slit", depth: 5 }], grain: [0, 1] }];
+    const request = async (k, p) => ({ path: m.rectPath(p.matrix[2], p.matrix[5], 100, 50), internal: [{ ...line, path: { start: [10 + p.matrix[2], 10], segments: [{ type: "line", to: [40 + p.matrix[2], 10] }] } }], notches: [{ at: 30, kind: "slit", depth: 5 }], grain: [0, 1] });
+    const t = makeTool("transform", ctx({ nodes, selection: { kind: "pattern", id: "p1" }, request }));
+    t.down([0, 0], { kind: "pattern", id: "p1" }, {});
+    await t.move([7, 0], null, {});
+    const up = await t.up([7, 0], null, {});
+    assert.equal(up.endPreview, true);
+    assert.equal(up.preview[0].id, "p1_outline", "the outline first: the page's preview pattern");
+    const set = up.preview.find((o) => o.id === "p1").fields;
+    assert.deepEqual(set.internal[0].path.start, [17, 10]);
+    assert.deepEqual(set.notches, [{ at: 30, kind: "slit", depth: 5 }]);
+    assert.deepEqual(set.grain, [0, 1]);
+}
+assert.deepEqual(toolOfKey({ key: "c", ctrlKey: true }), { command: "copy" });
+assert.deepEqual(toolOfKey({ key: "v", ctrlKey: true }), { command: "paste" });
+assert.deepEqual(toolOfKey({ key: "d", ctrlKey: true }), { command: "duplicate" });
 console.log("tools: ok");

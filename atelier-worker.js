@@ -465,9 +465,11 @@ self.onmessage = async ({ data }) => {
         await started;
         switch (data.kind) {
             // a hole added too small for its allowance is kept, with a word on the status line
+            // `reanchor` (a pattern id or a list): those pieces' seams re-anchored in the same commit
             case "ops": {
                 const cutless = atelier.cutlessHoles();
-                atelier.apply(data.ops, data.message);
+                const r = atelier.commit(data.ops, data.message, data.reanchor ?? null);
+                if (r.removed.length) post({ kind: "status", text: `removed seam${r.removed.length === 1 ? "" : "s"} ${r.removed.join(", ")}: the side is gone` });
                 changed(data.seq);
                 const warn = atelier.newCutlessHoles(cutless);
                 if (warn) post({ kind: "status", text: warn });
@@ -498,10 +500,13 @@ self.onmessage = async ({ data }) => {
             case "fillet": atelier.commit(atelier.filletOps(data.id, data.corner, data.radius), "fillet", data.id); changed(data.seq); break;
             case "undo": { const did = atelier.undo(); changed(data.seq); if (!did) post({ kind: "status", text: "nothing to undo" }); break; }
             case "redo": atelier.redo(); changed(data.seq); break;
-            case "transform": answer(data, () => atelier.transformed(data.id, data.matrix)); break;
+            // the whole piece: outline, internal lines, notches and grain (kernel.js transformedPiece)
+            case "transform": answer(data, () => atelier.transformedPiece(data.id, data.matrix)); break;
             case "mirror": answer(data, () => atelier.mirroredPiece(data.id, data.axis)); break;
             case "ellipse": answer(data, () => atelier.ellipsePath(data.cx, data.cy, data.rx, data.ry)); break;
-            case "transformAll": answer(data, () => Object.fromEntries(data.ids.map((id) => [id, atelier.transformed(id, data.matrix)]))); break;
+            case "transformAll": answer(data, () => Object.fromEntries(data.ids.map((id) => [id, atelier.transformedPiece(id, data.matrix)]))); break;
+            // the clipboard's pieces ([{node, path}]) moved for a paste: [{path, internal, notches, grain}]
+            case "placePieces": answer(data, () => atelier.piecesThrough(data.pieces, data.matrix)); break;
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
             case "viewStats": answer(data, () => viewer.stats()); break;

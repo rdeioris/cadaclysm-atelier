@@ -5,7 +5,7 @@
 // ctx is {nodes, drawings, selection, fabric, request}; the app makes a fresh tool after every
 // document change, so a tool never holds a stale node list.
 import { makeSewingTool } from "./sewing.js";
-import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, polyPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
+import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, freeLabel, pieceLabel, isClosedPath } from "./model.js";
 import { pointsOf } from "./view2d.js";
 
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -354,8 +354,9 @@ const TOOLS = {
         const fresh = () => ({ id: null, ids: [], start: null, want: null, asked: null, busy: null, result: null, live: true });
         let st = fresh();
         const box = boxGesture(ctx, "pieces");
-        // g.result is always {[id]: path}
-        const preview = (g) => (g.result ? { preview: g.ids.flatMap((id) => (g.result[id] ? setOutline(ctx.nodes, id, g.result[id]) : [])) } : {});
+        // g.result is always {[id]: piece}, each the kernel's whole moved piece (kernel.js
+        // transformedPiece): the outline, internal lines, notches and grain all move together
+        const preview = (g) => (g.result ? { preview: g.ids.flatMap((id) => (g.result[id] ? pieceOps(ctx.nodes, id, g.result[id]) : [])) } : {});
         // One request in flight; the latest wanted delta is sent when it returns. A request that
         // rejects ends the loop and keeps the last good path; a cancelled gesture resolves to {}.
         const pump = (g) => {
@@ -364,7 +365,7 @@ const TOOLS = {
                     while (g.live && g.want && !(g.asked && g.want[0] === g.asked[0] && g.want[1] === g.asked[1])) {
                         const d = g.want; g.asked = d;
                         const matrix = [1, 0, d[0], 0, 1, d[1]];
-                        // one piece: the single transform (one path back); a multi-selection: transformAll ({[id]: path})
+                        // one piece: the single transform (one piece back); a multi-selection: transformAll ({[id]: piece})
                         const r = g.ids.length === 1
                             ? { [g.id]: await ctx.request("transform", { id: g.id, matrix }) }
                             : await ctx.request("transformAll", { ids: g.ids, matrix });

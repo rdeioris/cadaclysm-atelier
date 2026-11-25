@@ -213,6 +213,63 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
     return { ops, ids, collapsed };
 }
 
+// Piece `id` set to a transformed piece r = {path, internal, notches, grain} (kernel.js
+// transformedPiece): its outline, and its internal lines, notches and grain where it has them
+// or the transform gives them. The caller re-anchors the seams in the same commit.
+export function pieceOps(nodes, id, r) {
+    const n = byId(nodes).get(id), fields = {};
+    if (n?.internal || r.internal?.length) fields.internal = r.internal ?? [];
+    if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
+    if (r.grain) fields.grain = r.grain;
+    return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : [])];
+}
+
+// The in-app clipboard (spec §2): copies of pieces `ids` (each its node and outline path) and the
+// seams with both ends among them. Plain data: it outlives the pieces.
+export function copyPieces(nodes, ids) {
+    const map = byId(nodes), clone = (v) => JSON.parse(JSON.stringify(v));
+    const live = ids.filter((id) => map.get(id)?.kind === "garment.pattern" && map.has(`${id}_outline`));
+    return {
+        pieces: live.map((id) => ({ node: clone(map.get(id)), path: clone(map.get(`${id}_outline`).path) })),
+        seams: nodes.filter((n) => n.kind === "garment.seam" && live.includes(n.a) && live.includes(n.b)).map(clone),
+    };
+}
+
+// The clipboard's pieces added as new ones, each from `placed[i]` ({path, internal, notches,
+// grain}: the kernel's moved copy of piece i), labelled "‹label› copy" (made unique), keeping
+// fabric, layer, allowance, mesh size and the rest but not the slot (no frame, no meta slot: it
+// lies on the floor); its inner seams copied onto the new pieces. One batch. -> {ops, ids}
+export function pasteOps(nodes, clip, placed) {
+    const ops = [], ids = [], idOf = new Map();
+    let cur = nodes;
+    clip.pieces.forEach(({ node }, i) => {
+        const r = addPattern(cur, { label: freeLabel(cur, `${node.label ?? "Piece"} copy`), path: placed[i].path, fabric: node.fabric });
+        const add = r.ops.find((o) => o.node?.kind === "garment.pattern");
+        const { id: _i, outline: _o, label: _l, frame: _f, meta, ...rest } = JSON.parse(JSON.stringify(node));
+        Object.assign(add.node, rest, { grain: placed[i].grain ?? rest.grain ?? [0, 1] });
+        if (placed[i].internal?.length) add.node.internal = placed[i].internal; else delete add.node.internal;
+        if (placed[i].notches?.length) add.node.notches = placed[i].notches; else delete add.node.notches;
+        if (meta) {
+            const atelier = { ...(meta.atelier ?? {}) };
+            delete atelier.slot;
+            const m2 = { ...meta, atelier };
+            if (!Object.keys(atelier).length) delete m2.atelier;
+            if (Object.keys(m2).length) add.node.meta = m2;
+        }
+        ops.push(...r.ops); ids.push(r.id); idOf.set(node.id, r.id);
+        cur = withAdded(cur, r.ops);
+    });
+    for (const sm of clip.seams) {
+        const { id: _s, kind: _k, a, b, ...rest } = JSON.parse(JSON.stringify(sm));
+        const id = nextId(cur, "s");
+        const r = [{ op: "add", node: { id, kind: "garment.seam", a: idOf.get(a), b: idOf.get(b), ...rest } },
+            ...garmentOps(cur, listOf(cur, "patterns"), [...listOf(cur, "seams"), id])];
+        ops.push(...r);
+        cur = withAdded(cur, r);
+    }
+    return { ops, ids };
+}
+
 // `id` (optional): the new seam's id, when `nodes` lacks seams whose ids must not come back.
 export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor, id = nextId(nodes, "s") }) {
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };

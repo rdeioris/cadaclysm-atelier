@@ -55,6 +55,12 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             { key: "particle_distance", label: "Mesh", unit: "mm", type: "optnumber", value: n.particle_distance ?? null, placeholder: String(DEFAULT_MESH),
                 tip: `This piece's cloth particle distance. Empty: the garment's ${DEFAULT_MESH} mm. Finer (10 mm) where a piece gathers or creases, as a cuff; it costs about four times the vertices on that piece. Pieces sewn together must be within 2x of each other: the drape refuses a seam whose pieces differ by more.` },
             { key: "slot", label: "Slot", unit: "", type: "select", value: n.meta?.atelier?.slot ?? "none", options: slots },
+            // the transforms (spec §2): about the selection's bounds centre, through the kernel
+            { key: "rotate", label: "Rotate", unit: "deg", type: "number", value: 0, tip: "Rotate the selected pieces by this many degrees (counter-clockwise) about their bounds' centre." },
+            { key: "scale", label: "Scale", unit: "%", type: "number", value: 100, tip: "Scale the selected pieces uniformly about their bounds' centre. The seam allowances stay as they are." },
+            { key: "flipH", label: "Flip H", unit: "", type: "action", value: null },
+            { key: "flipV", label: "Flip V", unit: "", type: "action", value: null },
+            { key: "duplicate", label: "Duplicate", unit: "", type: "action", value: null },
             { key: "remove", label: "Remove piece", unit: "", type: "action", value: null },
         ];
     }
@@ -95,6 +101,10 @@ export function validate(selection, nodes, key, value) {
             if (!Array.isArray(value) || !value.length || !value.every((v) => num(v) && v >= 0)) return "allowance must be numbers of 0 mm or more";
         } else if (key === "grain") {
             if (!Array.isArray(value) || value.length !== 2 || !value.every(num) || (value[0] === 0 && value[1] === 0)) return "grain must be two numbers, not both 0";
+        } else if (key === "rotate") {
+            if (!num(value)) return "rotate takes a number of degrees";
+        } else if (key === "scale") {
+            if (!(num(value) && value > 0)) return "scale is a percentage above 0";
         } else if (key === "particle_distance") {
             if (value !== null && !(num(value) && value >= 10 && value <= 40)) return `mesh must be from 10 to 40 mm, or empty for the garment's ${DEFAULT_MESH}`;
         }
@@ -136,6 +146,40 @@ function typedAnchor(seam, end, after, drawings) {
     return anchor;
 }
 
+// The pattern fields that go through the kernel as a transform of the selected pieces (a
+// matrix from transformMatrix), or as a duplicate: not plain ops.
+export const TRANSFORM_KEYS = new Set(["rotate", "scale", "flipH", "flipV"]);
+// The selected pieces' ids: a multi-selection's, else the one.
+export const selectedIds = (selection) => (selection?.kind === "pattern" ? selection.ids ?? [selection.id] : []);
+// The union of pieces `ids`' bounds [x0, y0, x1, y1] (each drawing's kernel bounds); null for none.
+export function unionBounds(drawings, ids) {
+    const bs = ids.map((id) => drawings.get(id)?.bounds).filter(Boolean);
+    if (!bs.length) return null;
+    return [Math.min(...bs.map((b) => b[0])), Math.min(...bs.map((b) => b[1])), Math.max(...bs.map((b) => b[2])), Math.max(...bs.map((b) => b[3]))];
+}
+// The kernel's row-major 2x3 (x' = m0 x + m1 y + m2, y' = m3 x + m4 y + m5) for a transform field
+// about the centre of `bounds`: rotate by `value` degrees counter-clockwise, scale by `value` %,
+// or flip across the centre's vertical (flipH) or horizontal (flipV) line. null for no change.
+export function transformMatrix(key, value, bounds) {
+    const cx = (bounds[0] + bounds[2]) / 2, cy = (bounds[1] + bounds[3]) / 2;
+    if (key === "rotate") {
+        if (!value || value % 360 === 0) return null;
+        const a = (value * Math.PI) / 180;
+        // exact quarter turns: no 6e-17 in the matrix
+        const snap = (v) => (Math.abs(v) < 1e-15 ? 0 : Math.abs(Math.abs(v) - 1) < 1e-15 ? Math.sign(v) : v);
+        const c = snap(Math.cos(a)), s = snap(Math.sin(a));
+        return [c, -s, cx - c * cx + s * cy, s, c, cy - s * cx - c * cy];
+    }
+    if (key === "scale") {
+        if (value === 100) return null;
+        const k = value / 100;
+        return [k, 0, cx * (1 - k), 0, k, cy * (1 - k)];
+    }
+    if (key === "flipH") return [-1, 0, 2 * cx, 0, 1, 0];
+    if (key === "flipV") return [1, 0, 0, 0, -1, 2 * cy];
+    throw new Error(`no transform ${key}`);
+}
+
 // ctx: {avatarBounds, landmarks, drawings} for the slot field and a typed seam end.
 export function opsFor(selection, nodes, key, value, ctx = {}) {
     const id = selection.id;
@@ -149,6 +193,7 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
             return model.setPattern(nodes, id, slotFields(n, value, ctx.avatarBounds, d?.bounds, { landmarks: ctx.landmarks ?? null, host }));
         }
         if (key === "remove") return model.removePattern(nodes, id);
+        if (TRANSFORM_KEYS.has(key) || key === "duplicate") throw new Error(`${key} goes through the kernel (atelier.js transformSelected / duplicate)`);
         return model.setPattern(nodes, id, { [key]: value });
     }
     if (selection.kind === "seam") {

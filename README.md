@@ -67,7 +67,14 @@ The tools, with their keys where they have one:
   and the status names it). **Cut & sew** also sews the two new edges.
 - **Trace** copies an internal closed shape out as a new piece.
 - **Fillet** rounds a corner: click it, then drag or type the radius.
-- **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M).
+- **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
+  the whole piece: its internal lines, notches and grain go with the outline.
+- The pattern panel's **Rotate** (degrees, counter-clockwise), **Scale** (%), **Flip H** and
+  **Flip V** turn the selected pieces about their bounds' centre (a multi-selection's union), one
+  undo step each, the seams re-anchored to the new sides; a scale keeps the allowances.
+- **Ctrl+C** copies the selected pieces, with the seams between them, to the app's own clipboard;
+  **Ctrl+V** pastes them 30 mm along x and y as "‹label› copy" (each further paste 30 mm more),
+  off their slots; **Ctrl+D** (and the panel's **Duplicate**) copies and pastes in one step.
 
 **Slots**: Front, Back, the sides and arms; Hood left / Hood right beside the head of a form
 that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).

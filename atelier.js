@@ -13,7 +13,7 @@ import { seamColour } from "./sewing.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
 import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
-import { fieldsFor, opsFor, validate, fieldText } from "./props.js";
+import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
@@ -181,6 +181,9 @@ function commitField(f, raw) {
     const value = f.type === "text" || f.type === "colour" ? raw.trim() : parseField(f, raw);
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
+    // the pattern transforms and Duplicate go through the kernel: one batch each
+    if (selection.kind === "pattern" && TRANSFORM_KEYS.has(f.key)) { transformSelected(f.key, value, f.label); return; }
+    if (selection.kind === "pattern" && f.key === "duplicate") { duplicateSelected(); return; }
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
@@ -247,6 +250,60 @@ function renderProps() {
     if (!focusKey && tab) { const i = inputs.findIndex((x) => x.dataset.key === tab.key); focusKey = inputs[i + tab.dir]?.dataset.key ?? null; }
     const target = focusKey && inputs.find((x) => x.dataset.key === focusKey);
     if (target) { target.focus(); target.select?.(); }
+}
+
+// ---- the pattern transforms and the in-app clipboard (spec §2) -----------------------------
+const liveIds = () => selectedIds(selection).filter((id) => nodes.some((n) => n.id === id));
+// The selection after the change `s` lands (its pieces are not in the page's nodes before).
+let selectAfter = null;
+// Rotate / Scale / Flip H / Flip V of the selected pieces about their union's bounds centre: the
+// kernel moves each whole piece (transformAll), and one batch sets them with their seams
+// re-anchored. The panel's field goes back to 0 / 100 with the doc.
+async function transformSelected(key, value, label) {
+    const ids = liveIds(), b = unionBounds(drawings, ids);
+    if (!b) { status("select a piece first", true); return; }
+    const matrix = transformMatrix(key, value, b);
+    if (!matrix) { renderProps(); return; }
+    try {
+        cancelPreview();
+        const pieces = await request("transformAll", { ids, matrix });
+        const ops = ids.flatMap((id) => model.pieceOps(nodes, id, pieces[id]));
+        change("ops", { ops, message: label.toLowerCase(), reanchor: ids });
+        status(`${label}: ${ids.length === 1 ? "the piece" : `${ids.length} pieces`}`, false);
+    } catch (e) { status(`${label}: ${e?.message ?? e}`, true); renderProps(); }
+}
+// The clipboard: the copied pieces with their inner seams (model.copyPieces), and how many
+// pastes it has had (each lands another 30 mm along x and y).
+let clipboard = null, pastes = 0;
+const PASTE_STEP = 30;
+function copySelected() {
+    const ids = liveIds();
+    if (!ids.length) { status("copy: select pieces first", true); return false; }
+    clipboard = model.copyPieces(nodes, ids); pastes = 0;
+    status(`copied ${ids.length === 1 ? "1 piece" : `${ids.length} pieces`}${clipboard.seams.length ? ` and ${clipboard.seams.length} seam${clipboard.seams.length === 1 ? "" : "s"}` : ""}`, false);
+    return true;
+}
+// `clip` placed `k` steps along: the kernel moves each piece, one batch adds them (and their
+// seams), and the new pieces are selected.
+async function placeClip(clip, k, message) {
+    const d = PASTE_STEP * k;
+    try {
+        cancelPreview();
+        const placed = await request("placePieces", { pieces: clip.pieces, matrix: [1, 0, d, 0, 1, d] });
+        const r = model.pasteOps(nodes, clip, placed);
+        const s = change("ops", { ops: r.ops, message });
+        selectAfter = { seq: s, sel: { kind: "pattern", id: r.ids[0], ...(r.ids.length > 1 ? { ids: r.ids } : {}) } };
+        status(`${message}: ${r.ids.length === 1 ? "1 piece" : `${r.ids.length} pieces`}`, false);
+    } catch (e) { status(`${message}: ${e?.message ?? e}`, true); }
+}
+function pasteClipboard() {
+    if (!clipboard?.pieces.length) { status("paste: nothing copied", true); return; }
+    placeClip(clipboard, ++pastes, "paste");
+}
+// Duplicate (Ctrl+D, the panel's button): a copy and a paste in one batch.
+function duplicateSelected() {
+    if (!copySelected()) return;
+    placeClip(clipboard, ++pastes, "duplicate");
 }
 
 // The selected pieces (with their seams) or seam out of the document: one undo step.
@@ -406,6 +463,9 @@ function command(name) {
     else if (name === "simulate") post({ kind: "sim", action: "toggle" });
     else if (name === "reset") post({ kind: "sim", action: "reset" });
     else if (name === "undo" || name === "redo") afterGesture(() => { cancelPreview(); change(name); });
+    else if (name === "copy") copySelected();
+    else if (name === "paste") pasteClipboard();
+    else if (name === "duplicate") duplicateSelected();
     else if (name === "save") menu.save();
     else if (name === "open") menu.open();
     else if (name === "maximise2d") maximise("max2d");
@@ -883,7 +943,9 @@ function onDoc(m) {
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection
     const kept = survivingSelection(selection, (id) => exists({ kind: selection.kind, id }));
-    if (kept !== selection) setSelection(kept);
+    // a paste's or duplicate's new pieces, once they are in
+    if (selectAfter && m.seq >= selectAfter.seq) { const sel = selectAfter.sel; selectAfter = null; if (exists(sel)) setSelection(sel); else if (kept !== selection) setSelection(kept); }
+    else if (kept !== selection) setSelection(kept);
     else if (pointSel.length && pointCount() !== points0) { pointSel = []; post({ kind: "pointSel", indices: [] }); }
     if (fitNext && m.seq === seq) { fitNext = false; if (drawingList.length) fit2d(); }
     // A fresh tool for the new nodes, unless a gesture (and its previews) is under way.

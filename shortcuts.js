@@ -14,6 +14,10 @@ export const SHORTCUTS = {
     "Ctrl+Y": { command: "redo" },
     "Ctrl+S": { command: "save" },
     "Ctrl+O": { command: "open" },
+    // the in-app clipboard (not the system one): the selected pieces and their inner seams
+    "Ctrl+C": { command: "copy" },
+    "Ctrl+V": { command: "paste" },
+    "Ctrl+D": { command: "duplicate" },
     F2: { command: "maximise2d" },
     F3: { command: "maximise3d" },
 };
