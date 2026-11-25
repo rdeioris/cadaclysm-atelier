@@ -116,6 +116,9 @@ The tools, with their keys where they have one:
 that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).
 **Arrange** puts each unplaced piece in the next free named slot (the hood slots last); it
 never puts a piece on another one: that is the Slot select's pick.
+A placed piece stays on its slot: a 2D edit, move or transform of it re-places it in the same
+undo step (a 2D move re-centres it there; it does not move it in 3D), and the pieces on it
+follow. A new avatar re-places every placed piece, one undo step ("re-arrange on the form").
 
 ## Live drape
 
@@ -194,7 +197,6 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - A slot can name what is gone: "On <piece>" after that piece is removed, or a hood slot after
   switching to a form with no head. The piece keeps its frame and the Slot select shows the
   stale value until another slot is picked.
-- Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
 - Forms with a head: only f-M so far.
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both

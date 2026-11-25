@@ -5,6 +5,7 @@ import { reanchor, anchorOf } from "./sewing.js";
 import { arcAt } from "./view2d.js";
 import { translatePath } from "./drape.js";
 import { bucklingMigration } from "./fabrics.js";
+import { reslotOps } from "./reslot.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
@@ -71,6 +72,7 @@ export class Atelier {
         this.holeChecks = new Map(); // checkHoles: an outline shape -> its error, or null
         this.evalErrors = [];
         this.drawn = null;   // this evaluation's drawings, and the patterns that failed to draw
+        this.avatar = null;  // the avatar the slots stand round, {bounds, landmarks}: setAvatar
     }
     free() { this.dropGarment(); this.f("document_free")(this.d); }
     dropGarment() { if (this.g) { this.f("garment_free")(this.g); this.g = 0; } }
@@ -114,6 +116,9 @@ export class Atelier {
             // in the same batch; its seams re-anchored with the rest
             const sym = this.symmetryOps(prior, ops, true);
             if (sym.ops.length) { this.f("document_apply")(this.d, batch(sym.ops), null); this.evaluate(); }
+            // the placed pieces whose outline changed, back on their slots (spec §5)
+            const slots = this.slotOps([...ops, ...sym.ops]);
+            if (slots.length) { this.f("document_apply")(this.d, batch(slots), null); this.evaluate(); }
             // several pieces (a transform of a multi-selection): each one's seams in turn
             for (const rid of [...new Set([reanchorId ?? [], sym.reanchor].flat())]) {
                 if (!m.byId(this.nodes()).has(rid) || this.newProblems(before)) continue;
@@ -148,6 +153,9 @@ export class Atelier {
             // each frame rebuilds a linked partner or an unfolded whole too: both halves move live
             const sym = this.symmetryOps(p.nodes, ops, false);
             if (sym.ops.length) { full = [...ops, ...sym.ops]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
+            // and a placed piece stays on its slot while it is dragged
+            const slots = this.slotOps(full);
+            if (slots.length) { full = [...full, ...slots]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
             bad = this.newProblems(p.problems);
         } catch (e) { bad = text(e); }
         if (bad) {
@@ -164,6 +172,31 @@ export class Atelier {
         this.open = null;
         try { this.f("document_end_preview")(this.d); } finally { this.evaluate(); }
         return commit && p.user ? this.commit(p.user, "edit", reanchorId, p.problems) : { removed: [] };
+    }
+    // ---- slot frames refresh (spec §5) ----
+    // The avatar the slots are placed round ({bounds, landmarks}, as arrange.js slotFields takes
+    // them), or null: with none, nothing is re-placed.
+    setAvatar(avatar) { this.avatar = avatar ? { bounds: avatar.bounds, landmarks: avatar.landmarks ?? null } : null; }
+    // Each piece's 2D bounds as it stands now, for reslotOps (a piece that does not evaluate has none).
+    slotBounds() {
+        return { get: (id) => { try { return { bounds: this.withOutline(id, (p) => Array.from(this.f("profile_bounds")(p))) }; } catch { return undefined; } } };
+    }
+    // The ops re-placing every placed piece whose outline `ops` changed (a 2D edit, a move, a
+    // transform, a point added or removed; the document holds them applied) on its slot, and the
+    // pieces "on" a re-placed one. A custom slot keeps its frame.
+    slotOps(ops) {
+        if (!this.avatar) return [];
+        const nodes = this.nodes();
+        const only = new Set([...this.touchedPieces(ops, m.byId(nodes))].filter(([, t]) => t.outline).map(([id]) => id));
+        return only.size ? reslotOps(nodes, this.slotBounds(), this.avatar, only).ops : [];
+    }
+    // Every placed piece re-placed for the avatar now set, as one commit (one undo step), after a
+    // new avatar. Not while a preview is open. -> reslotOps' {ops, moved, skipped}
+    reslot(message = "re-arrange on the form") {
+        if (!this.avatar || this.open) return { ops: [], moved: [], skipped: [] };
+        const r = reslotOps(this.nodes(), this.slotBounds(), this.avatar);
+        if (r.ops.length) this.commit(r.ops, message);
+        return r;
     }
     // false when there is nothing to take back (New and Open start a fresh history).
     undo() {

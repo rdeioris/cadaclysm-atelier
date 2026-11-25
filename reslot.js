@@ -1,7 +1,7 @@
-// Re-slot: every placed piece put back on its named slot around the avatar now shown, after the
-// avatar changed (a built form, a new pose, another shipped form). V3's minimal stand-in for lane
-// A's A2 slot refresh: one entry point, reslotOps, called once from the worker's setAvatar tail,
-// so A2 can replace it there. Pure (no kernel), so Node tests it.
+// Re-slot (spec §5, slot frames refresh): placed pieces put back on their slots around the
+// avatar. kernel.js runs it inside every batch for the pieces whose outline the batch changed
+// (Atelier.slotOps), and for every placed piece when a new avatar loads (Atelier.reslot, the
+// worker's setAvatar: one undo step). Pure (no kernel), so Node tests it.
 import { slotFields } from "./arrange.js";
 import { setPattern } from "./model.js";
 
@@ -17,19 +17,26 @@ function same(a, b) {
     return false;
 }
 
+// A slot the refresh leaves alone: none, or a custom (gizmo) placement, which keeps its frame.
+export const fixedSlot = (slot) => !slot || slot === "none" || slot === "custom";
+
 /**
  * The ops that put every piece with a slot (meta.atelier.slot) back on it for `avatar`
- * ({bounds, landmarks}); drawings: id -> {bounds}. Pieces on a named slot first, then the
- * "on:<id>" ones after their hosts, from the hosts' new frames. A piece whose frame and wrap are
- * already there (to 1e-9) gives no op, so a re-slot on the same form changes nothing.
+ * ({bounds, landmarks}); drawings: id -> {bounds} (anything with get). Pieces on a named slot
+ * first, then the "on:<id>" ones after their hosts, from the hosts' new frames. A piece whose
+ * frame and wrap are already there (to 1e-9) gives no op, so a re-slot on the same form changes
+ * nothing. `only` (a Set of ids) re-places just those pieces, and the "on:" pieces whose host
+ * (or its host, and so on) was re-placed; null re-places every placed piece. A custom slot is
+ * never re-placed (fixedSlot).
  * -> {ops, moved: [ids], skipped: [{id, reason}]} (a hood slot on a form without a head, say).
  */
-export function reslotOps(nodes, drawings, avatar) {
+export function reslotOps(nodes, drawings, avatar, only = null) {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const patterns = (byId.get("garment")?.patterns ?? []).map((id) => byId.get(id)).filter(Boolean);
     const now = new Map(patterns.map((n) => [n.id, n]));        // each piece as it will stand
-    const ops = [], moved = [], skipped = [];
+    const ops = [], moved = [], skipped = [], placed = new Set();
     const place = (n, slot, host = null) => {
+        placed.add(n.id);
         const d = drawings.get(n.id);
         if (!d?.bounds) { skipped.push({ id: n.id, reason: "no outline" }); return; }
         let f;
@@ -43,8 +50,8 @@ export function reslotOps(nodes, drawings, avatar) {
     const onSlot = [];
     for (const n of patterns) {
         const slot = n.meta?.atelier?.slot;
-        if (!slot || slot === "none") continue;
-        if (slot.startsWith("on:")) onSlot.push(n); else place(n, slot);
+        if (fixedSlot(slot)) continue;
+        if (slot.startsWith("on:")) onSlot.push(n); else if (!only || only.has(n.id)) place(n, slot);
     }
     // "on:" pieces once their host stands: a host may itself sit on another piece
     for (let pass = 0; onSlot.length && pass <= patterns.length; pass++) {
@@ -53,6 +60,7 @@ export function reslotOps(nodes, drawings, avatar) {
             const host = now.get(hostId);
             if (host && onSlot.some((x) => x.id === hostId)) continue;     // its host is not placed yet
             onSlot.splice(i--, 1);
+            if (only && !only.has(n.id) && !placed.has(hostId)) continue;    // neither it nor its host moved
             if (!host) { skipped.push({ id: n.id, reason: `no piece ${hostId}` }); continue; }
             place(n, n.meta.atelier.slot, host);
         }

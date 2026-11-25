@@ -23,7 +23,6 @@ import { filmCommand } from "./film.js";
 import { valueAt, recolourMeshes, BurstCache } from "./fitmap.js";
 import { TapeMeasures } from "./tape3d.js";
 import { concatParts, positionsBox, specKey } from "./dressform.js";
-import { reslotOps } from "./reslot.js";
 
 const ready = (async () => {
     const module = await load();
@@ -467,13 +466,14 @@ async function loadAvatar(bytes, name, form = null, format = "step") {
     setAvatar({ id, collider, bounds: b, name, landmarks: form, dispose: () => scene.free() });
 }
 
-// The avatar shown, whatever made it (a STEP file, a shipped form, a form built from
+// The avatar shown, whatever made it (a STEP or STL file, a shipped form, a form built from
 // measurements): the old one removed and disposed, the cloth told (the drape goes stale), the
-// page told, then the placed pieces re-slotted on it (reslot.js: the one call; lane A's A2
-// refresh may replace it).
+// page told, the kernel facade told (every later batch re-places the pieces it edits on it), then
+// every placed piece re-placed on it in one undo step (kernel.js reslot).
 function setAvatar({ id, collider, bounds, name, landmarks = null, dispose = null, formKey = null, extra = {} }) {
     if (avatar) { viewer.remove(avatar.id); avatar.dispose?.(); }
     avatar = { id, bounds, name, landmarks, dispose, formKey };
+    atelier?.setAvatar({ bounds, landmarks });
     shownFormKey = formKey;
     avatarCollider = collider;
     try {
@@ -488,10 +488,9 @@ function setAvatar({ id, collider, bounds, name, landmarks = null, dispose = nul
 
 function reslotPieces() {
     if (!atelier || !avatar || atelier.previewing) return;
-    const r = reslotOps(atelier.nodes(), new Map(atelier.drawings().map((d) => [d.id, d])), { bounds: avatar.bounds, landmarks: avatar.landmarks });
-    if (!r.ops.length) return;
     try {
-        atelier.apply(r.ops, "re-arrange on the form");
+        const r = atelier.reslot("re-arrange on the form");
+        if (!r.ops.length) return;
         changed();
         post({ kind: "status", text: `re-arranged ${r.moved.length} piece${r.moved.length === 1 ? "" : "s"} on the form` });
     } catch (e) { post({ kind: "error", text: `re-arrange: ${e.message ?? e}` }); }
