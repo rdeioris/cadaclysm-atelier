@@ -22,6 +22,7 @@
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
+//     ATELIER_SOFTWARE=1 ...                             # no GPU: SwiftShader WebGL2, the CPU cloth
 //     ATELIER_FPS=1 ...                                  # also the drape's rate over frames 60..180
 //                                                        # (with ATELIER_SHOT: the picture at frame 180)
 //     node test/browser.mjs --chrome <path>              # (or the CHROME variable)
@@ -102,6 +103,8 @@ async function launch(chrome, profile) {
     const flags = [`--user-data-dir=${profile}`, "--remote-debugging-port=0", `--window-size=${W},${H}`, "--no-first-run",
         "--no-default-browser-check", "--disable-extensions", "--enable-unsafe-webgpu", "--hide-scrollbars", "about:blank"];
     if (!flag("--headed")) flags.unshift("--headless=new");
+    // ATELIER_SOFTWARE=1: no GPU at all (SwiftShader's WebGL2, so the CPU cloth), for a machine whose GPU is busy
+    if (process.env.ATELIER_SOFTWARE) flags.push("--disable-gpu", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--disable-features=WebGPU");
     const child = spawn(chrome, flags, { stdio: ["ignore", "ignore", "pipe"] });
     // Chrome's stderr, kept to print if the launch fails
     let stderr = "";
@@ -592,6 +595,45 @@ async function check(cdp, base) {
             await tryOnCloth("pin", click, (t) => t === "pinned");
             await until("the pin counted", async () => (await evaluate(`document.body.dataset.sim`)) === "running", 10000);
             ok("pinned a point of the cloth");
+
+            // the pin is saved on its piece (pattern space); Freeze a piece and back, live: no re-mesh, no
+            // rebuild, the frames go on; a Simulation panel change applied live and saved in sim_options
+            {
+                const pinnedPieces = (await saveNow()).nodes.filter((n) => n.kind === "garment.pattern" && n.pins?.length);
+                if (pinnedPieces.length !== 1 || pinnedPieces[0].pins.length !== 1) throw new Error(`the saved pins: ${JSON.stringify(pinnedPieces.map((n) => [n.id, n.pins]))}`);
+                const gen0 = Number(await evaluate(`document.body.dataset.meshGen`));
+                const live = async (what) => {
+                    const f = await frameNo();
+                    await until(`frames after ${what}`, async () => (await frameNo()) >= f + 2, 60000);
+                    if ((await simState()) !== "running") throw new Error(`${what}: the cloth stopped (${await statusText()})`);
+                    if (/Simulate rebuilds/.test(await health())) throw new Error(`${what}: the cloth went stale: ${await health()}`);
+                    if (Number(await evaluate(`document.body.dataset.meshGen`)) !== gen0) throw new Error(`${what}: re-meshed`);
+                    await noStatusError();
+                };
+                await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
+                await until("the Freeze field", () => evaluate(`!!${field("frozen")}`), 30000);
+                await setField("frozen", "true");
+                await until("frozen saved", async () => (await saveNow()).nodes.find((n) => n.kind === "garment.pattern").frozen === true, 30000);
+                await live("Freeze");
+                await setField("frozen", "false");
+                await until("unfrozen saved", async () => (await saveNow()).nodes.find((n) => n.kind === "garment.pattern").frozen === undefined, 30000);
+                await live("unfreeze");
+                await evaluate(`document.getElementById("simpanel-details").open = true`);
+                const option = (name) => `document.querySelector('#simpanel [data-option="${name}"]')`;
+                if ((await evaluate(`${option("gravity.y")}.value`)) !== "-9.8") throw new Error(`the panel's gravity: ${await evaluate(`${option("gravity.y")}.value`)}`);
+                await evaluate(`(() => { const e = ${option("damping")}; e.value = "0.02"; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+                await until("damping saved", async () => (await saveNow()).nodes.find((n) => n.id === "garment").sim_options?.damping === 0.02, 30000);
+                await live("the damping");
+                // a bad value refused, the field put back
+                await evaluate(`(() => { const e = ${option("substeps")}; e.value = "2.5"; e.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+                if (!/whole number/.test((await statusError()) ?? "")) throw new Error("a fractional substeps was not refused");
+                if ((await evaluate(`${option("substeps")}.value`)) !== "30") throw new Error("the refused substeps stayed in the field");
+                await evaluate(`document.getElementById("sim-defaults").click()`);
+                await until("the defaults back", async () => (await saveNow()).nodes.find((n) => n.id === "garment").sim_options === undefined, 30000);
+                await live("the defaults");
+                failIfErrors();
+                ok("pin saved on its piece; Freeze and unfreeze live; panel damping live and saved, a bad value refused, defaults back");
+            }
 
             // drag: the Drag tool, a press on the cloth moved 80 px right; the frames go on
             await evaluate(`document.querySelector('[data-tool3d=drag]').click()`);
@@ -1364,6 +1406,38 @@ async function check(cdp, base) {
                 await key("Escape", "Escape", 27);
                 failIfErrors();
                 ok("cut: one piece became two; cut & sew: two more and one seam joining them; a miss refused");
+
+                // ---- the simulation's 2D tools: a Fold line across the right half, its angle in the properties;
+                // a Tack from the right half to a left piece, shown, selected, deleted ----
+                await selectPiece(rightHalf);
+                await evaluate(`document.querySelector('#tools2d [data-tool=fold]').click()`);
+                await click(screenOf([c0[0] + 80, c0[1] + 8]));
+                await click(screenOf([c0[0] + 80, c0[1] + 42]));
+                await key("Enter", "Enter", 13);
+                const foldOf = async () => (await saveJson()).nodes.find((n) => n.id === rightHalf).internal?.find((l) => l.kind === "fold");
+                await until("the fold line", foldOf, 30000);
+                await until("the fold line selected", () => evaluate(`/Internal line on/.test(document.querySelector("#props h3")?.textContent ?? "")`), 30000);
+                await setField("angle", "90");
+                await until("the fold angle", async () => (await foldOf())?.angle === 90, 30000);
+                await noStatusError();
+                ok("Fold line: drawn across a piece, selected, its angle set to 90");
+                const tacks = async () => (await saveJson()).nodes.filter((n) => n.kind === "garment.tack");
+                const items0 = Number(await evaluate(`document.body.dataset.items2d`));
+                await evaluate(`document.querySelector('#tools2d [data-tool=tack]').click()`);
+                await click(screenOf([c0[0] + 62, c0[1] + 12]));
+                await click(screenOf([c0[0] + 20, c0[1] + 12]));
+                await until("the tack", async () => (await tacks()).length === 1, 30000);
+                const [tk] = await tacks();
+                if (tk.a !== rightHalf || tk.b === rightHalf || Math.abs(tk.a_at[0] - c0[0] - 62) > 3) throw new Error(`the tack: ${JSON.stringify(tk)}`);
+                await until("the tack drawn", async () => Number(await evaluate(`document.body.dataset.items2d`)) >= items0 + 2, 30000);
+                await until("the tack selected", () => evaluate(`/^Tack/.test(document.querySelector("#props h3")?.textContent ?? "")`), 30000);
+                await key("Escape", "Escape", 27);
+                await key("Delete", "Delete", 46);
+                await until("the tack deleted", async () => (await tacks()).length === 0, 30000);
+                if ((await saveJson()).nodes.find((n) => n.id === "garment").tacks !== undefined) throw new Error("the garment kept an empty tacks list");
+                await noStatusError();
+                failIfErrors();
+                ok("Tack: two clicks on two pieces, drawn and selected, Delete removes it");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
