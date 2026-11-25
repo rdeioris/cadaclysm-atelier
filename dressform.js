@@ -226,6 +226,8 @@ export function buildForm(k, spec, cache = null) {
  */
 export function measureGirths(k, bodyMesh, g, asked) {
     const out = {};
+    // A package older than the tape measures (the 0.16 release) builds the form without them.
+    if (typeof k.cadaclysm_blacksmith_cloth_tape_girth !== "function") return out;
     for (const key of ["bust", "waist", "hip"]) {
         const [y, , b, zc] = g.sections[LANDMARK[key]];
         const pts = k.cadaclysm_blacksmith_cloth_tape_girth(bodyMesh.positions, bodyMesh.indices,
