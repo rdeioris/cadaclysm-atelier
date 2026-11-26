@@ -620,6 +620,9 @@ async function check(cdp, base) {
                 ok(`darts and pleats simulate: ${await healthNow()}`);
                 await evaluate(`document.getElementById("sim-reset").click()`);
                 await until("reset", async () => (await simNow()) === "off", 30000);
+                // an empty document after: placed pieces would add a re-arrange step to what follows (V3's undo)
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty document after the darts", async () => (await patternCount()) === 0, 30000);
                 failIfErrors();
             };
             if (process.env.ATELIER_S2_ONLY === "1") { await s2Block(); failIfErrors(); ok("S2 block alone"); return; }
