@@ -37,6 +37,11 @@
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
 //     ATELIER_FPS=1 ...                                  # also the drape's rate over frames 60..180
 //                                                        # (with ATELIER_SHOT: the picture at frame 180)
+//     ATELIER_MATERIALS=1 ...                            # only the V2 block (materials), on the sample: the fabric
+//                                                        # to denim, a chest print (a PNG made here), Simulate, the
+//                                                        # cloth's textures in, drape ATELIER_DRAPE_FRAMES
+//     ATELIER_SHOT_MATERIALS=m.png ATELIER_SHOT_MATERIALS_MAP=s.png ATELIER_SHOT_MATERIALS_CLOSE=c.png
+//                                                        # its shots: the drape, with the Strain map, 3D close up
 //     node test/browser.mjs --chrome <path>              # (or the CHROME variable)
 //     node test/browser.mjs --headed                     # watch it
 //
@@ -47,6 +52,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { zlibSync } from "fflate";
 import { loadKernel } from "./package.mjs";
 import { stlOf } from "./stl.mjs";
 import { Atelier } from "../kernel.js";
@@ -80,6 +86,29 @@ const freePort = () => new Promise((ok, fail) => {
     s.listen(0, "127.0.0.1", () => { const { port } = s.address(); s.close(() => ok(port)); });
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A small RGBA PNG for the print (no image files in the test): a yellow "F" (it shows a mirror or a
+// turn) and a red disc on a transparent ground, 160 x 120.
+function testPrintPng() {
+    const w = 160, h = 120, rows = Buffer.alloc((w * 4 + 1) * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const f = (x >= 20 && x < 44 && y >= 15 && y < 105) || (x >= 20 && x < 92 && y >= 15 && y < 37) || (x >= 20 && x < 76 && y >= 52 && y < 72);
+        const disc = Math.hypot(x - 122, y - 76) < 28;
+        const c = f ? [250, 200, 20, 255] : disc ? [210, 30, 40, 255] : [0, 0, 0, 0];
+        rows.set(c, y * (w * 4 + 1) + 1 + x * 4);
+    }
+    const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+    const crc = (b) => { let c = 0xffffffff; for (const v of b) c = crcTable[(c ^ v) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+    const chunk = (type, data) => {
+        const td = Buffer.concat([Buffer.from(type, "latin1"), Buffer.from(data)]);
+        const len = Buffer.alloc(4), sum = Buffer.alloc(4);
+        len.writeUInt32BE(data.length); sum.writeUInt32BE(crc(td));
+        return Buffer.concat([len, td, sum]);
+    };
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr.set([8, 6, 0, 0, 0], 8);
+    return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", zlibSync(rows)), chunk("IEND", Buffer.alloc(0))]);
+}
 async function until(what, fn, ms = 60000) {
     const end = Date.now() + ms;
     for (;;) {
@@ -486,6 +515,101 @@ async function check(cdp, base) {
                 await until("the T-shirt", async () => (await patternCount()) === 4, 30000);
                 await until("the sample's Front in 3D", () => evaluate(`!!document.getElementById("view").dataset.rect3d`), 30000);
                 await a2Block(); failIfErrors(); ok("A2 block alone"); return;
+            }
+            // V2 materials (ATELIER_MATERIALS=1, alone): on the sample, the fabric's weave to denim, a
+            // chest print on the Front from a PNG made here, Simulate until the cloth shows the textures,
+            // drape ATELIER_DRAPE_FRAMES, shoot; then the Strain map (its colours only), then a 3D close up
+            if (process.env.ATELIER_MATERIALS === "1") {
+                const shoot = async (file, what) => {
+                    if (!file) return;
+                    await sleep(500); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(file, Buffer.from(data, "base64"));
+                    ok(`screenshot ${file}: ${what}`);
+                };
+                const mSim = () => evaluate(`document.body.dataset.sim ?? "off"`);
+                const mHealth = () => evaluate(`document.getElementById("health").textContent`);
+                const mFrame = async () => Number(/frame (\d+)/.exec(await mHealth())?.[1] ?? -1);
+                const mStatus = () => evaluate(`document.getElementById("status-text").textContent`);
+                await evaluate(`document.getElementById("menu-sample").click()`);
+                await until("the T-shirt", async () => (await patternCount()) === 4 && (await seamCount()) === 10, 30000);
+                await until("the sample drawn in 2D", async () => Number(await evaluate(`document.body.dataset.items2d ?? 0`)) >= 4 * 6, 30000);
+                // 1. the fabric to denim: the Material section grows the library weave's fields
+                await evaluate(`document.querySelector('#browser-fabrics li[data-kind=fabric]').click()`);
+                await until("the Weave select", () => evaluate(`!!${field("material.weave")}`), 30000);
+                await setField("material.weave", "denim");
+                await until("the denim material", () => evaluate(`${field("material.weave")}?.value === "denim" && !!${field("material.tile")}`), 30000);
+                const sheen = await evaluate(`${field("material.sheen")}?.value`);
+                await noStatusError();
+                failIfErrors();
+                ok(`fabric: weave denim (sheen ${sheen})`);
+                // 2. the Front's chest in 2D: hovered over a grid, the Front's hits' extent
+                const frontId = await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === "Front").dataset.id`);
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const [bx, by, bw, bh] = await windowBox("rect2d");
+                const hits = [];
+                for (let j = 1; j < 14; j++) for (let i = 1; i < 20; i++) {
+                    const p = [bx + (bw * i) / 20, by + (bh * j) / 14];
+                    if ((await hoverInfo(p)).hover2d === frontId) hits.push(p);
+                }
+                if (hits.length < 4) throw new Error(`the Front is hovered at ${hits.length} grid points`);
+                const ys = hits.map((p) => p[1]), x0 = Math.min(...hits.map((p) => p[0])), x1 = Math.max(...hits.map((p) => p[0]));
+                const chest = [(x0 + x1) / 2, Math.min(...ys) + 0.3 * (Math.max(...ys) - Math.min(...ys))];
+                if ((await hoverInfo(chest)).hover2d !== frontId) throw new Error(`the chest point ${chest} is not on the Front`);
+                // 3. Print image…: the PNG picked, then a click on the Front's chest places it
+                const png = join(downloads, "atelier-test-print.png");
+                writeFileSync(png, testPrintPng());
+                await pickInto("print-image", png, "image/png");
+                await until("the image picked", async () => /click on a piece to place it/.test(await mStatus()) || null, 30000);
+                await click(chest);
+                await until("the print placed", async () => /^placed /.test(await mStatus()) || null, 30000);
+                const placed = await mStatus();
+                await key("Escape", "Escape", 27);
+                await noStatusError();
+                failIfErrors();
+                ok(`print: ${placed}`);
+                // 4. Simulate: the cloth's textures in, then the drape
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("the cloth running", async () => (await mSim()) === "running", 60000);
+                const textures = await until("the cloth's textures", async () => { const n = Number(await evaluate(`document.body.dataset.lookTextures ?? 0`)); return n > 0 ? n : null; }, 60000);
+                const target = Number(process.env.ATELIER_DRAPE_FRAMES ?? 4);
+                await until(`frame ${target}`, async () => (await mFrame()) >= target || (await mSim()) !== "running", Math.max(60000, target * 2000));
+                if ((await mSim()) !== "running") throw new Error(`the drape stopped: ${await mStatus()}`);
+                failIfErrors();
+                ok(`the denim drape with a print: ${textures} textures; ${await mHealth()}`);
+                await shoot(process.env.ATELIER_SHOT_MATERIALS, `denim + print, engine ${engine}, frame ${await mFrame()}`);
+                // 5. the Strain map: its colours, no weave or print; off again: the textures back
+                await evaluate(`(() => { const s = document.getElementById("map-select"); s.value = "strain"; s.dispatchEvent(new Event("change")); })()`);
+                await shoot(process.env.ATELIER_SHOT_MATERIALS_MAP, `the Strain map, engine ${engine}`);
+                await evaluate(`(() => { const s = document.getElementById("map-select"); s.value = "off"; s.dispatchEvent(new Event("change")); })()`);
+                failIfErrors();
+                ok("the strain map on and off over the materials");
+                // 6. a close up: the 3D window maximised, the wheel in on the chest
+                if (process.env.ATELIER_SHOT_MATERIALS_CLOSE) {
+                    await evaluate(`document.activeElement?.blur()`);
+                    await key("F3", "F3", 114);                // maximise the 3D window
+                    await until("the 3D window maximised", () => evaluate(`document.getElementById("split").classList.contains("max3d")`), 10000);
+                    await sleep(500); await frames();
+                    const [cx, cy, cw, ch] = await windowBox("rect3d");
+                    const at = [cx + cw * Number(process.env.ATELIER_CLOSE_X ?? 0.5), cy + ch * Number(process.env.ATELIER_CLOSE_Y ?? 0.3)];
+                    // a right drag (the pan) brings the chest to the window's centre: the wheel zooms on the centre
+                    const mid = [cx + cw / 2, cy + ch / 2];
+                    const right = (type, [x, y]) => send("Input.dispatchMouseEvent", { type, x, y, button: "right", buttons: type === "mouseReleased" ? 0 : 2, clickCount: 1 });
+                    await mouse("mouseMoved", at[0], at[1], { buttons: 0 });
+                    await right("mousePressed", at);
+                    for (let i = 1; i <= 10; i++) { await right("mouseMoved", [at[0] + ((mid[0] - at[0]) * i) / 10, at[1] + ((mid[1] - at[1]) * i) / 10]); await sleep(30); }
+                    await right("mouseReleased", mid);
+                    for (let i = 0; i < Number(process.env.ATELIER_CLOSE_WHEEL ?? 10); i++) {
+                        await send("Input.dispatchMouseEvent", { type: "mouseWheel", x: mid[0], y: mid[1], deltaX: 0, deltaY: -120 });
+                        await sleep(80);
+                    }
+                    await sleep(800);
+                    await shoot(process.env.ATELIER_SHOT_MATERIALS_CLOSE, `3D close up, engine ${engine}`);
+                }
+                await noStatusError();
+                failIfErrors();
+                ok("materials block alone");
+                return;
             }
             const robots = await evaluate(`document.querySelector('meta[name=robots]')?.content`);
             if (robots !== "noindex") throw new Error(`robots meta is ${robots}`);
