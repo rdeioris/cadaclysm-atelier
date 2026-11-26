@@ -21,6 +21,7 @@ import { issuesLabel, isEaseNote } from "./kernel.js";
 import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
 import { TapeTool, cmText } from "./tape3d.js";
 import { CUSTOM, draftFrom, bodyCommit, isBodyKey } from "./bodypanel.js";
+import { loadLibrary, imageSlotOf, IMAGE_ACCEPT } from "./materials.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -39,6 +40,10 @@ let formLoading = null;       // the form the Form select asked for, until it la
 let bodyDraft = null;         // the Body panel's draft (bodypanel.js) while "Custom form…" is open
 let formAskedAt = null;       // when Build or Apply was hit: the browser test reads the time to the form shown
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
+// the fabric Material section's (materials.js): the weave library, the document's images (no data)
+const looks = { weaves: null, images: {} };
+loadLibrary((u) => fetch(u).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)))))
+    .then((lib) => { looks.weaves = lib; renderProps(); }).catch((e) => status(`the weave library: ${e?.message ?? e}`, true));
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
 let toolKeep = {};            // what a tool keeps while it stays armed (the Ruler's measures): fresh tools share it
@@ -202,8 +207,10 @@ function commitField(f, raw) {
     if (selection.kind === "pattern" && f.key === "duplicate") { duplicateSelected(); return; }
     // Fold back goes through the kernel (spec §6): the worker's batch, its status names dropped seams
     if (selection.kind === "pattern" && f.key === "foldBack") { cancelPreview(); change("foldBack", { id: selection.id }); return; }
+    // a fabric map's image: the file, imported by the worker (materials.js importImage), then one batch
+    if (selection.kind === "fabric" && imageSlotOf(f.key)) { pickMaterialImage(selection.id, imageSlotOf(f.key)); return; }
     try {
-        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
+        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings, weaves: looks.weaves });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
         status(f.type === "action" ? f.label : `${f.label}: set`);
         // a notch's kind or depth is also the Notch tool's next; a removed notch leaves its piece selected
@@ -215,6 +222,20 @@ function commitField(f, raw) {
         // a duplicated fabric is the one selected next, for its label and colour
         if (f.key === "duplicate" && ops[0]?.op === "add") { pickedFabric = ops[0].node.id; setSelection({ kind: "fabric", id: ops[0].node.id }); }
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
+}
+// An image file for fabric `id`'s map `slot`: stored in the document and named by the map, one batch.
+function pickMaterialImage(id, slot) {
+    pickFile(IMAGE_ACCEPT, async (f) => {
+        const r = await importImage(f);
+        const sel = { kind: "fabric", id };
+        change("ops", { ops: [r.op, ...opsFor(sel, nodes, `material.${slot}.image`, r.id, { weaves: looks.weaves })], message: `${slot} image` });
+        status(`${slot}: ${r.name} (${r.width} × ${r.height})`);
+    });
+}
+// A picked image file through the worker: downscaled, re-encoded, hashed. -> { id, op, name, width, height }
+async function importImage(f) {
+    const bytes = await f.arrayBuffer();
+    return request("importImage", { bytes, mime: f.type, name: f.name });
 }
 // "Custom form…": the Body panel, its draft from the form shown (or chart f-M at Rest)
 function openBody() {
@@ -274,7 +295,7 @@ function renderProps() {
     const tab = tabFrom && performance.now() - tabFrom.t < 500 ? tabFrom : null;
     tabFrom = null;
     const n = selection && selection.kind !== "avatar" ? nodes.find((x) => x.id === selection.id) : null;
-    const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
+    const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar, looks) : [];
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
     h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
@@ -1108,6 +1129,7 @@ const internalSig = () => (selection?.kind === "pattern" ? (nodes.find((n) => n.
 function onDoc(m) {
     const points0 = pointCount(), internal0 = internalSig();
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
+    looks.images = m.images ?? {};
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection

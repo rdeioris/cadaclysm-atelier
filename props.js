@@ -4,6 +4,7 @@ import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
+import { materialFields, validateMaterial, materialOps, isMaterialKey } from "./materials.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 // The notch kinds the kernel draws (spec §5), in its order, as the panel names them.
@@ -31,7 +32,9 @@ export function fieldText(f) {
 
 // -> [{key, label, unit, type: "text"|"number"|"optnumber"|"select"|"numbers"|"colour"|"readonly"|"action", value, options?, placeholder?}]
 // An "optnumber" may be empty (value null): the default its placeholder shows.
-export function fieldsFor(selection, nodes, drawings, avatar = null) {
+// `looks` ({ weaves, images }): the weave library and the document's images, for a fabric's
+// Material section (materials.js).
+export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {}) {
     if (!selection) return [];
     if (selection.kind === "avatar") {
         if (!avatar) return [];
@@ -107,6 +110,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
                 ...(DISPLAY[key].tip ? { tip: DISPLAY[key].tip } : {}) })),
             { key: "preset", label: "Apply preset", unit: "", type: "select", value: "", options: PRESETS.map((p) => ({ value: p.slug, label: p.label })) },
             ...(matched ? [{ key: "source", label: matched.estimated ? "Source (ESTIMATE)" : "Source", unit: "", type: "readonly", value: presetNote(matched) }] : []),
+            ...materialFields(n, looks),
         ];
     }
     return [];
@@ -133,6 +137,7 @@ export function validate(selection, nodes, key, value) {
             if (value !== null && !(num(value) && value >= 10 && value <= 40)) return `mesh must be from 10 to 40 mm, or empty for the garment's ${DEFAULT_MESH}`;
         }
     } else if (selection.kind === "fabric") {
+        if (isMaterialKey(key)) return validateMaterial(key, value);
         if (key === "label") {
             if (typeof value !== "string" || !value.trim()) return "a label cannot be empty";
             if (nodes.some((n) => n.kind === "garment.fabric" && n.id !== selection.id && n.label === value)) return `another fabric is already called "${value}"`;
@@ -208,7 +213,8 @@ export function transformMatrix(key, value, bounds) {
     throw new Error(`no transform ${key}`);
 }
 
-// ctx: {avatarBounds, landmarks, drawings} for the slot field and a typed seam end.
+// ctx: {avatarBounds, landmarks, drawings} for the slot field and a typed seam end; weaves (the
+// library) for a fabric's Material section.
 export function opsFor(selection, nodes, key, value, ctx = {}) {
     const id = selection.id;
     if (selection.kind === "pattern") {
@@ -246,6 +252,7 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         return [{ op: "set", id, fields }];
     }
     if (selection.kind === "fabric") {
+        if (isMaterialKey(key)) return materialOps(nodes, id, key, value, ctx.weaves ?? null);
         if (key === "label") return [{ op: "set", id, fields: { label: value } }];
         if (key === "preset") return model.setFabric(nodes, id, presetParams(value));
         if (key === "duplicate") return model.duplicateFabric(nodes, id).ops;

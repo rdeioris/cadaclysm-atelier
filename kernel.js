@@ -177,6 +177,8 @@ export class Atelier {
     // dress form's spec (dressform.js normaliseSpec), or null.
     atelierMeta() { const t = this.f("document_meta")(this.d, "atelier"); return t ? JSON.parse(t) ?? {} : {}; }
     formMeta() { return this.atelierMeta().form ?? null; }
+    // Any app key's document meta (`atelier.image.<id>`: a user image, materials.js), parsed; null when absent.
+    meta(app) { const t = this.f("document_meta")(this.d, app); return t ? JSON.parse(t) ?? null : null; }
     // The op that sets the form (null removes it). The op replaces the app's whole value, so the
     // other keys are carried; with nothing left the meta is dropped.
     formMetaOp(spec) {

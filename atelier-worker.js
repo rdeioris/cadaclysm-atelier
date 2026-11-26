@@ -24,6 +24,7 @@ import { valueAt, recolourMeshes, BurstCache } from "./fitmap.js";
 import { TapeMeasures } from "./tape3d.js";
 import { concatParts, positionsBox, specKey } from "./dressform.js";
 import { reslotOps } from "./reslot.js";
+import { importImage, imageIndex, imageReader } from "./materials.js";
 
 const ready = (async () => {
     const module = await load();
@@ -93,7 +94,9 @@ async function createViewer(canvas) {
 }
 
 const post = (msg) => self.postMessage(msg);
-const doc = () => ({ nodes: atelier.nodes(), drawings: atelier.drawings().map(forPage), seams: atelier.seams(), issues: atelier.issues() });
+// the user images (materials.js), each read from the document's meta once
+const readImage = imageReader((app) => atelier.meta(app));
+const doc = () => ({ nodes: atelier.nodes(), drawings: atelier.drawings().map(forPage), seams: atelier.seams(), issues: atelier.issues(), images: imageIndex(atelier.nodes(), readImage) });
 
 const selected = (kind, id) => isSelected(selection, kind, id);
 
@@ -663,6 +666,12 @@ self.onmessage = async ({ data }) => {
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
             case "viewStats": answer(data, () => viewer.stats()); break;
+            // an image file for a fabric map or a print (materials.js): its id and the op storing it
+            case "importImage": {
+                try { post({ kind: "path", reqId: data.reqId, path: await importImage(new Uint8Array(data.bytes), data.mime, data.name) }); }
+                catch (e) { post({ kind: "error", reqId: data.reqId, text: `image: ${e?.message ?? e}` }); }
+                break;
+            }
             // the cloth's sim vertex positions (xyz, mm) as they stand, read back from the GPU (film.js
             // clothPositions); null with no GPU cloth
             case "clothPositions": {
