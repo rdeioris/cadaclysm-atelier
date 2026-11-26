@@ -1104,6 +1104,8 @@ worker.onmessage = ({ data: m }) => {
             if (selection?.kind === "avatar") renderProps();
             break;
         case "status": status(m.text); break;
+        // the cloth's materials as last drawn: how many textures (the browser test waits on it)
+        case "look": document.body.dataset.lookTextures = String(m.textures); break;
         case "formBuilding": status("building the form…"); break;
         case "formFailed": formAskedAt = null; break;
         case "sim": onSim(m); break;

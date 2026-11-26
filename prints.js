@@ -300,7 +300,5 @@ export function printTool(ctx) {
             if (k === "Escape") { keep.print = null; keep.printNext = null; return { overlay: { lines: [] }, done: true }; }
             return {};
         },
-        // the selected print's handles, drawn again after a document change
-        overlayNow() { return overlay(selected()); },
     };
 }
