@@ -9,6 +9,7 @@ import { makeGroupTool } from "./seamgroup.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 import { printTool } from "./prints.js";
+import { SIM_TOOLS, SIM_SNAPPING } from "./simtools.js";
 import { gradingOf } from "./grading.js";
 
 export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
@@ -26,7 +27,8 @@ export function baseOnlyText(nodes) {
     return t && t.current !== t.base ? `edit the shape in the base size (${t.base})` : null;
 }
 const outlineOf = (ctx, id) => nodeOf(ctx, `${id}_outline`)?.path;
-const selectedId = (ctx) => (ctx.selection?.kind === "pattern" ? ctx.selection.id : null);
+// an internal line selected (its simulation properties) keeps its piece the one being edited
+const selectedId = (ctx) => (ctx.selection?.kind === "pattern" || ctx.selection?.kind === "internal" ? ctx.selection.id : null);
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const add = (p, d) => [p[0] + d[0], p[1] + d[1]];
 const line = (pts) => ({ lines: [pts.map((p) => [...p])] });
@@ -363,7 +365,7 @@ const POINT_SNAPS = new Set(["end", "vertex", "point", "intersection"]);
 
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
-    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler"]);
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler", ...SIM_SNAPPING]);
 
 const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
@@ -474,6 +476,8 @@ const TOOLS = {
                 // a notch's mark selects that notch (its panel: kind, depth, at, remove)
                 if (h?.kind === "notch") return { select: { kind: "notch", id: h.id, index: h.index } };
                 if (h?.kind === "pattern" || (h?.kind === "internal" && h.id !== selectedId(ctx))) return { select: { kind: "pattern", id: h.id } };
+                // a tack: its own properties (the simulation's, simprops.js)
+                if (h?.kind === "tack") return { select: { kind: "tack", id: h.id } };
                 // an internal line's point or handle (drawn on the selected piece only, spec §4)
                 if (h && (h.kind === "ipoint" || h.kind === "ihandle")) {
                     const internal = nodeOf(ctx, h.id)?.internal;
@@ -516,14 +520,21 @@ const TOOLS = {
             // internal line of the selected piece, inserts a point there (spec §3: the kernel's).
             up(w, h0, mods) {
                 if (box.on) return box.end(mods).then((r) => ({ pointSel: r?.indices ?? [], ipointSel: [], overlay: { lines: [] } }), () => ({ overlay: { lines: [] } }));
-                const h = hit; hit = null;
+                // a drag commits the preview at the release point: moves still in flight when the
+                // pointer was let go are dropped (the page keeps one at a time), so the last one
+                // previewed may be short of it
+                const h = hit, last = h && sent && !locked ? preview(w) : null;
+                hit = null;
                 if (mods?.dblclick && !sent) {
                     const at = h0 ?? h;
                     if (at?.kind === "edge") return { point: { id: at.id, op: "insert", s: at.s }, status: "point added", error: false };
                     if (at?.kind === "internal" && at.id === selectedId(ctx)) return { point: { id: at.id, line: at.index, op: "insert", at: [...w] }, status: "point added", error: false };
                 }
+                // a plain click on an internal line of the piece being edited selects that line (its
+                // simulation properties, simprops.js); a double click still inserts a point
+                if (!h && !mods?.dblclick && h0?.kind === "internal" && h0.id === selectedId(ctx)) return { select: { kind: "internal", id: h0.id, index: h0.index } };
                 if (!h) return {};
-                if (sent) return locked ? {} : { endPreview: true };
+                if (sent) return locked ? {} : { ...last, endPreview: true };
                 if (h.kind === "point") {
                     const now = new Set(mods?.shift ? chosen : []);
                     if (mods?.shift && now.has(h.index)) now.delete(h.index); else now.add(h.index);
@@ -855,6 +866,7 @@ function piecesOnly(t) {
 }
 export function makeTool(name, ctx) {
     if (name === "segment" || name === "free") return piecesOnly(makeSewingTool(name, ctx));
+    if (Object.hasOwn(SIM_TOOLS, name)) return piecesOnly(SIM_TOOLS[name](ctx));
     if (name === "sewmn") return piecesOnly(makeGroupTool(ctx));
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
     const t = TOOLS[name](ctx);

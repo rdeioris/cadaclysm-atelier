@@ -130,7 +130,8 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             h.cut.forEach((c, j) => out.push({ key: `${id}/holecut/${k}/${j}`, show: "lines", data: segs(c, true, z.line), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig }));
         });
         (d.internal ?? []).forEach((l, k) => out.push({
-            key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line), colour: sel ? ACCENT : INTERNAL,
+            key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line),
+            colour: sel || (selection?.kind === "internal" && selection.id === id && selection.index === k) ? ACCENT : INTERNAL,
             dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig,
         }));
         // each notch's mark, the kernel's polyline (garment_pattern_notch_lines): a lines item each,
@@ -152,7 +153,7 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             what: { kind: "sizes", id, size: g.size }, sig: `${Array.from(g.beziers).join(",")}@${r}` });
         if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
         // the edit points: not under the Move tool, whose handles would share a rectangle's corners
-        if (!xform && selection?.kind === "pattern" && selection.id === id) {
+        if (!xform && (selection?.kind === "pattern" || selection?.kind === "internal") && selection.id === id) {
             const p = pointsOf(nodes, id);
             const chosen = new Set(pointSel);
             out.push({ key: `${id}/points`, show: "points", data: xyz(p.points, z.seam), colour: "#ffffff", size: 8, pointStyle: { shape: "square", hollow: false },

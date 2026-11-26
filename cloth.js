@@ -1,7 +1,7 @@
 // The kernel side of the live drape: one cloth (cadaclysm_blacksmith_cloth_*) on its own copy
 // of the garment document. The cloth worker drives it; Node tests it. It never touches the
 // View: positions, triangles and status come out as plain typed arrays.
-import { garmentChange, sewingDone, healthOf, frameOps } from "./drape.js";
+import { garmentChange, sewingDone, healthOf, frameOps, frozenChanges, optionsChanged } from "./drape.js";
 import { outlineStarts } from "./materials.js";
 
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
@@ -19,6 +19,7 @@ export class Drape {
         this.pins = new Map();      // sim vertex -> its link [pattern, u, v]: found again after a remesh
         this.offsets = new Map();   // pattern id -> [dx, dy] it moved in 2D since the cloth was built
         this.gravity = null;
+        this.user = null;           // the garment's options (its saved ones over the defaults): 20 doubles
     }
 
     // A document from its saved text, with a preview's ops on top (a 2D drag under way),
@@ -41,10 +42,31 @@ export class Drape {
         Object.assign(this, { d, g, nodes });
     }
 
-    // A new cloth on the garment in `text` (+ preview `ops`), sewing with gravity off.
+    // The options the garment `g` saves (garment_sim_options: NaN where unset) over the defaults.
+    savedOptions(g) {
+        const def = this.f("cloth_default_options")(), saved = this.f("garment_sim_options")(g);
+        return Float64Array.from(def, (d, i) => (Number.isNaN(saved[i]) ? d : saved[i]));
+    }
+    // What the cloth runs with: the garment's options, gravity off while sewing.
+    effective() {
+        const o = Float64Array.from(this.user);
+        if (this.phase === "sewing") o[4] = o[5] = o[6] = 0;
+        return o;
+    }
+    pushOptions() { this.f("cloth_set_options")(this.h, this.effective()); }
+    // The garment's options again (a live edit of the saved ones), on top of the phase's.
+    takeOptions() {
+        this.user = this.savedOptions(this.g);
+        this.gravity = this.user.slice(4, 7);
+        this.pushOptions();
+    }
+
+    // A new cloth on the garment in `text` (+ preview `ops`), with its saved options and pins,
+    // sewing with gravity off.
     build(text, ops = null) {
         const doc = this.open(text, ops);
-        const opts = Float64Array.from(this.f("cloth_default_options")());
+        this.user = this.savedOptions(doc.g);
+        const opts = Float64Array.from(this.user);
         this.gravity = opts.slice(4, 7);
         opts[4] = opts[5] = opts[6] = 0;
         let h;
@@ -59,6 +81,7 @@ export class Drape {
         this.stale = null;
         this.pins.clear();
         this.offsets.clear();
+        this.savedPins();
         this.maybeDrape();
     }
     get live() { return this.h !== 0; }
@@ -66,10 +89,8 @@ export class Drape {
     // Gravity on once sewing is done (see sewingDone).
     maybeDrape() {
         if (this.phase !== "sewing" || !sewingDone(this.status())) return false;
-        const opts = Float64Array.from(this.f("cloth_options")(this.h));
-        opts.set(this.gravity, 4);
-        this.f("cloth_set_options")(this.h, opts);
         this.phase = "draping";
+        this.pushOptions();
         return true;
     }
 
@@ -122,15 +143,52 @@ export class Drape {
             this.stale = change.why;
             return { ...change, remeshed: false };
         }
-        if (change.kind === "same") { this.swap(doc); return { ...change, remeshed: false }; }
+        const freezes = frozenChanges(this.nodes, doc.nodes), options = optionsChanged(this.nodes, doc.nodes);
         this.swap(doc);
+        // a re-meshed cloth is shown afresh from the kernel's (gpu-drape.js): its live edits go
+        // straight to the kernel cloth too
+        this.direct = change.kind === "remesh";
         try {
-            for (const id of change.patterns) this.f("cloth_remesh_pattern")(this.h, this.g, this.kernelPattern(id));
-        } catch (e) {
-            this.stale = `re-mesh refused: ${e.message ?? e}`;
-            throw e;
-        } finally { this.refindPins(); }
-        return { ...change, remeshed: true };
+            if (change.kind === "remesh") {
+                try {
+                    for (const id of change.patterns) this.f("cloth_remesh_pattern")(this.h, this.g, this.kernelPattern(id));
+                } catch (e) {
+                    this.stale = `re-mesh refused: ${e.message ?? e}`;
+                    throw e;
+                } finally { this.refindPins(); this.savedPins(); }
+            }
+            // the live edits: Freeze, and the saved options
+            for (const { id, on } of freezes) this.freeze(this.kernelPattern(id), on);
+            if (options) this.takeOptions();
+        } finally { this.direct = false; }
+        return { ...change, remeshed: change.kind === "remesh" };
+    }
+    // Freeze (on) or unfreeze kernel pattern `p`.
+    freeze(p, on) { this.f("cloth_freeze")(this.h, p, on); }
+
+    // The garment's saved pins (the kernel pinned them when it built or re-meshed the cloth) in
+    // the pin map: each the vertex of its piece whose link lies nearest the saved point.
+    savedPins() {
+        const saved = this.f("garment_pins")(this.g);
+        if (!saved.length) return;
+        const links = this.f("cloth_vertex_links")(this.h), vp = this.f("cloth_vertex_patterns")(this.h);
+        for (let i = 0; i + 2 < saved.length; i += 3) {
+            let best = -1, bestD = Infinity;
+            for (let v = 0; v < vp.length; v++) {
+                if (vp[v] !== saved[i]) continue;
+                const d = Math.hypot(links[2 * v] - saved[i + 1], links[2 * v + 1] - saved[i + 2]);
+                if (d < bestD) { bestD = d; best = v; }
+            }
+            if (best >= 0 && !this.pins.has(best)) this.pins.set(best, [vp[best], links[2 * best], links[2 * best + 1]]);
+        }
+    }
+    // Vertex `v`'s place on its piece as the document has it: {pattern (node id), at: [u, v]}
+    // (the link in the cloth's frame, moved by what the piece has moved in 2D since).
+    pinPlace(v) {
+        const [p, u, w] = this.f("cloth_vertex_link")(this.h, v);
+        const id = this.patternIds().get(p);
+        const off = this.offsets.get(id) ?? [0, 0];
+        return id === undefined ? null : { pattern: id, at: [u + off[0], w + off[1]] };
     }
 
     // Pins kept by the kernel through a remesh are on unchanged patterns, whose vertices keep

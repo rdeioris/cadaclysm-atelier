@@ -81,6 +81,8 @@ assert.equal(hitOf(null, pick([0, 0]), drawings), null);
 assert.deepEqual(hitOf({ kind: "label", id: "p1" }, pick([150, 25]), drawings, ([x]) => (x > 120 ? "p2" : null)), { kind: "pattern", id: "p2" });
 assert.deepEqual(hitOf({ kind: "label", id: "p1" }, pick([110, 25]), drawings, () => null), { kind: "pattern", id: "p1" });
 assert.deepEqual(hitOf({ kind: "label", id: "p1" }, pick([110, 25]), drawings), { kind: "pattern", id: "p1" }, "no pieceAt: its own piece");
+assert.deepEqual(hitOf({ kind: "label", id: "p1" }, pick([110, 25]), drawings, ([x]) => (x > 120 ? "p2" : null), [150, 25]), { kind: "pattern", id: "p2" },
+    "a label asks about the world under the pointer, not the glyph's pick point");
 assert.deepEqual(unionBounds([{ bounds: [0, 0, 10, 10] }, { bounds: [-5, 2, 3, 20] }]), [-5, 0, 10, 20]);
 assert.equal(unionBounds([]), null);
 // notch normals point out of the piece, whichever way its outline runs

@@ -45,7 +45,9 @@ before 0.16. Until then, build the web package from cadaclysm master (`build_pkg
     npm run setup -- --pkg <folder>
 
 `--zip <package.zip>` takes a web package zip instead. Setup refuses a package that lacks what
-the app calls, and names what is missing. From 0.16, `npm run setup` alone fetches the release.
+the app calls, and names what is missing. The simulation controls (saved options and pins,
+Freeze) need calls no release carries yet (0.16 does not): until one does, build the package
+from cadaclysm master and pass `--pkg`.
 
 ## The 2D window
 
@@ -223,6 +225,32 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
   particle going non-finite or faster than 50 m/s, or a step taking over 5 s, pauses the cloth.
 - `node tools/drape-probe.mjs [garment.json] [frames] [every]` steps a garment's cloth in Node
   and prints its health: a quick look at whether it sews and drapes, without the page.
+
+### Simulation controls
+
+- **Simulation** panel (the foot of the browser): the cloth's 20 options in friendly units
+  (gravity in m/s², stiffness in N/m, the frame in ms). A change is saved with the garment
+  (`garment.garment`'s `sim_options`, only what differs from the default) and applied to a
+  running cloth at once; a new particle distance rebuilds it (Simulate). Sewing still runs
+  with gravity off and a stalled sewing still gets a wider weld, on top of the saved values.
+  **Reset to defaults** clears them.
+- **Piece** properties: **Freeze** (the piece holds still, the others collide with it; live),
+  **Strengthen** (its stretch and bending ×), **Pressure** (Pa, along its front side), and its
+  saved pins (**Clear pins**).
+- **Fabric**: **Shrinkage warp / weft** in CLO's percent (100 none, 95 shrinks 5 %).
+- **Seam**: **Strengthen** (the bending across it), **Elastic** (its rest length in % of the
+  seam's) and its stiffness in N per unit strain (empty: 2 N, an estimate).
+- **Internal line** (click one in Edit): its kind (line, fold, dart); a fold's **angle** (CLO's:
+  180 flat, 0 folded shut toward the front, 360 toward the back) and strength; an elastic.
+- **Fold** (2D strip): an internal fold line; click points on a piece, Enter ends it.
+  **Tack**: click a point on a piece, then one on the same or another piece; the tack (a
+  dashed line with two dots) closes and welds the two points as a seam does. Select it to
+  edit its ends; Delete removes it.
+- **Pins** made with the Pin tool are saved on their piece (pattern space, `pins`); Unpin
+  removes them; Open and Simulate pin them again.
+- On a running cloth a piece's Strengthen or Pressure, a fold or an elastic's numbers, a
+  fabric's shrinkage or a tack's ends re-mesh the pieces they touch; adding or removing a tack
+  or an elastic makes the cloth stale (Simulate rebuilds).
 
 **Film hook** (`film.js`) — `?film=1` is for the tutorial video's driver: Simulate builds the
 cloth paused (and then does nothing to it), `atelierFilm.step(n)` steps exactly n frames and

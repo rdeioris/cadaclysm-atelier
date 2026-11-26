@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { loadKernel } from "./package.mjs";
 import { Atelier } from "../kernel.js";
 import * as m from "../model.js";
+import { addTack } from "../tacks.js";
 import { transformMatrix, unionBounds } from "../props.js";
 import { makeTool } from "../tools.js";
 
@@ -193,5 +194,31 @@ const transform = (a, ids, key, value) => {
         nearAll(a.drawing("p2").bounds, [200, 0, 300, 50], 1e-9);
         a.free();
     }
+}
+// a piece's saved pins (S1, pattern space) go with it: moved, and onto a pasted copy
+{
+    const a = fresh();
+    a.apply(m.setPattern(a.nodes(), "p1", { pins: [[20, 20], [70, 30]] }), "pins");
+    a.commit(m.pieceOps(a.nodes(), "p1", a.transformedPiece("p1", [1, 0, 15, 0, 1, -5])), "move", ["p1"]);
+    nearAll(node(a, "p1").pins.flat(), [35, 15, 85, 25]);
+    assert.equal(node(a, "p2").pins, undefined, "a piece without pins gets none");
+    const clip = m.copyPieces(a.nodes(), ["p1"]);
+    const r = m.pasteOps(a.nodes(), clip, a.piecesThrough(clip.pieces, [1, 0, 30, 0, 1, 30]));
+    a.commit(r.ops, "paste");
+    nearAll(node(a, r.ids[0]).pins.flat(), [65, 45, 115, 55]);
+    a.free();
+}
+// a tack's ends go with their pieces: an end on the moved piece moves, the other stays; a tack
+// with both ends on the piece moves whole
+{
+    const a = fresh();
+    a.apply(addTack(a.nodes(), { a: "p1", a_at: [20, 20], b: "p2", b_at: [220, 20] }).ops, "tack 1");
+    a.apply(addTack(a.nodes(), { a: "p1", a_at: [10, 10], b: "p1", b_at: [90, 40] }).ops, "tack 2");
+    a.commit(m.pieceOps(a.nodes(), "p1", a.transformedPiece("p1", [1, 0, 15, 0, 1, -5])), "move", ["p1"]);
+    nearAll([...node(a, "t1").a_at, ...node(a, "t1").b_at], [35, 15, 220, 20]);
+    nearAll([...node(a, "t2").a_at, ...node(a, "t2").b_at], [25, 5, 105, 35]);
+    a.commit(m.pieceOps(a.nodes(), "p2", a.transformedPiece("p2", [1, 0, 0, 0, 1, 7])), "move", ["p2"]);
+    nearAll(node(a, "t1").b_at, [220, 27]);
+    a.free();
 }
 console.log("transform-kernel: ok");

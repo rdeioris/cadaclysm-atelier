@@ -7,7 +7,8 @@
 //        drag {vertex, target}, gia {on} (a live cloth is re-shown with it after a positions read)
 //        map {map: {key, code, min, max} | null} (the fit map: View.setClothMap, fitmap.js)
 //        material (the fabrics or prints changed: View.setClothMaterial with `lookFor`'s look)
-//   out: hello, topology (+ gpu: {item}), frame (positions: null), state, pinned
+//   out: hello, topology (+ gpu: {item}), frame (positions: null), state, pinned (+ place: the
+//        pin's piece and pattern point, which the View's worker saves in the piece's `pins`)
 // Edits go through the View (pinCloth, dragCloth, setClothOptions), never straight to the
 // kernel cloth: its state is stale between the View's round trips.
 import { Drape } from "./cloth.js";
@@ -115,11 +116,8 @@ export class GpuDrape extends Drape {
     maybeDrape(health = null, frames = 0) {
         if (!this.id) return super.maybeDrape();
         if (this.phase !== "sewing" || !health || !sewingOver(health, frames)) return false;
-        const opts = Float64Array.from(this.f("cloth_options")(this.h));
-        opts.set(this.gravity, 4);
-        if (this.weldDistance != null) opts[14] = this.weldDistance;
-        this.viewer.setClothOptions(this.id, opts);
         this.phase = "draping";
+        this.pushOptions();
         return true;
     }
     // A stalled sewing gets STALL_WELD times the weld distance (option 14), once; the drape puts
@@ -128,11 +126,26 @@ export class GpuDrape extends Drape {
         if (!this.id || this.phase !== "sewing" || this.weldDistance != null || h?.seamPairs == null || h.weldedPairs == null) return false;
         if (h.weldedPairs !== this.lastWelded) { this.lastWelded = h.weldedPairs; this.weldedAt = frames; return false; }
         if (h.weldedPairs >= h.seamPairs || frames - this.weldedAt < STALL_FRAMES) return false;
-        const opts = Float64Array.from(this.f("cloth_options")(this.h));
-        this.weldDistance = opts[14];
-        opts[14] *= STALL_WELD;
-        this.viewer.setClothOptions(this.id, opts);
+        this.weldDistance = this.user[14];
+        this.pushOptions();
         return true;
+    }
+    // The garment's options, gravity off and the weld distance widened while a stalled sewing
+    // needs it (the user's own weld distance, set live meanwhile, widened the same).
+    effective() {
+        const o = super.effective();
+        if (this.weldDistance != null && this.phase === "sewing") o[14] *= STALL_WELD;
+        return o;
+    }
+    // Live edits go through the View, which applies them on its next round trip -- except while
+    // the cloth is not shown, or is being re-meshed to be shown afresh (Drape.update's `direct`).
+    pushOptions() {
+        if (!this.id || this.direct) return super.pushOptions();
+        this.viewer.setClothOptions(this.id, this.effective());
+    }
+    freeze(p, on) {
+        if (!this.id || this.direct) return super.freeze(p, on);
+        this.viewer.freezeCloth(this.id, p, on);
     }
     step() { throw new Error("a GPU cloth steps through GpuDrapeHost"); }
     togglePin(v) {
@@ -356,13 +369,14 @@ export class GpuDrapeHost {
                     const d = this.drape;
                     if (!d?.id) break;
                     const gen = d.gen;
+                    const place = d.pinPlace(data.vertex);
                     const on = d.togglePin(data.vertex);
                     // the pin lands on this round trip: where it is pinned is where it is read
                     const positions = await this.viewer.clothPositions(d.id);
                     if (d.gen !== gen) break;
                     this.pinPoints = d.pinPositions(positions);
                     this.frame(null, 0);
-                    this.send({ kind: "pinned", vertex: data.vertex, on });
+                    this.send({ kind: "pinned", vertex: data.vertex, on, place });
                     break;
                 }
                 case "drag": if (this.drape?.id) this.drape.drag(data.vertex, data.target); break;

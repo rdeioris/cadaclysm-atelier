@@ -3,6 +3,7 @@
 // returns ops for one batch, so one user action is one undo step.
 // (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
 import { shiftAnchors, splitAnchors, mergeAnchors } from "./sewing.js";
+import { removeTacks, tacksOn } from "./tacks.js";
 import { shiftRules } from "./grading.js";
 
 export const FABRIC_FIELDS = [
@@ -97,6 +98,7 @@ export function duplicateFabric(nodes, id) {
     for (let j = 2; labels.has(label); j++) label = `${base} ${j}`;
     const node = { id: `${id}_${k}`, kind: "garment.fabric", label };
     for (const f of FABRIC_FIELDS) node[f] = src[f];
+    if (src.shrinkage) node.shrinkage = [...src.shrinkage];
     if (src.meta) node.meta = JSON.parse(JSON.stringify(src.meta));
     return { id: node.id, ops: [{ op: "add", node }] };
 }
@@ -116,12 +118,13 @@ export function addPattern(nodes, { label, path, fabric, layer = 0, allowance = 
 }
 
 export const removePattern = (nodes, id) => removePatterns(nodes, [id]);
-// Several pieces, their seams and outlines in one batch (one undo step): a seam between two of
-// them is removed once.
+// Several pieces, their seams, tacks and outlines in one batch (one undo step): a seam between
+// two of them is removed once.
 export function removePatterns(nodes, ids) {
     const seams = nodes.filter((n) => n.kind === "garment.seam" && (ids.includes(n.a) || ids.includes(n.b))).map((n) => n.id);
     return [
         ...garmentOps(nodes, listOf(nodes, "patterns").filter((p) => !ids.includes(p)), listOf(nodes, "seams").filter((s) => !seams.includes(s))),
+        ...removeTacks(nodes, tacksOn(nodes, ids)),
         ...seams.map((s) => ({ op: "remove", id: s })),
         ...ids.flatMap((id) => [{ op: "remove", id }, { op: "remove", id: `${id}_outline` }]),
     ];
@@ -265,6 +268,8 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
     const patterns = g.patterns.filter((p) => !ids.includes(p)).flatMap((p) => (p === id ? ids : [p]));
     ops.push({ op: "set", id: "garment", fields: { patterns, seams: g.seams.filter((s) => !dropped.includes(s)) } });
     for (const s of dropped) ops.push({ op: "remove", id: s });
+    // a tack on the cut piece goes with it (its point is on one of the new pieces: tack it again)
+    ops.push(...removeTacks(cur, tacksOn(cur, [id])));
     ops.push({ op: "remove", id }, { op: "remove", id: `${id}_outline` });
     if (sew) {
         // its id is new against every seam before the batch, the dropped ones too (a status names those)
@@ -274,7 +279,7 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
     return { ops, ids, collapsed };
 }
 
-// Piece `id` set to a transformed piece r = {path, internal, notches, grain} (kernel.js
+// Piece `id` set to a transformed piece r = {path, internal, notches, grain, pins?, matrix?} (kernel.js
 // transformedPiece): its outline, and its internal lines, notches and grain where it has them
 // or the transform gives them. The caller re-anchors the seams in the same commit.
 // `ids`: every piece the same matrix moves. An unfolded piece's half and axis move with it (r.unfold);
@@ -285,12 +290,25 @@ export function pieceOps(nodes, id, r, ids = [id]) {
     if (n?.internal || r.internal?.length) fields.internal = r.internal ?? [];
     if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
     if (r.grain) fields.grain = r.grain;
+    if (n?.pins?.length && r.pins) fields.pins = r.pins;
     let meta = n?.meta;
     if (r.unfold && meta?.atelier?.unfold) meta = atelierMeta(meta, "unfold", r.unfold);
     const link = meta?.atelier?.link;
     if (r.linkAxis && link && ids.includes(link.partner)) meta = atelierMeta(meta, "link", { ...link, axis: r.linkAxis });
     if (meta !== n?.meta) fields.meta = meta;
-    return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : [])];
+    // a tack's end on this piece (S1, pattern space) moves with it; the other end stays with its own piece
+    const tackOps = [];
+    if (r.matrix) {
+        const [a0, a1, a2, a3, a4, a5] = r.matrix, map = ([x, y]) => [a0 * x + a1 * y + a2, a3 * x + a4 * y + a5];
+        for (const t of nodes) {
+            if (t.kind !== "garment.tack" || (t.a !== id && t.b !== id)) continue;
+            const f = {};
+            if (t.a === id) f.a_at = map(t.a_at);
+            if (t.b === id) f.b_at = map(t.b_at);
+            tackOps.push({ op: "set", id: t.id, fields: f });
+        }
+    }
+    return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : []), ...tackOps];
 }
 
 // The in-app clipboard (spec §2): copies of pieces `ids` (each its node and outline path) and the
@@ -318,6 +336,7 @@ export function pasteOps(nodes, clip, placed) {
         Object.assign(add.node, rest, { grain: placed[i].grain ?? rest.grain ?? [0, 1] });
         if (placed[i].internal?.length) add.node.internal = placed[i].internal; else delete add.node.internal;
         if (placed[i].notches?.length) add.node.notches = placed[i].notches; else delete add.node.notches;
+        if (placed[i].pins?.length) add.node.pins = placed[i].pins; else delete add.node.pins;
         if (meta) {
             const atelier = { ...(meta.atelier ?? {}) };
             delete atelier.slot;

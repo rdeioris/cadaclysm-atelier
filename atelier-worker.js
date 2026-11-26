@@ -25,6 +25,8 @@ import { GpuDrapeHost, gpuClothOk } from "./gpu-drape.js";
 import { filmCommand } from "./film.js";
 import { valueAt, recolourMeshes, BurstCache } from "./fitmap.js";
 import { TapeMeasures } from "./tape3d.js";
+import { tackSpecs } from "./simtools.js";
+import { pinOps } from "./simprops.js";
 import { concatParts, positionsBox, specKey } from "./dressform.js";
 import { importImage, imageIndex, imageReader } from "./materials.js";
 import { printSpecs, decodeImage, encodeAtlas } from "./prints.js";
@@ -175,8 +177,9 @@ function refresh2d() {
     const nodes = atelier.nodes();
     const r = viewer.frameReport?.()[1], scale = r && r.rect[2] > 0 ? mmPerPx(r) : null;
     const nest = sizeNest(nodes);
-    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale, nest,
-        prints: (d, z) => printSpecs(d, nodes, (id) => looks.bitmap(id), z) }));
+    const drawings = atelier.drawings();
+    items2d.apply([...specs2d({ drawings, seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale, nest,
+        prints: (d, z) => printSpecs(d, nodes, (id) => looks.bitmap(id), z) }), ...tackSpecs({ nodes, drawings, selection })]);
     post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d, nest: nest.map((g) => `${g.id}:${g.size}`).join(",") });
 }
 
@@ -398,7 +401,7 @@ function onCloth({ data: m }) {
             case "topology": onTopology(m); break;
             case "frame": onFrame(m); break;
             case "colours": onColours(m); break;
-            case "pinned": post({ kind: "status", text: m.on ? "pinned" : "unpinned" }); break;
+            case "pinned": post({ kind: "status", text: m.on ? "pinned" : "unpinned" }); savePin(m); break;
             case "state":
                 sim.running = m.running; sim.stale = m.stale ?? sim.stale;
                 if (!m.running) { sim.rate.clear(); sim.stops++; }
@@ -411,6 +414,16 @@ function onCloth({ data: m }) {
                 break;
         }
     } catch (e) { post({ kind: "error", text: `simulation: ${e.message ?? e}` }); }
+}
+
+// A pin made or let go on the cloth, saved in (or taken out of) its piece's `pins`: one undo
+// step. Not while a 2D drag previews an edit (the pin stays on the cloth, unsaved).
+function savePin(m) {
+    if (!m.place || atelier.previewing) return;
+    const ops = pinOps(atelier.nodes(), m.place.pattern, m.place.at, m.on);
+    if (!ops.length) return;
+    atelier.apply(ops, m.on ? "pin" : "unpin");
+    changed();
 }
 
 function simCommand(action, data = {}) {

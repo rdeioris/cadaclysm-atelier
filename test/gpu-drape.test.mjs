@@ -215,7 +215,11 @@ assert.equal(of("frame").length, frozen, "no frames while paused");
 // pin and unpin through the View; the pin drawn where it was read
 await host.postMessage({ kind: "pin", vertex: 7 });
 assert.deepEqual(view.named("pinCloth").at(-1), ["pinCloth", item1, 7, null]);
-assert.deepEqual(last("pinned"), { kind: "pinned", vertex: 7, on: true });
+{
+    // with the pin's place on its piece (the View's worker saves it in the piece's pins)
+    const [p, u, v] = kernel.cadaclysm_blacksmith_cloth_vertex_link(host.drape.h, 7);
+    assert.deepEqual(last("pinned"), { kind: "pinned", vertex: 7, on: true, place: { pattern: host.drape.patternIds().get(p), at: [u, v] } });
+}
 const pinsAt = kernel.cadaclysm_blacksmith_cloth_positions(host.drape.h).slice(21, 24);
 assert.deepEqual([...last("frame").pins], [...Float32Array.from(pinsAt)]);
 await host.postMessage({ kind: "pin", vertex: 7 });

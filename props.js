@@ -3,6 +3,7 @@
 import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
 import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR, AT_LABEL, CUSTOM_LABEL } from "./arrange.js";
+import { simFields, simValidate, simOps, SIM_KINDS } from "./simprops.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
 import { materialFields, validateMaterial, materialOps, isMaterialKey } from "./materials.js";
 import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
@@ -64,6 +65,8 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
             { key: "remove", label: "Remove notch", unit: "", type: "action", value: null },
         ];
     }
+    // an internal line, a tack: the simulation's (simprops.js)
+    if (SIM_KINDS.has(selection.kind)) return simFields(selection, n, nodes);
     if (selection.kind === "pattern") {
         const fabrics = nodes.filter((x) => x.kind === "garment.fabric").map((f) => ({ value: f.id, label: f.label ?? f.id }));
         const placed = nodes.filter((x) => x.kind === "garment.pattern" && x.id !== n.id && x.frame && x.frame !== "xy");
@@ -84,6 +87,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
             { key: "particle_distance", label: "Mesh", unit: "mm", type: "optnumber", value: n.particle_distance ?? null, placeholder: String(DEFAULT_MESH),
                 tip: `This piece's cloth particle distance. Empty: the garment's ${DEFAULT_MESH} mm. Finer (10 mm) where a piece gathers or creases, as a cuff; it costs about four times the vertices on that piece. Pieces sewn together must be within 2x of each other: the drape refuses a seam whose pieces differ by more.` },
             { key: "slot", label: "Slot", unit: "", type: "select", value: n.meta?.atelier?.slot ?? "none", options: slots },
+            ...simFields(selection, n, nodes),
             // the transforms (spec §2): about the selection's bounds centre, through the kernel
             { key: "rotate", label: "Rotate", unit: "deg", type: "number", value: 0, tip: "Rotate the selected pieces by this many degrees (counter-clockwise) about their bounds' centre." },
             { key: "scale", label: "Scale", unit: "%", type: "number", value: 100, tip: "Scale the selected pieces uniformly about their bounds' centre. The seam allowances stay as they are." },
@@ -117,6 +121,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
         return [
             ...["a_from", "a_to", "b_from", "b_to"].map((key) => ({ key, label: key.replace("_", " "), unit: "mm", type: "number", value: n[key] })),
             { key: "reversed", label: "Reversed", unit: "", type: "select", value: n.reversed ? "true" : "false", options: yesNo },
+            ...simFields(selection, n, nodes),
             { key: "remove", label: "Remove seam", unit: "", type: "action", value: null },
         ];
     }
@@ -132,6 +137,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
             { key: "preset", label: "Apply preset", unit: "", type: "select", value: "", options: PRESETS.map((p) => ({ value: p.slug, label: p.label })) },
             ...(matched ? [{ key: "source", label: matched.estimated ? "Source (ESTIMATE)" : "Source", unit: "", type: "readonly", value: presetNote(matched) }] : []),
             ...materialFields(n, looks),
+            ...simFields(selection, n, nodes),
         ];
     }
     return [];
@@ -139,6 +145,8 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
 
 // An error message when `value` cannot go into field `key` (what the kernel would reject), else null.
 export function validate(selection, nodes, key, value) {
+    const sim = simValidate(selection, nodes, key, value);
+    if (sim !== undefined) return sim;
     const num = (v) => typeof v === "number" && Number.isFinite(v);
     if (selection.kind === "pattern") {
         if (key === "label") {
@@ -238,6 +246,8 @@ export function transformMatrix(key, value, bounds) {
 // library) for a fabric's Material section.
 export function opsFor(selection, nodes, key, value, ctx = {}) {
     const id = selection.id;
+    const sim = simOps(selection, nodes, key, value);
+    if (sim) return sim;
     if (selection.kind === "pattern") {
         if (key === "slot") {
             const n = find(nodes, id);

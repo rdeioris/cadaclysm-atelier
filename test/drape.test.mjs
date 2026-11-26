@@ -128,5 +128,16 @@ const close = (a, b, eps = 1e-9) => a.length === b.length && a.every((x, i) => M
     // moved back home: nothing to set, the offset gone
     assert.deepEqual(frameOps(nodes(path), nodes(path), offsets), []);
     assert.equal(offsets.size, 0);
+    // the piece's internal lines and saved pins move with it (kernel.js transformedPiece): set back too
+    const line = { kind: "fold", path: { start: [10, 10], segments: [{ type: "line", to: [60, 40] }] } };
+    const withLines = (p1, d) => [{ id: "p1", kind: "garment.pattern", outline: "p1_outline", internal: [{ ...line, path: translatePath(line.path, d) }], pins: [[20 + d[0], 20 + d[1]]] },
+        { id: "p1_outline", kind: "profile.path", path: p1 }];
+    const ops = frameOps(withLines(path, [0, 0]), withLines(moved, [30, -5]), offsets);
+    assert.deepEqual(ops[1], { op: "set", id: "p1", fields: { internal: [line], pins: [[20, 20]] } });
+    // a tack's end on the moved piece goes back with it; its end on an unmoved piece stays
+    offsets.clear();
+    const tack = (d) => ({ id: "t1", kind: "garment.tack", a: "p1", a_at: [20 + d[0], 30 + d[1]], b: "p2", b_at: [300, 40] });
+    const tops = frameOps([...nodes(path), tack([0, 0])], [...nodes(moved), tack([30, -5])], offsets);
+    assert.deepEqual(tops.at(-1), { op: "set", id: "t1", fields: { a_at: [20, 30] } });
 }
 console.log("drape: ok");

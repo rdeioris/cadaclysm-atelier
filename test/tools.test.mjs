@@ -40,6 +40,16 @@ const ctx = (extra = {}) => ({ nodes: base, drawings: new Map(), selection: null
     const up = t.up([110, -5], null, {});
     assert.equal(up.endPreview, true);
 }
+// edit: a release past the last move previewed (moves dropped in flight) commits at the release point
+{
+    const nodes = [...base, { id: "p1_outline", kind: "profile.path", path: m.rectPath(0, 0, 100, 50) }, { id: "p1", kind: "garment.pattern", outline: "p1_outline" }];
+    const t = makeTool("edit", ctx({ nodes, selection: { kind: "pattern", id: "p1" } }));
+    t.down([100, 0], { kind: "point", id: "p1", index: 1 }, {});
+    t.move([110, -5], null, {});
+    const up = t.up([130, -20], null, {});
+    assert.equal(up.endPreview, true);
+    assert.deepEqual(m.pathPoints(up.preview[0].fields.path)[1], [130, -20]);
+}
 // edit: moving a point drags the handles attached to it, and the closing segment for point 0
 {
     const path = m.polyPath([[0, 0], [100, 0], [100, 50]], [null, { c1: [100, 10], c2: [100, 40] }, null]);

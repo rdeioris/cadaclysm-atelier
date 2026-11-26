@@ -55,7 +55,9 @@ const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "pr
     // A1 (spec §3, §5): point editing and the notch marks
     "profile_insert_vertex", "profile_remove_vertex", "profile_smooth_vertex", "garment_pattern_notch_lines",
     // A2 (spec §6): DXF import keeps internal lines and holes
-    "garment_pattern_internal_count", "garment_pattern_internal_kind", "garment_pattern_internal"];
+    "garment_pattern_internal_count", "garment_pattern_internal_kind", "garment_pattern_internal",
+    // the simulation controls (S1): saved options and pins, Freeze
+    "garment_sim_options", "garment_pins", "cloth_freeze"];
 
 // The kernel's seam-length warning (garment_issue: severity 1 = warning, kind 10 =
 // ISSUE_SEAM_LENGTH_MISMATCH): CLO's ease rule, a seam whose sides differ by more than 5 %.
@@ -573,7 +575,7 @@ export class Atelier {
     // with its holes through profile_transform2d, each internal line through the same matrix, each
     // notch re-placed at its mapped point on the new outline, and the grain the matrix's linear
     // part applied and normalised. From the committed piece during a preview (as transformed()).
-    // -> {path, internal, notches, grain}
+    // -> {path, internal, notches, grain, pins?, matrix}
     transformedPiece(id, m6) {
         const byId = m.byId(this.open ? this.open.nodes : this.nodes()), node = byId.get(id), path = byId.get(`${id}_outline`)?.path;
         if (!node || !path) throw new Error(`no pattern ${id}`);
@@ -594,6 +596,10 @@ export class Atelier {
         const [gx, gy] = node.grain ?? [0, 1], tx = m6[0] * gx + m6[1] * gy, ty = m6[3] * gx + m6[4] * gy, gl = Math.hypot(tx, ty);
         if (!(gl > 0)) throw new Error("the transform collapses the piece");
         const r = { path: out, internal, notches, grain: [tx / gl, ty / gl] };
+        // the saved pins (S1, pattern space) go with the piece, and so do its tacks' ends
+        // (model.pieceOps moves those through this matrix)
+        if (node.pins?.length) r.pins = node.pins.map(map);
+        r.matrix = [...m6];
         // spec §6: a link's axis through the same matrix (model.pieceOps keeps it only when the
         // partner moves too), and an unfold's axis and half with it
         const axisThrough = ([x0, y0, x1, y1]) => [...map([x0, y0]), ...map([x1, y1])];

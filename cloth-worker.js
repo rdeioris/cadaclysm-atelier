@@ -105,9 +105,10 @@ async function onPort({ data }) {
             case "reset": running = false; pending = null; drape?.freeCloth(); state(); break;
             case "pin": {
                 if (!drape?.live) break;
+                const place = drape.pinPlace(data.vertex);
                 const on = drape.togglePin(data.vertex);
                 frame(null, 0);
-                send({ kind: "pinned", vertex: data.vertex, on });
+                send({ kind: "pinned", vertex: data.vertex, on, place });
                 break;
             }
             case "drag": if (drape?.live) drape.drag(data.vertex, data.target); break;
