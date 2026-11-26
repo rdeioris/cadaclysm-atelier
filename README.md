@@ -23,6 +23,8 @@ Men's XS, S, M, L, XL (f-XS ... m-XL), each graded from its size chart by `tools
 `--forms-only --forms assets/forms.json`, never typed by hand. The file also carries each form's landmarks (body
 top, shoulder line, arms, head), which the slots place pieces by. The form is the session's,
 not the garment's: Save does not write it, and Open keeps the avatar that is loaded.
+**Avatar** also loads a dress form of your own, a STEP (`.stp`, `.step`) or an STL (`.stl`, read
+as a mesh); its triangles are the cloth's collider either way. Such a file has no landmarks.
 
 **Weaves.** `assets/weaves/` holds the weave library: plain, twill, denim, jersey, rib, fleece,
 satin and canvas, each a seamless 512 x 512 diffuse (near-white: the fabric colour tints it),
@@ -84,6 +86,16 @@ The tools, with their keys where they have one:
   that side's arc length (a click snapped to a vertex, an end or an intersection starts a
   two-click measure instead). The measures stay until **Escape** or another tool, and are never
   saved. In **Edit**, hovering an edge names its side's length on the status line.
+- **Sew M:N** (B) sews several ranges to several: pick side A's ranges (a click on a side takes
+  the whole side, running away from the end nearer the click; **Shift** and two clicks take a
+  free range, first click to second), **Enter**, side B's the same way, **Enter** sews.
+  **Backspace** drops the last range, **Escape** cancels. A's ranges end to end map onto B's end
+  to end by length; every range end on either side cuts the run, and each piece is one 1:1 seam
+  (at most M + N - 1). The group is re-distributed after every edit of its pieces (one undo step
+  with the edit); a piece cut, or a range's side gone, leaves its seams as plain ones. Selecting
+  one of its seams selects the group (one colour, numbered n.1, n.2, ...): the panel shows its
+  ranges and lengths, **Ungroup** (the seams stay as plain 1:1 seams) and **Remove group**;
+  **Delete** removes it whole.
 - **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
   the whole piece: its internal lines, notches and grain go with the outline. With pieces
   selected, **Move** draws their bounds box: a corner handle scales uniformly about the opposite
@@ -122,6 +134,67 @@ The tools, with their keys where they have one:
 that has one; **On <piece>** puts a piece on another (its frame and wrap, 8 mm out a layer).
 **Arrange** puts each unplaced piece in the next free named slot (the hood slots last); it
 never puts a piece on another one: that is the Slot select's pick.
+A placed piece stays on its slot: a 2D edit, move or transform of it re-places it in the same
+undo step (a 2D move re-centres it there; it does not move it in 3D), and the pieces on it
+follow. A new avatar re-places every placed piece, one undo step ("re-arrange on the form").
+**Place** in the 3D strip (place on avatar): with a piece selected, a click on the avatar puts
+it there, its centre over the point, standing 30 mm out along the body's normal (8 mm more a
+layer), its y the world's up (the camera's up on a near-horizontal surface such as a shoulder's
+top). With **Wrap** on (the default) a click on an arm wraps the piece round that arm, as the arm
+slots do. The Slot select shows such a piece as **On avatar**; it is refreshed like any slot.
+**The gizmo**: with one placed piece selected and no cloth, the 3D window draws a gizmo over it
+(at its centre; a sleeve's on its wrap axis). Drag an arrow to move the piece along world X, Y
+or Z, a ring to turn it about its own normal, x or y, the centre square to move it in the
+camera's plane; **Shift** snaps to 10 mm and 15°, **Escape** cancels the drag. A wrapped piece's
+wrap axis moves and turns with it. The release is one undo step; the piece's slot becomes
+**Custom (3D)**, and the pieces on it follow. A new avatar leaves a custom piece where it is; a
+2D edit, move or transform of it keeps its frame's axes and its centre's place in 3D (the frame
+shifts so the piece's bounds centre stays on its 3D point; a wrapped piece keeps its wrap and the
+shift goes round the limb and along it), in the edit's undo step.
+
+## Grading
+
+You draft one size, the **base**, and grade the others from it by rules on the outline's points,
+as in CLO. The size table and the rules are in the document (Save and Open keep them); an older
+Atelier opening a graded file sees the current size alone.
+
+- **Sizes…** in the 2D strip opens the size table: add a size (type its name, Enter), rename
+  one, move it earlier or later, remove it (its rules go with it), and choose the **base**.
+  Each change is one undo step. A new base re-expresses every rule against it, and its outline
+  becomes the drafted one. The first size added is the base.
+- **The size select** beside it lists the sizes, the base marked. Picking one switches every
+  graded piece in one undo step ("size L"): each outline becomes its base with every point moved
+  by its rule for that size, its Bézier handles with it. Notches keep their fraction of their
+  side, internal lines follow the least-squares affine fit of the points' moves, seams stay on
+  their sides (M:N groups re-distribute), placed pieces stay on their slots, and a linked
+  partner or an unfolded whole is rebuilt from its half. A size the kernel refuses (an outline
+  that would cross itself) changes nothing, and the status names the piece.
+- **Editing in the base size** works as before: the base follows each edit, and a point added
+  or removed shifts the rules (a new point on a side takes the rule between its neighbours).
+  **Cut** and **Cut & sew** grade both new pieces: a point on an old point takes its rule, one on
+  a side the rules interpolated along it, a cutter's bend inside the piece the affine fit.
+- **In another size** an **Edit** drag of an outline point (or a side) sets the moved points'
+  rules for that size: the new place minus the base's. Every other change of the shape is
+  refused with "edit the shape in the base size (M)": a handle (refused at the press), adding,
+  removing or smoothing a point, Fillet and Cut. Internal lines, notches and seams stay editable.
+- **The grade table**: with one outline point selected (Edit), the panel lists every size's
+  dx and dy (mm), the base row fixed at 0, 0 and the current size marked; typing into a row
+  sets that rule, one undo step. With several points selected, **Copy rule to…** copies the
+  chosen point's rules (every size) to the others, and with two, **Distribute** gives the points
+  between them (the shorter way round) rules interpolated by length along the outline, every
+  size. **Proportional…** (any selection) asks for a width and height change per size step,
+  20 mm and 10 mm say, and grades every point of the selected pieces by its place from their
+  bounds' centre, scaled by the steps from the base.
+- **Show sizes** draws every other size's outline of the selected pieces at once, dashed and
+  thin in a ramp of the accent (the smallest faintest), over the current outline: CLO's graded
+  nest. It is computed as a switch would be, without committing, and is not saved.
+
+Limits: holes are not graded (they keep the base size in every size); an arc whose two ends
+have different rules may be refused (its centre moves by their mean, which the kernel's checks
+may not accept); a mirroring transform (Flip, Mirror) in a size
+other than the base may be refused; Show sizes draws a linked partner or an unfolded whole in
+the sizes it has been switched to since it was made (its rules are recorded per size from its
+half); DXF export writes the current size only.
 
 ## Live drape
 
@@ -179,14 +252,18 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - On the GPU a seam's weld lands up to about 2 frames later than on the CPU (it waits for the
   View's next round trip).
 - A settled shirt still has a few particles jittering at 2-10 m/s (the health line's max speed).
-- Before Simulate the 3D window draws each piece flat at its frame: a sleeve wrapped round an
-  arm shows as a flat slab along the arm until the cloth is built.
 - On a form with landmarks (assets/forms.json) the arm slots wrap a sleeve round the arm and the
-  front and back hang from the shoulder line; on any other STEP avatar the slots are the old
-  fractions of its bounds.
-- DXF import brings in outlines, allowances, grain lines and notches. Internal lines and holes
-  are dropped (the kernel has no getter for them yet; DXF export writes holes), and so are the
-  3D slots: imported pieces lie on the floor until arranged.
+  front and back hang from the shoulder line; on any other avatar (a STEP or STL of your own)
+  the slots are the fractions of its bounds.
+- DXF import brings in outlines, holes, allowances, grain lines, notches, internal lines and
+  folds. A dart comes back as a plain internal line, and the 3D slots are not in the file:
+  imported pieces lie on the floor until arranged.
+- The gizmo's size follows the piece (0.45 of its larger 2D side, 80 to 260 mm), not the
+  camera: zoomed far out it is small, zoomed in on a big piece it can run off the window.
+- A gizmo ring seen edge on (its axis across the view) turns by the pointer's travel along the
+  ring's tangent at the grabbed point: an approximation, less exact than a ring facing the camera.
+- The gizmo answers a press only once the hover pick has named the part under the pointer (one
+  round trip to the View's worker): a press made before that answer orbits the camera instead.
 - Holes: a hole's points cannot be moved and its edges cannot be sewn yet. A hole smaller than
   twice the allowance gets no cut line (the status bar says so); a hole's cut line uses the
   piece's first allowance.
@@ -200,8 +277,6 @@ and stop, `atelierFilm.garment()` reads the document without a download,
 - A slot can name what is gone: "On <piece>" after that piece is removed, or a hood slot after
   switching to a form with no head. The piece keeps its frame and the Slot select shows the
   stale value until another slot is picked.
-- Slot frames go stale: after a 2D move or edit, or a new avatar, a placed piece drifts off its slot.
-- Avatars are STEP only. STL dress forms wait for the kernel's STL reader.
 - Forms with a head: only f-M so far.
 - Fabric presets come from published KES-F measurements: the sources and the conversion are in
   [docs/fabric-sources.md](docs/fabric-sources.md). Many sources publish one value for both

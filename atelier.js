@@ -11,10 +11,12 @@ import { PRESETS, presetParams, presetNote } from "./fabrics.js";
 import { makeTool, SNAPPING, typedPoint, typedValues, readout, pointMenuOp, NOTCH_DEFAULT } from "./tools.js";
 import { isCurvePoint } from "./view2d.js";
 import { seamColour } from "./sewing.js";
+import { groupOf, groupSelection, membersOf } from "./seamgroup.js";
 import { toolOfKey } from "./shortcuts.js";
 import { KeyHold } from "./keyhold.js";
-import { arrangeSlots, fabricColours, isSelected, survivingSelection } from "./arrange.js";
-import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch } from "./props.js";
+import { arrangeSlots, avatarFormat, fabricColours, isSelected, survivingSelection } from "./arrange.js";
+import { fieldsFor, opsFor, validate, fieldText, TRANSFORM_KEYS, transformMatrix, unionBounds, selectedIds, nextNotch,
+    sizeTable, gradeRows, gradeRuleAction, gradeCopyAction, gradeDistributeAction, gradeProportionalAction } from "./props.js";
 import { giaState } from "./gpu-drape.js";
 import { createFilm } from "./film.js";
 import { issuesLabel, isEaseNote } from "./kernel.js";
@@ -102,14 +104,23 @@ function status(text, error = false) {
 }
 // The size a click-placed shape asks for: [width, height] in mm, or null when cancelled.
 function askSize(shape) {
+    return askPair(`${shape === "ellipse" ? "Ellipse" : "Rectangle"}: width and height`, ["Width", "Height"], (w, h) => w > 0 && h > 0);
+}
+// Two numbers by the size dialog: [a, b], or null when cancelled or `ok(a, b)` refuses them.
+// The fields keep what was typed last (the rectangle's size), unless `values` are given.
+function askPair(title, labels, ok, values = null) {
     const d = $("size-dialog");
-    $("size-title").textContent = `${shape === "ellipse" ? "Ellipse" : "Rectangle"}: width and height`;
+    $("size-title").textContent = title;
+    $("size-wl").textContent = labels[0]; $("size-hl").textContent = labels[1];
+    const keep = [$("size-w").value, $("size-h").value];
+    if (values) { $("size-w").value = String(values[0]); $("size-h").value = String(values[1]); }
     d.returnValue = "";
     d.showModal();
     $("size-w").focus(); $("size-w").select();
     return new Promise((resolve) => d.addEventListener("close", () => {
-        const w = Number($("size-w").value), h = Number($("size-h").value);
-        resolve(d.returnValue === "ok" && w > 0 && h > 0 ? [w, h] : null);
+        const raw = [$("size-w").value, $("size-h").value], [w, h] = raw.map(Number);
+        if (values) { $("size-w").value = keep[0]; $("size-h").value = keep[1]; }
+        resolve(d.returnValue === "ok" && raw.every((t) => t.trim() !== "") && Number.isFinite(w) && Number.isFinite(h) && ok(w, h) ? [w, h] : null);
     }, { once: true }));
 }
 // Cancel is not a submit button: Enter in a field submits OK, the form's only one
@@ -133,6 +144,7 @@ function exists(sel) {
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
+    sel = groupSelection(sel, nodes);   // one seam of an M:N group selects the group
     selection = sel ? { kind: sel.kind, id: sel.id, ...(sel.ids ? { ids: [...sel.ids] } : {}), ...(sel.index != null ? { index: sel.index } : {}) } : null;
     pointSel = []; ipointSel = [];   // the worker drops its own on `select`
     selSeq++;
@@ -162,8 +174,16 @@ function renderBrowser() {
     $("browser-patterns").replaceChildren(...(patterns.length
         ? patterns.map((id) => item("pattern", id, byId.get(id)?.label ?? id, swatch(colours.get(byId.get(id)?.fabric) ?? "#cccccc")))
         : [empty("draw one in 2D")]));
-    $("browser-seams").replaceChildren(...(seams.length
-        ? seams.map((s, i) => item("seam", s.id, `${i + 1}: ${byId.get(s.a)?.label ?? s.a} – ${byId.get(s.b)?.label ?? s.b}`, swatch(seamColour(i))))
+    // an M:N group is one entry (its first member's), in its first member's colour
+    const label = (id) => byId.get(id)?.label ?? id;
+    const listed = seams.map((s, i) => ({ s, i })).filter(({ s }) => !s.group || seams.find((t) => t.group === s.group) === s);
+    $("browser-seams").replaceChildren(...(listed.length
+        ? listed.map(({ s, i }) => {
+            if (!s.group) return item("seam", s.id, `${i + 1}: ${label(s.a)} – ${label(s.b)}`, swatch(seamColour(i)));
+            const g = groupOf(byId.get(s.id)), n = seams.filter((t) => t.group === s.group).length;
+            const names = (rs) => [...new Set((rs ?? []).map((r) => label(r.pattern)))].join(" + ");
+            return item("seam", s.id, `${i + 1}: ${names(g?.a)} – ${names(g?.b)} (M:N, ${n} seams)`, swatch(seamColour(i)));
+        })
         : [empty("none")]));
     $("browser-avatar").replaceChildren(avatar ? item("avatar", "avatar", avatar.name) : empty("none"));
     markBrowser();
@@ -188,7 +208,7 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const TITLES = { pattern: "Pattern", seam: "Seam", fabric: "Fabric", avatar: "Avatar", notch: "Notch" };
+const TITLES = { pattern: "Pattern", seam: "Seam", group: "Seam group", fabric: "Fabric", avatar: "Avatar", notch: "Notch" };
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
@@ -212,6 +232,8 @@ function commitField(f, raw) {
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings, weaves: looks.weaves });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
+        // an ungrouped M:N group: its first seam stays selected, as a plain seam
+        if (selection.kind === "seam" && f.key === "ungroup") { const id = selection.id; selection = { kind: "seam", id }; post({ kind: "select", selection }); }
         status(f.type === "action" ? f.label : `${f.label}: set`);
         // a notch's kind or depth is also the Notch tool's next; a removed notch leaves its piece selected
         if (selection.kind === "notch") {
@@ -299,6 +321,7 @@ function renderProps() {
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
     h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
+        : selection.kind === "seam" && groupOf(n) ? `${TITLES.group} ${groupOf(n).id}`
         : `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
     const dl = document.createElement("dl");
     for (const f of fields) dl.append(...fieldRow(f));
@@ -307,11 +330,117 @@ function renderProps() {
         const d = drawings.get(selection.id);
         if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides${d.holes?.length ? `, ${d.holes.length} hole${d.holes.length === 1 ? "" : "s"}` : ""}, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
     }
+    if (selection.kind === "pattern") kids.push(...gradeSection());
     el.replaceChildren(...kids);
     const inputs = [...el.querySelectorAll("[data-key]")];
     if (!focusKey && tab) { const i = inputs.findIndex((x) => x.dataset.key === tab.key); focusKey = inputs[i + tab.dir]?.dataset.key ?? null; }
     const target = focusKey && inputs.find((x) => x.dataset.key === focusKey);
     if (target) { target.focus(); target.select?.(); }
+}
+
+// ---- grading (A3 spec §2-§5): the size select, the Sizes dialog, the grade table, Show sizes ----
+const make = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+// a grading change: after the gesture in flight, an open preview dropped first
+const gradeChange = (kind, payload) => afterGesture(() => { cancelPreview(); change(kind, payload); });
+function renderSizes() {
+    const t = sizeTable(nodes), sel = $("size-select"), sig = JSON.stringify(t?.sizes ?? null) + (t?.base ?? "");
+    if (sel.dataset.sig !== sig) {
+        sel.dataset.sig = sig;
+        sel.replaceChildren(...(t ? t.sizes.map((s) => make("option", { value: s, textContent: s === t.base ? `${s} (base)` : s })) : [make("option", { value: "", textContent: "one size" })]));
+    }
+    sel.disabled = !t;
+    sel.value = t?.current ?? "";
+    document.body.dataset.size = t?.current ?? "";
+    if ($("sizes-dialog").open) renderSizesDialog();
+}
+$("size-select").addEventListener("change", (e) => { const size = e.target.value; status(`size ${size}`, false); gradeChange("size", { size }); });
+// The Sizes dialog: each change one batch (the worker's `sizes`), the list drawn again from the doc
+function renderSizesDialog() {
+    const t = sizeTable(nodes), list = $("sizes-list"), sig = JSON.stringify(t);
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    const sizes = t?.sizes ?? [];
+    list.replaceChildren(...sizes.map((s, i) => {
+        const name = make("input", { type: "text", value: s, title: "Rename: type and press Enter" });
+        name.dataset.size = s;
+        name.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); name.blur(); } });
+        name.addEventListener("change", () => { const to = name.value.trim(); if (to && to !== s) gradeChange("sizes", { action: { op: "rename", from: s, to } }); else name.value = s; });
+        const base = make("input", { type: "radio", name: "size-base", checked: s === t.base, title: "The base: the size drafted; the others are graded from it" });
+        base.dataset.base = s;
+        base.addEventListener("change", () => gradeChange("sizes", { action: { op: "base", name: s } }));
+        const move = (k) => { const order = [...sizes]; [order[i], order[i + k]] = [order[i + k], order[i]]; gradeChange("sizes", { action: { op: "reorder", sizes: order } }); };
+        const up = make("button", { type: "button", textContent: "↑", title: "Earlier", disabled: i === 0 }), down = make("button", { type: "button", textContent: "↓", title: "Later", disabled: i === sizes.length - 1 });
+        up.addEventListener("click", () => move(-1)); down.addEventListener("click", () => move(1));
+        const remove = make("button", { type: "button", textContent: "Remove", title: s === t.base ? "The base cannot go: choose another base first" : "Remove the size and its rules", disabled: s === t.base });
+        remove.addEventListener("click", () => gradeChange("sizes", { action: { op: "remove", name: s } }));
+        return make("li", {}, name, make("label", {}, base, " base"), up, down, remove);
+    }));
+}
+function addSize() {
+    const name = $("sizes-name").value.trim();
+    if (!name) { status("a size needs a name", true); return; }
+    $("sizes-name").value = "";
+    gradeChange("sizes", { action: { op: "add", name } });
+}
+$("sizes-open").addEventListener("click", () => { $("sizes-list").dataset.sig = ""; renderSizesDialog(); $("sizes-dialog").showModal(); $("sizes-name").focus(); });
+$("sizes-add").addEventListener("click", addSize);
+$("sizes-name").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addSize(); } });
+// Show sizes: the worker draws the selected pieces' outlines in every size. Not saved.
+let showSizes = false;
+$("show-sizes").addEventListener("click", () => {
+    showSizes = !showSizes;
+    $("show-sizes").classList.toggle("on", showSizes);
+    document.body.dataset.showSizes = showSizes ? "1" : "";
+    post({ kind: "showSizes", on: showSizes });
+});
+// The panel's grading part for a selected piece in a graded garment: one selected outline point's
+// table (dx, dy per size; typing a row sets its rule), Copy rule to… and Distribute with several
+// points, Proportional… for the selected pieces.
+function gradeSection() {
+    const t = sizeTable(nodes);
+    if (!t || selection?.kind !== "pattern") return [];
+    const id = selection.id, single = !selection.ids || selection.ids.length === 1, out = [];
+    const tools = make("div", { className: "grade-tools" });
+    const button = (key, text, title, fn, disabled = false) => { const b = make("button", { type: "button", textContent: text, title, disabled }); b.dataset.key = key; b.addEventListener("click", fn); tools.append(b); return b; };
+    const fail = (e) => status(e.message ?? String(e), true);
+    if (single && pointSel.length === 1) {
+        const v = pointSel[0], rows = gradeRows(nodes, id, v);
+        out.push(make("h4", { textContent: `Grade: point ${v + 1}` }));
+        const cell = (row, axis) => {
+            const input = make("input", { type: "text", value: String(Number(row.d[axis].toPrecision(7))), disabled: row.base, title: row.base ? "The base size is drafted: its rule is 0" : `${"xy"[axis]} move in ${row.size} from the base, mm` });
+            input.dataset.key = `grade-d${"xy"[axis]}-${row.size}`;
+            input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+            input.addEventListener("change", () => {
+                try {
+                    const typed = (a) => $("props").querySelector(`[data-key="grade-d${a}-${row.size}"]`).value;
+                    gradeChange("grade", { action: gradeRuleAction(nodes, id, v, row.size, typed("x"), typed("y")) });
+                } catch (e) { fail(e); renderProps(); }
+            });
+            return make("td", {}, input);
+        };
+        out.push(make("table", { className: "grade" }, make("tr", {}, make("th", { textContent: "Size" }), make("th", { textContent: "dx (mm)" }), make("th", { textContent: "dy (mm)" })),
+            ...rows.map((row) => make("tr", { className: row.current ? "current" : "" }, make("td", { textContent: row.base ? `${row.size} (base)` : row.size }), cell(row, 0), cell(row, 1)))));
+    } else if (single && pointSel.length > 1) {
+        out.push(make("h4", { textContent: `Grade: ${pointSel.length} points` }));
+        const from = make("select", { title: "The point whose rules Copy rule to… copies" }, ...pointSel.map((v) => make("option", { value: String(v), textContent: `from point ${v + 1}` })));
+        from.dataset.key = "grade-from";
+        tools.append(from);
+        button("grade-copy", "Copy rule to…", "Copy the From point's rules (every size) to the other selected points", () => {
+            try { gradeChange("grade", { action: gradeCopyAction(id, Number(from.value), pointSel) }); } catch (e) { fail(e); }
+        });
+        const n = nodes.find((x) => x.id === `${id}_outline`)?.path?.segments?.length ?? 0;
+        button("grade-distribute", "Distribute", "The points between the two selected (the shorter way round) get rules interpolated by length, every size", () => {
+            try { gradeChange("grade", { action: gradeDistributeAction(id, pointSel, n) }); } catch (e) { fail(e); }
+        }, pointSel.length !== 2);
+    } else out.push(make("h4", { textContent: "Grade" }));
+    button("grade-proportional", "Proportional…", "Every point of the selected pieces graded from a width and height change per size step", async () => {
+        const ids = liveIds(), wh = await askPair("Proportional: the change per size step", ["Width step", "Height step"], () => true, [20, 10]);
+        if (!wh) return;
+        try { gradeChange("grade", { action: gradeProportionalAction(ids, ...wh) }); status(`proportional: ${wh[0]} mm wide, ${wh[1]} mm high a size`, false); } catch (e) { fail(e); }
+    });
+    out.push(tools);
+    if (single && !pointSel.length) out.push(make("p", { className: "dim", textContent: "Select a point (Edit) for its grade table; in a size other than the base, a point dragged sets its rule." }));
+    return out;
 }
 
 // ---- the pattern transforms and the in-app clipboard (spec §2) -----------------------------
@@ -382,8 +511,9 @@ function removeSelected() {
     const kind = selection.kind;
     const pieces = kind === "pattern" ? (selection.ids ?? [selection.id]).filter((id) => nodes.some((n) => n.id === id)) : [];
     const ops = pieces.length > 1 ? model.removePatterns(nodes, pieces) : opsFor(selection, nodes, "remove", null);
-    change("ops", { ops, message: `remove ${kind === "pattern" ? (pieces.length > 1 ? "pieces" : "piece") : "seam"}` });
-    status(kind === "pattern" ? (pieces.length > 1 ? `removed ${pieces.length} pieces` : "removed the piece") : "removed the seam");
+    const group = kind === "seam" && membersOf(nodes, selection.id);   // an M:N group goes whole
+    change("ops", { ops, message: `remove ${kind === "pattern" ? (pieces.length > 1 ? "pieces" : "piece") : group ? "seam group" : "seam"}` });
+    status(kind === "pattern" ? (pieces.length > 1 ? `removed ${pieces.length} pieces` : "removed the piece") : group ? `removed the M:N group (${group.length} seams)` : "removed the seam");
     setSelection(null);
     return true;
 }
@@ -509,7 +639,7 @@ function handle(r) {
         });
     }
     if (r.select !== undefined) setSelection(r.select);
-    if (r.pointSel || r.ipointSel) { pointSel = r.pointSel ?? pointSel; ipointSel = r.ipointSel ?? ipointSel; postPointSel(); }
+    if (r.pointSel || r.ipointSel) { pointSel = r.pointSel ?? pointSel; ipointSel = r.ipointSel ?? ipointSel; postPointSel(); renderProps(); }
     if (r.done) setTool("edit");
     else if (toolStale && !previewing && !gesture2d()) freshTool();
     syncSnapBase();                       // done, or the overlay emptied: no last point, no lock
@@ -682,7 +812,7 @@ for (const [id, smooth] of [["point-curve", true], ["point-corner", false]]) $(i
 pmenu.box.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); closePointMenu(); cv.focus(); } });
 pmenu.box.addEventListener("focusout", (e) => { if (!pmenu.box.contains(e.relatedTarget)) closePointMenu(); });
 
-// The 3D tools (Pin, Drag): with one on, a left press in the 3D window is the tool's (the
+// The 3D tools (Pin, Drag, Place on avatar): with one on, a left press in the 3D window is the tool's (the
 // router below claims it), so the camera does not orbit; right and middle drag and the wheel
 // still move it.
 let tool3d = null;
@@ -691,8 +821,20 @@ function setTool3d(name) {
     if (tool3d && tape.on) tapeDo(tape.toggle());
     for (const b of document.querySelectorAll("[data-tool3d]")) b.classList.toggle("on", b.dataset.tool3d === tool3d);
     $("well").classList.toggle("tool3d", !!tool3d);
+    document.body.dataset.active3d = tool3d ?? "";
 }
 for (const b of document.querySelectorAll("[data-tool3d]")) b.addEventListener("click", () => setTool3d(b.dataset.tool3d));
+
+// The 3D gizmo (gizmo.js): the worker draws it over the selected placed piece and says where
+// (`gizmo`); a hover in the 3D window asks which part is under the pointer (one in flight), and
+// a left press on a part, with no 3D tool on, is the gizmo's drag (the router claims it).
+let gizmoShown = false, gizmoPart = null, gizmoDragging = false, gizmoSeq = 0;
+const gizmoHovers = new Latest((ev) => post({ kind: "gizmoHover", x: ev.x, y: ev.y, seq: ++gizmoSeq }));
+function onGizmo(m) {
+    gizmoShown = !!m.id;
+    if (!gizmoShown) { gizmoPart = null; gizmoHovers.drop(); }
+    document.body.dataset.gizmo = m.id && m.handles ? JSON.stringify(m.handles) : "";
+}
 
 // The fit map (fitmap.js): the select, the legend over the 3D window's corner, the value under
 // the pointer (one hover pick in flight). The Tape tool (tape3d.js): its clicks are 3D picks
@@ -761,7 +903,7 @@ function leave2d() {
 cv.addEventListener("pointerleave", leave2d);
 // The cursor of the window under the pointer: a crosshair in 2D (grabbing while it pans), a
 // crosshair in 3D while Pin or Drag is on.
-function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && (tool3d || tape.on) ? "crosshair" : ""; }
+function cursorAt(vp) { cv.style.cursor = vp === 1 ? (pan2d !== null ? "grabbing" : "crosshair") : vp === 0 && (tool3d || tape.on) ? "crosshair" : vp === 0 && (gizmoPart || gizmoDragging) ? "grab" : ""; }
 // Tab leaves the canvas (listen would keep it there; the app binds no Tab on the canvas)
 $("well").addEventListener("keydown", (e) => { if (e.key === "Tab" && !e.target.closest?.("#typed")) e.stopPropagation(); }, true);
 function flushMove() {
@@ -788,9 +930,14 @@ listen(cv, (ev) => {
             send2d("down", ev, mods2d(ev));
             return;
         }
+        if (vp === 0 && ev.button === 0 && !tool3d && !tape.on && gizmoShown && gizmoPart) {
+            claims.set(ev.pointerId, "gizmo"); gizmoDragging = true;
+            post({ kind: "tool3d", tool: "gizmo", part: gizmoPart, phase: "down", x: ev.x, y: ev.y, shift: shiftHeld || !!ev.shift });
+            return;
+        }
         if (vp === 0 && ev.button === 0 && tool3d) {
             claims.set(ev.pointerId, "3d");
-            post({ kind: "tool3d", tool: tool3d, phase: "down", x: ev.x, y: ev.y });
+            post({ kind: "tool3d", tool: tool3d, phase: "down", x: ev.x, y: ev.y, wrap: $("place-wrap").checked });
             return;
         }
         if (vp === 1 && ev.button === 1) ev = { ...ev, button: 0 };          // middle-drag pans the 2D window
@@ -814,6 +961,11 @@ listen(cv, (ev) => {
         keyHold.sent(seq2d);
         return;
     }
+    if (claim === "gizmo") {
+        if (ev.kind !== "move") { claims.delete(ev.pointerId); gizmoDragging = false; }
+        post({ kind: "tool3d", tool: "gizmo", phase: ev.kind === "move" ? "move" : "up", x: ev.x, y: ev.y, shift: shiftHeld || !!ev.shift });
+        return;
+    }
     if (claim === "3d") {
         if (ev.kind !== "move") claims.delete(ev.pointerId);
         post({ kind: "tool3d", tool: tool3d, phase: ev.kind === "cancel" ? "up" : ev.kind, x: ev.x, y: ev.y });
@@ -826,6 +978,8 @@ listen(cv, (ev) => {
         else if (vpNow !== 1) leave2d();
         if (pan2d === null) cursorAt(vpNow);
         if (fit.on && vpNow === 0 && !down3d) mapHovers.push(ev);
+        if (gizmoShown && vpNow === 0 && !down3d && !tool3d && !tape.on) gizmoHovers.push(ev);
+        else if (gizmoPart && vpNow !== 0) gizmoPart = null;
     }
     if (ev.kind === "up" && rightDown && rightDown.id === ev.pointerId) {
         if (Math.hypot(ev.x - rightDown.x, ev.y - rightDown.y) < CLICK_PX * dprNow() && toolName === "edit") send2d("context", ev, mods2d(ev));
@@ -956,6 +1110,8 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Shift" && !e.repeat) { shiftHeld = true; syncSnapBase(); }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.key === " ") { space = true; e.preventDefault(); return; }
+    // a gizmo drag: Escape puts the piece back where it was
+    if (e.key === "Escape" && gizmoDragging) { e.preventDefault(); gizmoDragging = false; post({ kind: "tool3d", tool: "gizmo", phase: "escape" }); return; }
     // the Tape's path being drawn: Enter keeps it, Escape drops it
     if (tape.current && (e.key === "Enter" || e.key === "Escape")) { e.preventDefault(); tapeDo(e.key === "Enter" ? tape.end() : tape.escape()); return; }
     if (e.key === "Escape") {
@@ -1047,10 +1203,9 @@ const menu = {
     importDxf() { pickFile(".dxf", async (f) => { const text = await f.text(); cancelPreview(); fitNext = true; change("importDxf", { text, fabric: currentFabric() }); }); },
     exportDxf() { document.activeElement?.blur(); post({ kind: "exportDxf" }); },
     avatar() {
-        pickFile(".stp,.step", async (f) => {
-            if (/\.stl$/i.test(f.name)) { status("STL avatars need the kernel's STL reader; use STEP for now", true); return; }
+        pickFile(".stp,.step,.stl", async (f) => {
             const bytes = await f.arrayBuffer();
-            post({ kind: "avatar", bytes, name: f.name.replace(/\.[^.]+$/, "") }, [bytes]);
+            post({ kind: "avatar", bytes, name: f.name.replace(/\.[^.]+$/, ""), format: avatarFormat(f.name) }, [bytes]);
         });
     },
 };
@@ -1106,11 +1261,13 @@ worker.onmessage = ({ data: m }) => {
         case "status": status(m.text); break;
         // the cloth's materials as last drawn: how many textures (the browser test waits on it)
         case "look": document.body.dataset.lookTextures = String(m.textures); break;
+        case "gizmo": onGizmo(m); break;
+        case "gizmoHover": gizmoHovers.done(); gizmoPart = m.part ?? null; document.body.dataset.gizmoHover = gizmoPart ?? ""; break;
         case "formBuilding": status("building the form…"); break;
         case "formFailed": formAskedAt = null; break;
         case "sim": onSim(m); break;
         case "at2d": onAt2d(m); break;
-        case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; break;
+        case "scene2d": document.body.dataset.items2d = String(m.items); document.body.dataset.hover2d = m.hover ?? ""; document.body.dataset.nest = m.nest ?? ""; break;
         case "picked": if (m.tape) tapeDo(tape.click(m.target, m.point)); else if (m.seq === selSeq) setSelection(m.selection); break;   // else the selection moved on since
         case "mapValue":
             mapHovers.done();
@@ -1139,12 +1296,19 @@ const pointCount = () => (selection?.kind === "pattern" ? nodes.find((n) => n.id
 const internalSig = () => (selection?.kind === "pattern" ? (nodes.find((n) => n.id === selection.id)?.internal ?? []).map((l) => l.path?.segments?.length ?? 0).join(",") : "");
 function onDoc(m) {
     const points0 = pointCount(), internal0 = internalSig();
+    // a selected M:N group: its members after the change (a re-distribution may renew their ids)
+    const group = selection?.kind === "seam" ? groupOf(nodes.find((n) => n.id === selection.id))?.id ?? null : null;
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
     looks.images = m.images ?? {};
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection
-    const kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
+    let kept = survivingSelection(selection, (id) => exists({ ...selection, id }));
+    if (group) {
+        const first = nodes.find((n) => groupOf(n)?.id === group);
+        const again = first ? groupSelection({ kind: "seam", id: first.id }, nodes) : null;
+        if (again && JSON.stringify(again) !== JSON.stringify(kept)) kept = again;
+    }
     // a paste's or duplicate's new pieces, once they are in
     if (selectAfter && m.seq >= selectAfter.seq) { const sel = selectAfter.sel; selectAfter = null; if (exists(sel)) setSelection(sel); else if (kept !== selection) setSelection(kept); }
     else if (kept !== selection) setSelection(kept);
@@ -1154,6 +1318,7 @@ function onDoc(m) {
     if (previewing || gesture2d()) toolStale = true; else freshTool();
     renderBrowser();
     renderProps();
+    renderSizes();
     renderIssues();
     draw2d();
 }

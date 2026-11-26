@@ -9,7 +9,7 @@
 // and each piece, in `layer` order, gets a band above it -- its fill, then its lines, then its
 // seams and their numbers -- so the grid draws under every fill and a higher layer covers (and
 // picks over) a lower one. Only the depth changes: every x, y the app reads stays the pattern's.
-import { seamColour } from "./sewing.js";
+import { seamColour, seamColourIndex } from "./sewing.js";
 import { pointsOf, internalPointsOf, xformHandles } from "./view2d.js";
 
 export const LAYER_2D = 1;
@@ -28,6 +28,10 @@ const hex = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
 const toHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`;
 /** A fabric colour mixed 30 % over the background: opaque, so the lines read over it (ruling 17). */
 export const fillColour = (c, k = 0.3) => { const a = hex(c), b = hex(BG); return toHex(a.map((v, i) => b[i] + (v - b[i]) * k)); };
+
+/** Size k of n's outline colour in Show sizes: the accent mixed over the background, 55 % for the
+ *  first size up to all of it for the last. */
+export const sizeColour = (k, n) => fillColour(ACCENT, n > 1 ? 0.55 + (0.45 * k) / (n - 1) : 1);
 
 // [x0, y0, x1, y1, ...] -> segments x y z x y z, closed when asked
 function segs(ring, closed = false, z = 0) {
@@ -107,7 +111,8 @@ function xformSpecs(drawings, selection, mmPerPx, z) {
 
 // xform: the Move tool is on (its box and handles round the selection); mmPerPx the 2D scale.
 // prints(d, band): a piece's prints as specs (prints.js printSpecs), drawn in its band.
-export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null, prints = null }) {
+// nest: Show sizes' outlines (kernel.js sizeNest), each drawn in the accent's ramp by its size.
+export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null, prints = null, nest = [] }) {
     const out = [];
     const picked = (id) => selection?.kind === "pattern" && (selection.id === id || selection.ids?.includes(id));
     const ordered = [...drawings].sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0));
@@ -141,6 +146,10 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             out.push({ key: `${id}/grain`, show: "lines", data: [g[0], g[1], z.line, g[2], g[3], z.line], colour: GRAIN, what: { kind: "grain", id }, sig });
             out.push({ key: `${id}/grainhead`, show: "glyphs", data: [g[2], g[3], z.line], colour: GRAIN, glyph: { kind: "arrow", dir: [g[2] - g[0], g[3] - g[1], 0], sizePt: 10 }, what: { kind: "grain", id }, sig });
         }
+        // Show sizes (A3 spec §5): every other size's outline, thin and dashed, in a ramp of the
+        // accent from the smallest size (faint) to the largest; the current size is the outline itself, solid
+        for (const g of nest) if (g.id === id) out.push({ key: `${id}/size/${g.size}`, show: "curves", data: liftBeziers(g.beziers, z.line), colour: sizeColour(g.k, g.n), dash: { dash: 4, gap: 2 }, onTop: true,
+            what: { kind: "sizes", id, size: g.size }, sig: `${Array.from(g.beziers).join(",")}@${r}` });
         if (d.label && d.bounds) out.push({ key: `${id}/label`, show: "text", text: d.label, data: [(d.bounds[0] + d.bounds[2]) / 2, (d.bounds[1] + d.bounds[3]) / 2, z.line], colour: LABEL, size: 12, what: { kind: "label", id }, sig: d.label + sig });
         // the edit points: not under the Move tool, whose handles would share a rectangle's corners
         if (!xform && selection?.kind === "pattern" && selection.id === id) {
@@ -172,9 +181,13 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
     }
     if (xform) out.push(...xformSpecs(drawings, selection, mmPerPx, bandOf(ordered.length).seam));
     const byId = new Map(drawings.map((d) => [d.id, d]));
+    // an M:N group's members share their first member's colour and number, numbered n.1, n.2, ...
+    const index = seamColourIndex(seams);
     seams.forEach((s, i) => {
         // seams are select-only for colour this round: no hover recolour (hover2d is a piece id)
-        const colour = selection?.kind === "seam" && selection.id === s.id ? ACCENT : seamColour(i);
+        const on = selection?.kind === "seam" && (selection.id === s.id || !!selection.ids?.includes(s.id));
+        const colour = on ? ACCENT : seamColour(index[i]);
+        const no = s.group ? `${index[i] + 1}.${(s.member ?? 0) + 1}` : String(i + 1);
         for (const [end, pts, pattern] of [["a", s.points_a, s.a], ["b", s.points_b, s.b]]) {
             if (!pts || pts.length < 4) continue;
             const r = rank.get(pattern) ?? 0;
@@ -186,8 +199,8 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             const r = rank.get(s.a) ?? 0;
             const { at, normal: [nx, ny] } = midOut(s.points_a, byId.get(s.a)?.sew);
             const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(SEAM_NO_PX * ny * 10) / 10 + 0];   // the View's offset y runs up the screen
-            out.push({ key: `seam/${s.id}/no`, show: "text", text: String(i + 1), data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
-                offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${i + 1}@${at[0]},${at[1]}@${r}` });
+            out.push({ key: `seam/${s.id}/no`, show: "text", text: no, data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
+                offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${no}@${at[0]},${at[1]}@${r}` });
         }
     });
     return out.filter((s) => s.show === "text" || (s.data && (s.data.length ?? s.data.indices?.length) > 0));

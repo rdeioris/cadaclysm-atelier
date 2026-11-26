@@ -3,15 +3,18 @@
 // for the worker's `ready`, then with real pointer and key events: draws a rectangle, drags a
 // corner, maximises, arranges, edits the properties (typing + Tab keeps the focus), adds a
 // library fabric, draws a second rectangle and sews the two with "Sew sides", picks the seam in
-// 2D, deletes it and a piece (each undone), moves a piece with the Move tool, types an
-// allowance and saves with Ctrl+S (the download is read back), New and Open, refuses an STL
-// avatar, loads the T-shirt sample, exports it as DXF (4 BLOCKs) and imports that back. Then
+// 2D, deletes it and a piece (each undone), sews an M:N group (deleted, ungrouped, undone),
+// moves a piece with the Move tool, types an allowance and saves with Ctrl+S (the download is
+// read back), New and Open, loads an STL avatar, loads the T-shirt sample, places its Front on
+// the avatar and drags it with the 3D gizmo (each undone), exports it as DXF (4 BLOCKs) and
+// imports that back, and imports a DXF with an internal line, a fold and a hole. Then
 // the live drape on the sample: Simulate, frames arrive, a pin, a drag on the cloth, a 2D move
 // of a piece while it runs (re-meshed), Pause, Reset, on the cloth engine the page picked (the GPU on
 // WebGPU, else the CPU worker; #sim-engine checked). Then the 2D tools on a new garment, ending
 // with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
 // internal square by dialog converted to a hole, another traced out as a piece, and a corner
-// filleted to a typed radius. Each step prints ok. Any console error or uncaught exception, in
+// filleted to a typed radius; then grading: sizes by the Sizes dialog, Proportional, a drag in L, the grade table,
+// size switches, Show sizes and undo. Each step prints ok. Any console error or uncaught exception, in
 // the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
@@ -23,6 +26,12 @@
 //     ATELIER_SHOT_POSED=posed.png ATELIER_HOODIE=<hoodie.json>  # V3: a garment opened, the form at A-pose with
 //                                                        # the left knee bent (ATELIER_KNEE, default 30), draped
 //     ATELIER_V3_ONLY=1 ...                              # only the V3 block (custom forms), after the page is ready
+//     ATELIER_A2_ONLY=1 ...                              # only the A2 block (place on avatar, the gizmo), on the sample
+//     ATELIER_SHOT_GIZMO=gizmo.png ...                   # also the gizmo over the sample's Front, its X arrow hovered
+//     ATELIER_SHOT_PLACE=place.png ...                   # also a sleeve placed on an arm by Place (wrapped round it)
+//     ATELIER_SHOT_MN=mn.png ...                         # also the M:N group selected in 2D (its seams numbered)
+//     ATELIER_SHOT_DXF=dxf.png ...                       # also the imported DXF piece with its internal lines and hole
+//     ATELIER_SHOT_GRADE=grade.png ATELIER_SHOT_NEST=nest.png  # A3: the grade table of a graded corner, the graded nest (Show sizes)
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
 //                                                        # on a WebGPU page (ATELIER_CLOTH=gpu: required)
@@ -38,6 +47,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { loadKernel } from "./package.mjs";
+import { stlOf } from "./stl.mjs";
+import { Atelier } from "../kernel.js";
+import * as mm from "../model.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
@@ -350,7 +363,130 @@ async function check(cdp, base) {
             if (!clothWanted && !adapter) console.log("note - no WebGPU adapter in this browser: the cloth runs on the CPU");
             await until("the default fabric", async () => (await count("fabrics", "fabric")) === 1, 30000);
             await until("the avatar", async () => (await count("avatar", "avatar")) === 1, 60000);
+            // Place on avatar (spec §4) and the gizmo (spec §3) on the sample's Front (A2 lane;
+            // ATELIER_A2_ONLY=1 runs it alone, on the sample, after the page is ready)
+            const a2Block = async () => {
+                const st = () => evaluate(`document.getElementById("status-text").textContent`);
+                await evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === "Front").click()`);
+                await until("the Front's panel", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                if ((await evaluate(`getComputedStyle(document.querySelector(".place-opts")).display`)) === "none") throw new Error("the Wrap toggle is hidden with Place on");
+                if (!(await evaluate(`document.getElementById("place-wrap").checked`))) throw new Error("Wrap is off by default");
+                const [qx, qy, qw, qh] = await windowBox("rect3d");
+                let placedAt = null;
+                for (const [fx, fy] of [[0.5, 0.15], [0.5, 0.2], [0.5, 0.85], [0.45, 0.8], [0.55, 0.8], [0.5, 0.9], [0.5, 0.1], [0.4, 0.5], [0.6, 0.5]]) {
+                    await evaluate(`document.getElementById("status-text").textContent = ""`);
+                    await click([qx + qw * fx, qy + qh * fy]);
+                    const t = await until("Place: an answer", async () => (await st()) || null, 30000);
+                    if (t.startsWith("placed ")) { placedAt = [fx, fy]; break; }
+                }
+                if (!placedAt) throw new Error(`Place on avatar: never on the avatar (${await st()})`);
+                await until("the at: slot", () => evaluate(`${field("slot")}?.value.startsWith("at:")`), 30000);
+                const label = await evaluate(`${field("slot")}.selectedOptions[0].textContent`);
+                if (label !== "On avatar") throw new Error(`the Slot select shows ${label}`);
+                await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("the front slot back", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok(`Place on avatar: a click at ${placedAt} put the Front on an at: slot ("On avatar"); one undo`);
+                if (process.env.ATELIER_SHOT_PLACE) {
+                    // the Left sleeve placed by a click on an arm, wrapped round it (a click elsewhere: flat)
+                    const pick = (label) => evaluate(`[...document.querySelectorAll('#browser-patterns li[data-kind=pattern]')].find((li) => li.textContent === ${JSON.stringify(label)}).click()`);
+                    await pick("Left sleeve");
+                    await until("the sleeve's panel", () => evaluate(`${field("slot")}?.value === "left_arm"`), 30000);
+                    await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                    let how = null;
+                    const tries = [];
+                    for (const fy of [0.3, 0.35, 0.4, 0.25, 0.45]) for (const fx of [0.62, 0.66, 0.7, 0.58, 0.74, 0.38, 0.34, 0.3, 0.42, 0.26]) tries.push([fx, fy]);
+                    for (const [fx, fy] of tries) {
+                        await evaluate(`document.getElementById("status-text").textContent = ""`);
+                        await click([qx + qw * fx, qy + qh * fy]);
+                        const t = await until("Place: an answer", async () => (await st()) || null, 30000);
+                        if (t.includes("wrapped round the arm")) { how = `wrapped, a click at ${fx},${fy}`; break; }
+                        if (t.startsWith("placed ")) { await key("z", "KeyZ", 90, 2); await until("the sleeve's slot back", () => evaluate(`${field("slot")}?.value === "left_arm"`), 30000); }
+                    }
+                    if (!how) {
+                        await evaluate(`document.getElementById("status-text").textContent = ""`);
+                        await click([qx + qw * placedAt[0], qy + qh * placedAt[1]]);
+                        await until("Place: an answer", async () => (await st()) || null, 30000);
+                        how = "flat (no arm click wrapped)";
+                    }
+                    await evaluate(`document.querySelector('[data-tool3d=place]').click()`);
+                    await sleep(500); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_PLACE, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_PLACE}: the Left sleeve placed ${how}`);
+                    await key("z", "KeyZ", 90, 2);
+                    await until("the sleeve's slot back", () => evaluate(`${field("slot")}?.value === "left_arm"`), 30000);
+                    await pick("Front");
+                    await until("the Front's panel again", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                    await noStatusError();
+                    failIfErrors();
+                }
+
+                // the gizmo (spec §3) over the selected Front: a drag of its X arrow moves it, the
+                // slot becomes custom, one undo takes it back; Escape mid-drag puts it back
+                const handles = async () => {
+                    // settled: the same twice, 300 ms apart (an undo's redraw may still be on its way)
+                    let h = null;
+                    await until("the gizmo's handles", async () => { const was = h; await sleep(300); h = await evaluate(`document.body.dataset.gizmo || null`); return h && h === was; }, 30000);
+                    const [vx, vy] = await evaluate(`(() => { const r = document.getElementById("view").getBoundingClientRect(); return [r.left, r.top]; })()`);
+                    const dpr = await evaluate("devicePixelRatio");
+                    return Object.fromEntries(Object.entries(JSON.parse(h)).filter(([, p]) => p).map(([k, p]) => [k, [vx + p[0] / dpr, vy + p[1] / dpr]]));
+                };
+                const grab = async (part) => {
+                    const at = (await handles())[part];
+                    if (!at) throw new Error(`the gizmo has no ${part} handle`);
+                    const seen = [];
+                    for (const [ox, oy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [2, 2], [-2, -2]]) {
+                        await evaluate(`document.body.dataset.gizmoHover = "?"`);
+                        await mouse("mouseMoved", at[0] + ox, at[1] + oy, { buttons: 0 });
+                        const hv = await until("the gizmo hover", async () => { const v = await evaluate(`document.body.dataset.gizmoHover`); return v === "?" ? null : v || "none"; }, 10000);
+                        seen.push(hv);
+                        if (hv === part) return [at[0] + ox, at[1] + oy];
+                    }
+                    throw new Error(`the gizmo's ${part} is not under its handle at ${at} (hovers: ${seen.join(", ")}; handles ${await evaluate(`document.body.dataset.gizmo`)})`);
+                };
+                let g = await grab("tx");
+                if (process.env.ATELIER_SHOT_GIZMO) {
+                    await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_GIZMO, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_GIZMO}`);
+                }
+                await mouse("mousePressed", g[0], g[1]);
+                for (let i = 1; i <= 6; i++) { await mouse("mouseMoved", g[0] + 10 * i, g[1]); await sleep(40); }
+                await until("the drag's read-out", async () => /^move along X \d/.test(await st()) || null, 30000);
+                const readout = await st();
+                await mouse("mouseReleased", g[0] + 60, g[1]);
+                await until("the custom slot", () => evaluate(`${field("slot")}?.value === "custom"`), 30000);
+                const glabel = await evaluate(`${field("slot")}.selectedOptions[0].textContent`);
+                if (glabel !== "Custom (3D)") throw new Error(`the Slot select shows ${glabel} after a gizmo move`);
+                await until("the gizmo move's status", async () => /^moved Front in 3D/.test(await st()) || null, 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("the front slot back after the gizmo's undo", () => evaluate(`${field("slot")}?.value === "front"`), 30000);
+                // Escape mid-drag: nothing committed
+                g = await grab("tx");
+                await mouse("mousePressed", g[0], g[1]);
+                for (let i = 1; i <= 4; i++) { await mouse("mouseMoved", g[0] + 10 * i, g[1]); await sleep(40); }
+                await until("the second drag's read-out", async () => /^move along X \d/.test(await st()) || null, 30000);
+                await key("Escape", "Escape", 27);
+                await until("the cancel", async () => (await st()) === "gizmo move cancelled" || null, 30000);
+                await mouse("mouseReleased", g[0] + 40, g[1]);
+                await sleep(300);
+                if ((await evaluate(`${field("slot")}?.value`)) !== "front") throw new Error("Escape did not cancel the gizmo move");
+                await noStatusError();
+                failIfErrors();
+                ok(`gizmo: an X arrow drag (${readout}) made the slot custom; Ctrl+Z undid it; Escape cancels a drag`);
+            };
             if (process.env.ATELIER_V3_ONLY === "1") { await v3(); failIfErrors(); ok("V3 block alone"); return; }
+            if (process.env.ATELIER_A2_ONLY === "1") {
+                await evaluate(`document.getElementById("menu-sample").click()`);
+                await until("the T-shirt", async () => (await patternCount()) === 4, 30000);
+                await until("the sample's Front in 3D", () => evaluate(`!!document.getElementById("view").dataset.rect3d`), 30000);
+                await a2Block(); failIfErrors(); ok("A2 block alone"); return;
+            }
             const robots = await evaluate(`document.querySelector('meta[name=robots]')?.content`);
             if (robots !== "noindex") throw new Error(`robots meta is ${robots}`);
             const fps = await evaluate(`document.getElementById("fps").textContent`);
@@ -500,6 +636,51 @@ async function check(cdp, base) {
             failIfErrors();
             ok("seam picked in 2D, deleted, undone; piece removed with its seam, undone");
 
+            // M:N sewing (A2 spec §1): the Sew M:N tool (B) takes the first piece's top and bottom
+            // (side A), Enter, the second piece's top (side B), Enter: one group of two kernel seams,
+            // listed once. Selecting it shows Ungroup; Delete removes both; Ctrl+Z brings both back.
+            {
+                const groupItem = () => evaluate(`[...document.querySelectorAll('#browser-seams li[data-kind=seam]')].map((li) => li.textContent).find((t) => /M:N/.test(t)) ?? ""`);
+                await key("b", "KeyB", 66);
+                await until("the Sew M:N tool", () => evaluate(`document.querySelector('#tools2d [data-tool].on')?.dataset.tool === "sewmn"`), 10000);
+                await click([a[0] + 0.25 * (b[0] - a[0]), a[1]]);
+                await click([a[0] + 0.25 * (b[0] - a[0]), b[1]]);
+                await until("side A's two ranges drawn", () => evaluate(`document.body.dataset.labels2d === "A1|A2"`), 10000);
+                await key("Enter", "Enter", 13);
+                await click([c[0] + 0.25 * (d[0] - c[0]), c[1]]);
+                await until("side B's range drawn", () => evaluate(`document.body.dataset.labels2d === "A1|A2|B1"`), 10000);
+                await key("Enter", "Enter", 13);
+                await until("the M:N group in the browser", async () => (await seamCount()) === 2 && /M:N, 2 seams/.test(await groupItem()), 30000);
+                await noStatusError();
+                const pickGroup = () => evaluate(`[...document.querySelectorAll('#browser-seams li[data-kind=seam]')].find((li) => /M:N/.test(li.textContent)).click()`);
+                await pickGroup();
+                await until("the group's panel", () => evaluate(`!!${field("ungroup")} && /Seam group/.test(document.getElementById("props").textContent)`), 30000);
+                if (process.env.ATELIER_SHOT_MN) {
+                    await sleep(500); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_MN, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_MN}`);
+                }
+                await key("Delete", "Delete", 46);
+                await until("the group deleted", async () => (await seamCount()) === 1 && !(await groupItem()), 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("the group back after Ctrl+Z", async () => /M:N, 2 seams/.test(await groupItem()), 30000);
+                // Ungroup: two plain seams; Ctrl+Z, then the group goes again (the steps below expect one seam)
+                await pickGroup();
+                await until("the Ungroup button", () => evaluate(`!!${field("ungroup")}`), 30000);
+                await evaluate(`${field("ungroup")}.click()`);
+                await until("ungrouped: three plain seams", async () => (await seamCount()) === 3 && !(await groupItem()), 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("the group back after Ctrl+Z", async () => /M:N, 2 seams/.test(await groupItem()), 30000);
+                await pickGroup();
+                await until("the group's panel", () => evaluate(`!!${field("ungroup")}`), 30000);
+                await key("Delete", "Delete", 46);
+                await until("the group deleted", async () => (await seamCount()) === 1 && !(await groupItem()), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("Sew M:N: a 2 -> 1 group of two seams, listed once; deleted and undone; ungrouped and undone");
+            }
+
             // the Move tool: a drag with pauses (several previews) moves the piece by exactly the drag
             const outlineOf = (json, label) => {
                 const p = json.nodes.find((n) => n.kind === "garment.pattern" && n.label === label);
@@ -593,14 +774,20 @@ async function check(cdp, base) {
             failIfErrors();
             ok("New, then Open: two patterns, one seam, two fabrics back");
 
-            // an STL avatar is refused with a message until the kernel reads STL
-            const stlFile = join(downloads, "tetra.stl");
-            writeFileSync(stlFile, "solid t\nendsolid t\n");
-            await pickInto("menu-avatar", stlFile, ".stp");
-            await until("the STL message", () => evaluate(`/STL avatars need/.test(document.getElementById("status-text").textContent)`), 30000);
-            if ((await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent`)) !== "f-M") throw new Error("the avatar changed");
+            // an STL avatar (spec §7): f-M written as an STL through the kernel's reader loads, with
+            // no landmarks; the Form select below brings f-M back
+            const stlFile = join(downloads, "f-M-stl.stl");
+            {
+                const k = await loadKernel();
+                const sc = k.open(new Uint8Array(readFileSync(join(root, "assets", "f-M.stp"))), "step", undefined, "native");
+                try { writeFileSync(stlFile, stlOf(sc)); } finally { sc.free(); }
+            }
+            await pickInto("menu-avatar", stlFile, ".stl");
+            await until("the STL avatar", () => evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]')?.textContent === "f-M-stl"`), 60000);
+            if ((await evaluate(`document.body.dataset.avatarHead`)) !== "0") throw new Error("the STL avatar has a head");
+            await noStatusError();
             failIfErrors();
-            ok("STL avatar refused, f-M kept");
+            ok("STL avatar: f-M as an STL loads");
 
             // the Form select: f-M with head loads, its landmarks carry a head; back to f-M
             await evaluate(`document.querySelector('#browser-avatar li[data-kind=avatar]').click()`);
@@ -685,6 +872,8 @@ async function check(cdp, base) {
             failIfErrors();
             ok(`hover dropped in 3D; middle and Space drags pan 2D (${midDx.toFixed(1)}, ${spaceDx.toFixed(1)} mm)`);
 
+            await a2Block();
+
             // 6. DXF export: one BLOCK per piece; imported into a new document, four pieces
             await evaluate(`document.getElementById("menu-export-dxf").click()`);
             const dxf = await waitFile("garment.dxf");
@@ -697,6 +886,44 @@ async function check(cdp, base) {
             await noStatusError();
             failIfErrors();
             ok("DXF export: 4 BLOCKs; imported back: 4 pieces");
+
+            // a DXF with an internal line, a fold and a hole (A2 spec §6), written by the kernel's
+            // AAMA writer from a garment built in Node: imported, the piece keeps all three
+            {
+                const k = await loadKernel();
+                const params = Object.fromEntries(mm.FABRIC_FIELDS.map((n) => [n, 1]));
+                const src = new Atelier(k);
+                src.reset(mm.newDocumentOps({ slug: "x", label: "X", params }));
+                const outer = mm.rectPath(0, 0, 300, 200), hole = mm.rectPath(180, 60, 60, 80);
+                src.apply(mm.addPattern(src.nodes(), { label: "Panel", path: { ...outer, holes: [{ start: hole.start, segments: hole.segments }] }, fabric: "f_x", allowance: 10 }).ops, "panel");
+                src.apply(mm.addInternal(src.nodes(), "p1", mm.openPath([[30, 30], [120, 30], [120, 160]]), "line"), "line");
+                src.apply(mm.addInternal(src.nodes(), "p1", mm.openPath([[270, 20], [270, 180]]), "fold"), "fold");
+                writeFileSync(join(downloads, "inner.dxf"), src.toDxf());
+                src.free();
+            }
+            await evaluate(`document.getElementById("menu-new").click()`);
+            await until("an empty document for the DXF", async () => (await patternCount()) === 0, 30000);
+            await pickInto("menu-import-dxf", join(downloads, "inner.dxf"), ".dxf");
+            await until("the imported panel", async () => (await patternCount()) === 1, 30000);
+            await noStatusError();
+            {
+                const got = await saveNow();
+                const p = got.nodes.find((n) => n.kind === "garment.pattern");
+                const path = got.nodes.find((n) => n.id === p.outline).path;
+                const kinds = (p.internal ?? []).map((l) => l.kind).sort().join(",");
+                if ((path.holes ?? []).length !== 1) throw new Error(`the imported panel has ${(path.holes ?? []).length} holes, not 1`);
+                if (kinds !== "fold,line") throw new Error(`the imported panel's internal lines: ${kinds}`);
+            }
+            if (process.env.ATELIER_SHOT_DXF) {
+                await evaluate(`document.querySelector('#browser-patterns li[data-kind=pattern]').click()`);
+                await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                await sleep(1000); await frames();
+                const { data } = await send("Page.captureScreenshot", { format: "png" });
+                writeFileSync(process.env.ATELIER_SHOT_DXF, Buffer.from(data, "base64"));
+                ok(`screenshot ${process.env.ATELIER_SHOT_DXF}`);
+            }
+            failIfErrors();
+            ok("DXF import: a piece with an internal line, a fold and a hole keeps all three");
 
             // 7. the live drape on the sample
             await sample();
@@ -1690,6 +1917,106 @@ async function check(cdp, base) {
                 await noStatusError();
                 failIfErrors();
                 ok("unfold: a click on the left side made the piece whole (6 sides, twice as wide); Fold back gave the half");
+
+                // ---- grading (A3): sizes by the dialog (typed, reordered), Proportional…, an Edit drag in L
+                // sets the corner's rule, the grade table types one, switches, Show sizes, undo ----
+                const docNow = async () => (await saveJson()).nodes;
+                const tableNow = async () => (await docNow()).find((n) => n.id === "garment").meta?.atelier?.grading ?? null;
+                const rulesNow = async () => (await docNow()).find((n) => n.id === pid).meta?.atelier?.grade?.rules ?? {};
+                await evaluate(`document.getElementById("sizes-open").click()`);
+                if (!(await evaluate(`document.getElementById("sizes-dialog").open`))) throw new Error("Sizes… did not open its dialog");
+                for (const name of ["M", "L", "XL", "S"]) {
+                    const n0 = await evaluate(`document.querySelectorAll("#sizes-list li").length`);
+                    await evaluate(`document.getElementById("sizes-name").focus()`);
+                    await send("Input.insertText", { text: name });
+                    await key("Enter", "Enter", 13);
+                    await until(`size ${name} in the dialog`, () => evaluate(`document.querySelectorAll("#sizes-list li").length === ${n0 + 1}`), 30000);
+                }
+                // S up three times: S M L XL; each move one batch
+                for (let i = 0; i < 3; i++) {
+                    const order = await evaluate(`[...document.querySelectorAll("#sizes-list input[type=text]")].map((e) => e.value).join(",")`);
+                    await evaluate(`[...document.querySelectorAll("#sizes-list li")].at(${3 - i}).querySelector("button").click()`);
+                    await until("the size moved up", () => evaluate(`[...document.querySelectorAll("#sizes-list input[type=text]")].map((e) => e.value).join(",") !== ${JSON.stringify(order)}`), 30000);
+                }
+                const t0 = await tableNow();
+                if (JSON.stringify(t0) !== JSON.stringify({ sizes: ["S", "M", "L", "XL"], base: "M", current: "M" })) throw new Error(`the size table: ${JSON.stringify(t0)}`);
+                await evaluate(`document.getElementById("sizes-close").click()`);
+                const options = await evaluate(`[...document.getElementById("size-select").options].map((o) => o.textContent).join(",")`);
+                if (options !== "S,M (base),L,XL") throw new Error(`the size select: ${options}`);
+                // Proportional… on the selected piece: 20 mm wide, 10 high a size step
+                await evaluate(`document.querySelector('#browser li[data-kind=pattern][data-id="${pid}"]').click()`);
+                await until("the Proportional button", () => evaluate(`!!${field("grade-proportional")}`), 10000);
+                await evaluate(`${field("grade-proportional")}.click()`);
+                await until("the step dialog", () => evaluate(`document.getElementById("size-dialog").open && document.getElementById("size-w").value === "20"`), 10000);
+                await evaluate(`document.getElementById("size-ok").click()`);
+                const outM = await pathOf(pid), vM = [outM.start, ...outM.segments.slice(0, -1).map((g) => g.to)];
+                const tr = vM.findIndex((q) => Math.abs(q[0] - o[0] - 200) < 1e-6 && Math.abs(q[1] - o[1] - 100) < 1e-6);
+                if (tr < 0) throw new Error(`no top right corner in ${JSON.stringify(vM)}`);
+                await until("the proportional rules", async () => JSON.stringify((await rulesNow())[tr]) === JSON.stringify({ S: [-10, -5], L: [10, 5], XL: [20, 10] }), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await rulesNow())}`); });
+                if (JSON.stringify(await pathOf(pid)) !== JSON.stringify(outM)) throw new Error("rules set in M moved the outline");
+                // switch to L: the corner moves by its rule
+                const pickSize = (s) => evaluate(`(() => { const e = document.getElementById("size-select"); e.value = ${JSON.stringify(s)}; e.dispatchEvent(new Event("change")); })()`);
+                await pickSize("L");
+                await until("size L", async () => hasPoint(await pathOf(pid), [o[0] + 210, o[1] + 105], 1e-6), 30000);
+                if (await evaluate(`document.body.dataset.size`) !== "L") throw new Error("the select does not show L");
+                // an Edit drag of the corner in L sets its L rule (+10 mm more in x)
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                const cL = screenAt([o[0] + 210, o[1] + 105]);
+                await worldOf(cL);
+                if (await evaluate(`document.body.dataset.hit`) !== "point") throw new Error(`the L corner hovers as ${await evaluate(`document.body.dataset.hit`)}`);
+                await drag(cL, screenAt([o[0] + 220, o[1] + 105]));
+                const dragged = await until("the drag's L rule", async () => { const r = (await rulesNow())[tr]; return r && Math.abs(r.L[0] - 20) < 2 && r.L[0] !== 10 ? r : null; }, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: ${JSON.stringify(await rulesNow())}; status "${await evaluate(`document.getElementById("status-text").textContent`)}"`); });
+                if (JSON.stringify(dragged.XL) !== "[20,10]" || JSON.stringify(dragged.S) !== "[-10,-5]") throw new Error(`the drag changed other sizes: ${JSON.stringify(dragged)}`);
+                await noStatusError();
+                // the grade table: a click selects the corner; its rows; dx typed in L
+                const cL2 = screenAt([o[0] + 200 + dragged.L[0], o[1] + 100 + dragged.L[1]]);
+                await worldOf(cL2);
+                await click(cL2);
+                await until("the grade table", () => evaluate(`!!${field("grade-dx-L")}`), 10000);
+                const rows = await evaluate(`[...document.querySelectorAll("#props table.grade tr")].slice(1).map((r) => [...r.querySelectorAll("td")].map((c) => c.querySelector("input")?.value ?? c.textContent).join(" "))`);
+                if (rows[1] !== "M (base) 0 0" || !rows[3].startsWith("XL 20 10")) throw new Error(`the grade rows: ${JSON.stringify(rows)}`);
+                if (!(await evaluate(`${field("grade-dx-M")}.disabled`))) throw new Error("the base row is editable");
+                await typeInto("grade-dx-L", "25");
+                await key("Enter", "Enter", 13);
+                await until("the typed rule", async () => (await rulesNow())[tr]?.L?.[0] === 25, 30000);
+                await until("L follows the typed rule", async () => hasPoint(await pathOf(pid), [o[0] + 225, o[1] + 100 + dragged.L[1]], 1e-6), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok(`grading: sizes added and reordered in the dialog (S M L XL), Proportional… 20 x 10, an Edit drag in L set the corner's rule (${dragged.L.map((v) => v.toFixed(1)).join(", ")}), the table typed 25`);
+                if (process.env.ATELIER_SHOT_GRADE) {          // fitted: screenAt is stale after it (nothing below uses it)
+                    await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                    await sleep(1000); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_GRADE, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_GRADE}`);
+                }
+                // Show sizes: the other sizes' outlines of the selected piece, not saved; M back to the base
+                await evaluate(`document.getElementById("show-sizes").click()`);
+                await until("the graded nest", () => evaluate(`document.body.dataset.nest === "${pid}:S,${pid}:M,${pid}:XL"`), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: nest "${await evaluate(`document.body.dataset.nest`)}"`); });
+                if (process.env.ATELIER_SHOT_NEST) {
+                    await sleep(1000); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_NEST, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_NEST}`);
+                }
+                if ((await docNow()).some((n) => JSON.stringify(n.meta ?? {}).includes("showSizes"))) throw new Error("Show sizes was saved");
+                await pickSize("M");
+                await until("size M", async () => JSON.stringify(await pathOf(pid)) === JSON.stringify(outM), 30000);
+                await until("the nest in M", () => evaluate(`document.body.dataset.nest === "${pid}:S,${pid}:L,${pid}:XL"`), 30000);
+                // undo: back in L (the switch one step), then the typed rule undone
+                await evaluate(`document.activeElement?.blur()`);
+                await key("z", "KeyZ", 90, 2);
+                await until("undo: size L again", async () => (await tableNow()).current === "L" && await evaluate(`document.body.dataset.size === "L"`), 30000);
+                await key("z", "KeyZ", 90, 2);
+                await until("undo: the typed rule gone", async () => Math.abs((await rulesNow())[tr].L[0] - dragged.L[0]) < 1e-9, 30000);
+                await evaluate(`document.getElementById("show-sizes").click()`);
+                await until("the nest off", () => evaluate(`document.body.dataset.nest === ""`), 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("grading: switched M (the base outline back), Show sizes drew S, M / L, XL; Ctrl+Z undid the switch, then the typed rule");
             }
             if (process.env.ATELIER_SHOT_HOLES) {     // fitted: the camera moves, so this comes last (pxPerMm is stale after it)
                 await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
