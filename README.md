@@ -90,6 +90,15 @@ The tools, with their keys where they have one:
   one of its seams selects the group (one colour, numbered n.1, n.2, ...): the panel shows its
   ranges and lengths, **Ungroup** (the seams stay as plain 1:1 seams) and **Remove group**;
   **Delete** removes it whole.
+- **Sewing hole edges**: **Sew sides**, **Sew free** and **Sew M:N** sew a hole's edge as they
+  sew an outline's (a sleeve sewn into an armhole cut as a hole, say). A click on a hole takes
+  that hole's side (a hole's sides are its own segments: an ellipse hole has four); **Shift** and
+  two clicks on the same hole take a free range on it. The seam is drawn on the hole's edge in
+  its colour, and its panel names the hole ("a on: hole 1"). A point added to or removed from the
+  outline, a fillet, a move or a transform leave a hole seam on its hole; a **Cut** beside the
+  hole takes the seam with the hole to its half; **Fold back** drops a seam on a mirrored hole
+  (the status names it). In the file a seam end on a hole carries `a_loop`/`b_loop` (hole k is
+  loop k; the outline is loop 0, written as nothing).
 - **Edit** (Z) and **Move** (A) as before; **Sew sides** (N), **Sew free** (M). A move carries
   the whole piece: its internal lines, notches and grain go with the outline. With pieces
   selected, **Move** draws their bounds box: a corner handle scales uniformly about the opposite
@@ -284,7 +293,7 @@ and stop, `atelierFilm.garment()` reads the document without a download,
   ring's tangent at the grabbed point: an approximation, less exact than a ring facing the camera.
 - The gizmo answers a press only once the hover pick has named the part under the pointer (one
   round trip to the View's worker): a press made before that answer orbits the camera instead.
-- Holes: a hole's points cannot be moved and its edges cannot be sewn yet. A hole smaller than
+- Holes: a hole's points cannot be moved (so a hole seam's sides never change). A hole smaller than
   twice the allowance gets no cut line (the status bar says so); a hole's cut line uses the
   piece's first allowance.
 - Fillet arcs are locked in Edit: to change a radius, undo and fillet again. Conic weights (an

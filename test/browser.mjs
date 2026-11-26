@@ -14,7 +14,8 @@
 // with holes: a rectangle and an ellipse hole by dialog, one over the edge refused, and an
 // internal square by dialog converted to a hole, another traced out as a piece, and a corner
 // filleted to a typed radius; then grading: sizes by the Sizes dialog, Proportional, a drag in L, the grade table,
-// size switches, Show sizes and undo. Each step prints ok. Any console error or uncaught exception, in
+// size switches, Show sizes and undo; then a sleeve sewn to an armhole cut as a hole (Sew sides on
+// the hole's edge), undone and redone. Each step prints ok. Any console error or uncaught exception, in
 // the page or its workers, fails.
 //
 //     node test/browser.mjs                              # npm run test:browser
@@ -31,6 +32,7 @@
 //     ATELIER_SHOT_PLACE=place.png ...                   # also a sleeve placed on an arm by Place (wrapped round it)
 //     ATELIER_SHOT_MN=mn.png ...                         # also the M:N group selected in 2D (its seams numbered)
 //     ATELIER_SHOT_DXF=dxf.png ...                       # also the imported DXF piece with its internal lines and hole
+//     ATELIER_SHOT_HOLE_SEAM=hs.png ...                  # also a sleeve sewn to an armhole cut as a hole, in 2D
 //     ATELIER_SHOT_GRADE=grade.png ATELIER_SHOT_NEST=nest.png  # A3: the grade table of a graded corner, the graded nest (Show sizes)
 //     ATELIER_DRAPE_FRAMES=150 ...                       # run the drape that long first (default 4)
 //     ATELIER_CLOTH=cpu ...                              # the CPU cloth worker (?cloth=cpu); default the GPU
@@ -2105,6 +2107,65 @@ async function check(cdp, base) {
                 const { data } = await send("Page.captureScreenshot", { format: "png" });
                 writeFileSync(process.env.ATELIER_SHOT_HOLES, Buffer.from(data, "base64"));
                 ok(`screenshot ${process.env.ATELIER_SHOT_HOLES}`);
+            }
+            // 8a. sewing a hole's edge (A2 spec §2): a front with an armhole cut as an ellipse hole
+            // and a sleeve, built in Node and opened; Sew sides takes a click on the armhole (the
+            // hole's side) and one on the sleeve's cap: one seam, its front end on the hole (a_loop
+            // 1), drawn on the hole's edge; Ctrl+Z takes it back in one step, Ctrl+Y redoes it
+            {
+                const k = await loadKernel();
+                const src = new Atelier(k);
+                src.reset(mm.newDocumentOps({ slug: "x", label: "X", params: Object.fromEntries(mm.FABRIC_FIELDS.map((n) => [n, 1])) }));
+                src.apply(mm.addPattern(src.nodes(), { label: "Front", path: mm.rectPath(0, 0, 240, 300), fabric: "f_x" }).ops, "front");
+                src.apply(mm.addPattern(src.nodes(), { label: "Sleeve", path: mm.rectPath(300, 120, 64, 120), fabric: "f_x" }).ops, "sleeve");
+                src.apply(mm.addHole(src.nodes(), "p1", src.ellipsePath(170, 200, 30, 50)), "armhole");
+                const file = join(downloads, "armhole.json");
+                writeFileSync(file, src.save());
+                src.free();
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty garment for the armhole", async () => (await patternCount()) === 0, 30000);
+                await pickInto("menu-open", file, ".json");
+                await until("the front and the sleeve", async () => (await patternCount()) === 2 && (await seamCount()) === 0, 30000);
+                await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                await sleep(1000); await frames();
+                // the 2D window's mapping from three hovers (pattern mm per CSS px along x and y)
+                const [gx, gy, gw, gh] = await windowBox("rect2d");
+                const p0 = [gx + gw / 2, gy + gh / 2];
+                await evaluate(`document.querySelector('#tools2d [data-tool=segment]').click()`);
+                const w0 = await worldOf(p0), wx = await worldOf([p0[0] + 50, p0[1]]), wy = await worldOf([p0[0], p0[1] + 50]);
+                const toPx = ([x, y]) => [p0[0] + (x - w0[0]) * 50 / (wx[0] - w0[0]), p0[1] + (y - w0[1]) * 50 / (wy[1] - w0[1])];
+                // the armhole's upper-left quarter (hole side 1) at 135 degrees, the sleeve's top side (its cap) near its left end
+                const onHole = toPx([170 - 30 * Math.SQRT1_2, 200 + 50 * Math.SQRT1_2]), onCap = toPx([310, 240]);
+                await worldOf(onHole);
+                {
+                    const hit = await evaluate(`document.body.dataset.hit`);
+                    if (hit !== "hole") throw new Error(`the armhole's hover answered ${hit}`);
+                }
+                await click(onHole);
+                await click(onCap);
+                await until("the sleeve sewn to the armhole", async () => (await seamCount()) === 1, 30000);
+                await noStatusError();
+                const seam = (await saveJson()).nodes.find((n) => n.kind === "garment.seam");
+                if (seam.a_loop !== 1 || seam.b_loop || seam.meta?.atelier?.a?.length !== 5 || seam.meta.atelier.a[4] !== 1)
+                    throw new Error(`the seam is not on the armhole: ${JSON.stringify(seam)}`);
+                if (process.env.ATELIER_SHOT_HOLE_SEAM) {
+                    // the fabric selected instead of the seam: the seam drawn in its own colour, no piece in the accent
+                    await key("Escape", "Escape", 27);
+                    await evaluate(`document.querySelector('#browser-fabrics li[data-kind=fabric]').click()`);
+                    await until("the seam deselected", async () => !(await evaluate(`!!document.querySelector('#browser-seams li[data-kind=seam].on')`)), 10000);
+                    await mouse("mouseMoved", gx + 5, gy + 5, { buttons: 0 });
+                    await sleep(800); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_HOLE_SEAM, Buffer.from(data, "base64"));
+                    ok(`screenshot ${process.env.ATELIER_SHOT_HOLE_SEAM}`);
+                }
+                await key("z", "KeyZ", 90, 2);
+                await until("the hole seam undone", async () => (await seamCount()) === 0, 30000);
+                await key("y", "KeyY", 89, 2);
+                await until("the hole seam redone", async () => (await seamCount()) === 1, 30000);
+                await noStatusError();
+                failIfErrors();
+                ok("hole edge sewn: a click on the armhole and one on the sleeve's cap gave one seam on loop 1; undone, redone");
             }
             // 8b. V3: custom forms and a posed drape
             await v3();
