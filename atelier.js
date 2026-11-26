@@ -23,6 +23,7 @@ import { issuesLabel, isEaseNote } from "./kernel.js";
 import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
 import { TapeTool, cmText } from "./tape3d.js";
 import { SimPanel } from "./simpanel.js";
+import { s2Request, isS2Key, groupOfLine, pleatFields } from "./pleats.js";
 import { CUSTOM, draftFrom, bodyCommit, isBodyKey } from "./bodypanel.js";
 
 const $ = (id) => document.getElementById(id);
@@ -46,6 +47,8 @@ let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
 let toolKeep = {};            // what a tool keeps while it stays armed (the Ruler's measures): fresh tools share it
 let previewing = false, previewPattern = null;
+let rotateDart = null;        // the dart Rotate… moves ({id, index}), the dart-rotate tool's target
+const pleatNext = {};         // the Pleat tool's depth, kind, facing and top tack last added
 let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
 let seq = 0;                  // the `seq` of the last doc-changing message sent
 let fitNext = false;
@@ -217,6 +220,8 @@ function commitField(f, raw) {
     if (selection.kind === "avatar" && f.key === "form") { if (raw !== avatar?.name || !avatar?.landmarks) { formLoading = raw; status(`loading ${raw}…`); post({ kind: "avatarAsset", name: raw }); } else renderProps(); return; }
     if (selection.kind === "avatar" && bodyDraft && isBodyKey(f.key)) { bodyEdit(f, raw); return; }
     const value = f.type === "text" || f.type === "colour" ? raw.trim() : parseField(f, raw);
+    // a dart's Close / Rotate… and a pleat group's numbers go through the kernel (S2): the worker's batch
+    if (selection.kind === "internal" && isS2Key(f.key)) { s2Commit(f.key, value); return; }
     const err = validate(selection, nodes, f.key, value);
     if (err) { status(err, true); renderProps(); return; }
     // the pattern transforms and Duplicate go through the kernel: one batch each
@@ -240,6 +245,28 @@ function commitField(f, raw) {
         if (f.key === "duplicate" && ops[0]?.op === "add") { pickedFabric = ops[0].node.id; setSelection({ kind: "fabric", id: ops[0].node.id }); }
     } catch (e) { status(e.message ?? String(e), true); renderProps(); }
 }
+// A dart's Close (cut) / Close (fold), Rotate… (arms the dart-rotate tool), a pleat group's new
+// numbers or its removal (S2): one worker message, one undo step; a refusal says why.
+const S2_WORDS = { cut: "closed the dart (cut out, legs sewn)", fold: "closed the dart (folded under, legs tacked)", remove: "removed the pleats", edit: "pleats changed" };
+function s2Commit(key, value) {
+    const r = s2Request(selection, nodes, key, value);
+    if (!r) return;
+    if (r.error) { status(r.error, true); renderProps(); return; }
+    if (r.rotate) {
+        rotateDart = r.rotate;
+        setTool("dart-rotate");
+        status("rotate: point at the outline where the dart goes, click to move it there; Escape cancels", false);
+        return;
+    }
+    cancelPreview();
+    const { kind, ...payload } = r;
+    change(kind, payload);
+    status(S2_WORDS[r.action] ?? kind, false);
+    const n = nodes.find((x) => x.id === r.id);
+    // an edited group is added again after the piece's other lines: its first line stays selected
+    if (r.action === "edit") setSelection({ kind: "internal", id: r.id, index: (n?.internal?.length ?? 0) - (n?.pleats?.[r.group]?.internal.length ?? 0) });
+    else setSelection({ kind: "pattern", id: r.id });
+}
 // "Custom form…": the Body panel, its draft from the form shown (or chart f-M at Rest)
 function openBody() {
     bodyDraft ??= draftFrom(avatar?.landmarks?.form ?? null);
@@ -256,7 +283,7 @@ function bodyEdit(f, raw) {
     if (r.build) { formAskedAt = performance.now(); change("form", { spec: r.build }); status("building the form…"); }
     renderProps();
 }
-function fieldRow(f) {
+function fieldRow(f, commit = commitField) {
     const dt = document.createElement("dt");
     dt.textContent = f.unit ? `${f.label} (${f.unit})` : f.label;
     if (f.tip) dt.title = f.tip;
@@ -266,7 +293,7 @@ function fieldRow(f) {
     else if (f.type === "action") {
         input = document.createElement("button");
         input.textContent = f.label;
-        input.addEventListener("click", () => (f.key === "load" ? menu.avatar() : commitField(f, "")));
+        input.addEventListener("click", () => (f.key === "load" ? menu.avatar() : commit(f, "")));
         dt.textContent = "";
     } else if (f.type === "select") {
         input = document.createElement("select");
@@ -274,13 +301,13 @@ function fieldRow(f) {
         if (!opts.some((o) => o.value === f.value)) opts.unshift({ value: f.value, label: f.value === "" ? "choose…" : `(${f.value})` });
         for (const o of opts) { const e = document.createElement("option"); e.value = o.value; e.textContent = o.label; input.append(e); }
         input.value = f.value;
-        input.addEventListener("change", () => commitField(f, input.value));
+        input.addEventListener("change", () => commit(f, input.value));
     } else {
         input = document.createElement("input");
         input.type = "text";
         input.value = fieldText(f);
         if (f.placeholder) input.placeholder = f.placeholder;
-        input.addEventListener("change", () => commitField(f, input.value));
+        input.addEventListener("change", () => commit(f, input.value));
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
     }
     if (f.type === "colour") dd.append(swatch(f.value));
@@ -297,6 +324,18 @@ function renderProps() {
     let focusKey = document.activeElement?.closest?.("#props") ? document.activeElement.dataset?.key ?? null : null;
     const tab = tabFrom && performance.now() - tabFrom.t < 500 ? tabFrom : null;
     tabFrom = null;
+    // the Pleat tool's set before it is added (S2): its numbers, each change a new preview
+    const draft = tool?.draft?.();
+    if (draft) {
+        const piece = nodes.find((x) => x.id === draft.id);
+        const dl = document.createElement("dl");
+        for (const f of pleatFields(draft)) dl.append(...fieldRow(f, (g, raw) => apply(tool.set(g.key, g.type === "select" ? raw : parseField(g, raw)))));
+        const h = document.createElement("h3"), help = document.createElement("p");
+        h.textContent = `Pleats on ${piece?.label ?? draft.id}`;
+        help.className = "dim"; help.textContent = "Enter adds the pleats, Escape drops them.";
+        finishProps(el, [h, dl, help], focusKey, tab);
+        return;
+    }
     const n = selection && selection.kind !== "avatar" ? nodes.find((x) => x.id === selection.id) : null;
     const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
@@ -312,6 +351,10 @@ function renderProps() {
         if (d) { const p = document.createElement("p"); p.className = "dim"; p.textContent = `${Math.max(d.sides.length - 1, 0)} sides${d.holes?.length ? `, ${d.holes.length} hole${d.holes.length === 1 ? "" : "s"}` : ""}, size ${(d.bounds[2] - d.bounds[0]).toFixed(0)} × ${(d.bounds[3] - d.bounds[1]).toFixed(0)} mm`; kids.push(p); }
     }
     if (selection.kind === "pattern") kids.push(...gradeSection());
+    finishProps(el, kids, focusKey, tab);
+}
+// The panel's rows in place, the focus kept on the field that had it (or the one a Tab went to).
+function finishProps(el, kids, focusKey, tab) {
     el.replaceChildren(...kids);
     const inputs = [...el.querySelectorAll("[data-key]")];
     if (!focusKey && tab) { const i = inputs.findIndex((x) => x.dataset.key === tab.key); focusKey = inputs[i + tab.dir]?.dataset.key ?? null; }
@@ -487,6 +530,11 @@ function removeSelected() {
         setSelection({ kind: "pattern", id: selection.id });
         return true;
     }
+    // a pleat group's line: the whole group, through the kernel (S2)
+    if (selection?.kind === "internal" && exists(selection) && groupOfLine(nodes.find((n) => n.id === selection.id), selection.index) >= 0) {
+        s2Commit("pleat_remove", null);
+        return true;
+    }
     if (selection && (selection.kind === "tack" || selection.kind === "internal") && exists(selection)) {
         cancelPreview();
         change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${selection.kind === "tack" ? "tack" : "line"}` });
@@ -535,6 +583,8 @@ function freshTool() {
         get ipointSel() { return ipointSel; },
         get notchNext() { return notchNext; },
         get pxToWorld() { return mmPerPx * dprNow(); },
+        get rotateDart() { return rotateDart; },
+        pleatNext,
         keep: toolKeep,
     };
     tool = makeTool(toolName, ctx);
@@ -613,6 +663,12 @@ function handle(r) {
     if (r.point) change("point", r.point);
     // an unfold (spec §6): the worker builds the whole (one batch) or refuses it
     if (r.unfold) change("unfold", r.unfold);
+    // darts and pleats (S2): the kernel's edit as one batch, or a preview frame of it
+    if (r.dart) change("dart", r.dart);
+    if (r.pleat) change("pleat", r.pleat);
+    if (r.dartPreview) { previewing = true; previewPattern = null; change("dartPreview", r.dartPreview); }
+    if (r.pleatPreview) { previewing = true; previewPattern = null; change("pleatPreview", r.pleatPreview); }
+    if (r.panel) renderProps();
     if (r.overlay) overlay = r.overlay.lines?.length || r.overlay.points?.length || r.overlay.ellipse || r.overlay.labels?.length ? r.overlay : null;
     // a tool's word: an error unless it says otherwise
     if (r.status) status(r.status, r.error !== false);

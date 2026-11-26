@@ -17,10 +17,11 @@ const VERSION = "0.16.0";
 const ASSET = VERSION && `cadaclysm-${VERSION}-web.zip`;
 const URL = VERSION && `https://github.com/rdeioris/cadaclysm-sdk/releases/download/v${VERSION}/${ASSET}`;
 // Names the package must carry: the View's 1.30 calls, the kernel's fresh history and the
-// simulation controls (saved options and pins, Freeze on the CPU and the GPU cloth), which no
-// release carries yet: until one does, --pkg <a cadaclysm master build>.
+// simulation controls (saved options and pins, Freeze on the CPU and the GPU cloth) and the darts
+// and pleats, which no release carries yet: until one does, --pkg <a cadaclysm master build>.
 const CARRIES = ["pickRect", "setSnapBase", "cadaclysm_blacksmith_document_clear_history", "cadaclysm_blacksmith_document_head",
-    "cadaclysm_blacksmith_garment_sim_options", "cadaclysm_blacksmith_cloth_freeze", "freezeCloth"];
+    "cadaclysm_blacksmith_garment_sim_options", "cadaclysm_blacksmith_cloth_freeze", "freezeCloth",
+    "cadaclysm_blacksmith_garment_add_pleats"];
 // What Atelier loads from the package.
 const NEEDED = ["cadaclysm.js", "cadaclysm_bg.wasm", "index.js", "view.js"];
 

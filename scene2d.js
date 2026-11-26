@@ -109,6 +109,12 @@ function xformSpecs(drawings, selection, mmPerPx, z) {
     ];
 }
 
+// Internal line `index` of piece `node`, and the rest of its pleat group's lines when it is in one.
+function litLines(node, index) {
+    const g = (node?.pleats ?? []).find((p) => p.internal.includes(index));
+    return new Set(g ? g.internal : [index]);
+}
+
 // xform: the Move tool is on (its box and handles round the selection); mmPerPx the 2D scale.
 // nest: Show sizes' outlines (kernel.js sizeNest), each drawn in the accent's ramp by its size.
 export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null, nest = [] }) {
@@ -127,9 +133,11 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
             out.push({ key: `${id}/hole/${k}`, show: "curves", data: liftBeziers(h.beziers, z.line), colour: line, what: { kind: "hole", id, index: k }, sig });
             h.cut.forEach((c, j) => out.push({ key: `${id}/holecut/${k}/${j}`, show: "lines", data: segs(c, true, z.line), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig }));
         });
+        // the selected internal line, or every line of its pleat group (S2: a group is selected as one)
+        const lit = selection?.kind === "internal" && selection.id === id ? litLines(nodes.find((n) => n.id === id), selection.index) : null;
         (d.internal ?? []).forEach((l, k) => out.push({
             key: `${id}/internal/${k}`, show: "curves", data: liftBeziers(l.beziers, z.line),
-            colour: sel || (selection?.kind === "internal" && selection.id === id && selection.index === k) ? ACCENT : INTERNAL,
+            colour: sel || lit?.has(k) ? ACCENT : INTERNAL,
             dash: l.kind === "fold" ? { dash: 6, gap: 4 } : null, what: { kind: "internal", id, index: k }, sig,
         }));
         // each notch's mark, the kernel's polyline (garment_pattern_notch_lines): a lines item each,

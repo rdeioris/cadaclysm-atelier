@@ -8,6 +8,8 @@ import { translatePath } from "./drape.js";
 import { bucklingMigration } from "./fabrics.js";
 import { reslotOps } from "./reslot.js";
 import * as G from "./grading.js";
+import { addTack } from "./tacks.js";
+import { PLEAT_KINDS, PLEAT_DIRECTIONS } from "./pleats.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
@@ -57,7 +59,9 @@ const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "pr
     // A2 (spec §6): DXF import keeps internal lines and holes
     "garment_pattern_internal_count", "garment_pattern_internal_kind", "garment_pattern_internal",
     // the simulation controls (S1): saved options and pins, Freeze
-    "garment_sim_options", "garment_pins", "cloth_freeze"];
+    "garment_sim_options", "garment_pins", "cloth_freeze",
+    // darts and pleats (S2)
+    "garment_close_dart_cut", "garment_close_dart_folded", "garment_rotate_dart", "garment_add_pleats", "garment_remove_pleats", "garment_pleats", "garment_fold_prefold"];
 
 // The kernel's seam-length warning (garment_issue: severity 1 = warning, kind 10 =
 // ISSUE_SEAM_LENGTH_MISMATCH): CLO's ease rule, a seam whose sides differ by more than 5 %.
@@ -1403,6 +1407,207 @@ export class Atelier {
             });
         }
         return out;
+    }
+
+    // ---- darts and pleats (S2 spec §1, §5) ----
+    // The kernel edits a scratch copy of the garment as evaluated (garment_close_dart_cut and the
+    // rest); the pattern it changed, the seams and the tacks are read back and turned into
+    // document ops: what changed is set, what the kernel made is added (new seam and tack nodes),
+    // what it removed is removed. The app computes none of the geometry. `fn(s, pid, groupId)` runs
+    // the edit on scratch garment `s` (pattern `pid` is piece `id`); groupId(pattern, k) is the
+    // kernel's id of piece `pattern`'s k-th pleat group. -> {ops, result: fn's}
+    scratchOps(id, fn) {
+        this.baseOnly();
+        const nodes = this.nodes(), byId = m.byId(nodes), gn = byId.get("garment");
+        if (!this.g || !gn || !gn.patterns.includes(id)) throw new Error(`no pattern ${id}`);
+        const s = this.f("document_result_garment")(this.d, "garment");
+        try {
+            const kp = Array.from(this.f("garment_patterns")(s));
+            const nodeOf = new Map(kp.map((k, i) => [k, gn.patterns[i]])), pid = kp[gn.patterns.indexOf(id)];
+            const seamsBefore = this.seamRows(s), tacksBefore = this.tackRows(s), groupsBefore = this.pleatRows(s);
+            const seamNode = new Map(seamsBefore.map((r, i) => [r.id, gn.seams[i]]));
+            const tackNode = new Map(tacksBefore.map((r, i) => [r.id, (gn.tacks ?? [])[i]]));
+            // the kernel's groups in the order the document gives them: piece by piece, each piece's in order
+            const docGroups = gn.patterns.flatMap((p) => (byId.get(p)?.pleats ?? []).map((_, k) => `${p}/${k}`));
+            const groupKernel = new Map(groupsBefore.map((r, i) => [docGroups[i], r.id]));
+            const groupId = (pattern, k) => {
+                const g = groupKernel.get(`${pattern}/${k}`);
+                if (g === undefined) throw new Error(`no pleat group ${k} on ${pattern}`);
+                return g;
+            };
+            const before = this.pieceRows(s, pid);
+            const result = fn(s, pid, groupId);
+            const after = this.pieceRows(s, pid);
+            const ops = [], node = byId.get(id), fields = {};
+            let cur = nodes;
+            if (!sameJson(before.outline, after.outline)) ops.push(...m.setOutline(nodes, id, after.outline));
+            if (!sameJson(before.internal, after.internal) || !sameJson([...before.elastic], [...after.elastic])) {
+                fields.internal = after.internal.map((l, i) => {
+                    const rec = { kind: l.kind, path: l.path };
+                    if (l.fold && l.fold[0] !== 180) rec.angle = l.fold[0];
+                    if (l.fold && l.fold[1] !== 1) rec.strength = l.fold[1];
+                    if (l.prefold) rec.prefold = true;
+                    const e = after.elastic.get(i);
+                    if (e) rec.elastic = e;
+                    return rec;
+                });
+            }
+            if (!sameJson(before.notches, after.notches)) fields.notches = after.notches.map(([at, k, depth]) => ({ at, kind: NOTCH_KINDS[k] ?? "slit", depth }));
+            // a per-side allowance follows the sides; one width stays one width
+            if ((node.allowance?.length ?? 1) > 1 && !sameJson(before.allowance, after.allowance)) fields.allowance = after.allowance;
+            if (!sameJson(before.pins, after.pins)) fields.pins = after.pins.length ? after.pins : null;
+            // tacks: gone, moved, made (new t<n> ids, in the kernel's order)
+            const tacksAfter = this.tackRows(s), liveTacks = new Set(tacksAfter.map((r) => r.id));
+            const goneTacks = tacksBefore.filter((r) => !liveTacks.has(r.id)).map((r) => tackNode.get(r.id));
+            const tackIds = new Map([...tackNode].filter(([k]) => liveTacks.has(k)));
+            let tackList = (gn.tacks ?? []).filter((t) => !goneTacks.includes(t));
+            for (const r of tacksAfter) {
+                const old = tacksBefore.find((q) => q.id === r.id);
+                if (old) {
+                    const f = {};
+                    if (!sameJson(old.a_at, r.a_at)) f.a_at = r.a_at;
+                    if (!sameJson(old.b_at, r.b_at)) f.b_at = r.b_at;
+                    if (Object.keys(f).length) ops.push({ op: "set", id: tackNode.get(r.id), fields: f });
+                    continue;
+                }
+                const add = addTack(cur, { a: nodeOf.get(r.pa), a_at: r.a_at, b: nodeOf.get(r.pb), b_at: r.b_at });
+                ops.push(add.ops[0]);
+                cur = m.withAdded(cur, [add.ops[0]]);
+                tackIds.set(r.id, add.id);
+                tackList = [...tackList, add.id];
+            }
+            // the piece's pleat groups as the kernel holds them now
+            const groups = this.pleatRows(s).filter((r) => r.pattern === pid);
+            const pleats = groups.map((r) => ({ spec: r.spec, internal: r.internal, tacks: r.tacks.map((t) => tackIds.get(t)).filter(Boolean) }));
+            if (!sameJson(node.pleats ?? [], pleats)) fields.pleats = pleats.length ? pleats : null;
+            // seams: gone, re-ranged, made; the ends on this piece anchored to its sides as they are now
+            const seamsAfter = this.seamRows(s), liveSeams = new Set(seamsAfter.map((r) => r.id));
+            const goneSeams = seamsBefore.filter((r) => !liveSeams.has(r.id)).map((r) => seamNode.get(r.id));
+            const reshaped = !sameJson(before.outline, after.outline);
+            const sides = reshaped || seamsAfter.length !== seamsBefore.length ? this.withPathSides(after.outline) : this.sidesOf(id);
+            const anchorFor = (r, end, prior) => (nodeOf.get(r[end]) === id ? anchorOf(sides, r[`${end}_from`], r[`${end}_to`]) : prior);
+            let seamList = gn.seams.filter((x) => !goneSeams.includes(x));
+            for (const r of seamsAfter) {
+                const old = seamsBefore.find((q) => q.id === r.id);
+                if (old) {
+                    const sn = byId.get(seamNode.get(r.id));
+                    const moved = ["a_from", "a_to", "b_from", "b_to"].some((k) => old[k] !== r[k]);
+                    const touches = nodeOf.get(r.a) === id || nodeOf.get(r.b) === id;
+                    if (!moved && !(reshaped && touches)) continue;
+                    const anchor = { ...(sn.meta?.atelier ?? {}) };
+                    anchor.a = anchorFor(r, "a", anchor.a);
+                    anchor.b = anchorFor(r, "b", anchor.b);
+                    ops.push({ op: "set", id: sn.id, fields: { a_from: r.a_from, a_to: r.a_to, b_from: r.b_from, b_to: r.b_to, meta: { ...(sn.meta ?? {}), atelier: anchor } } });
+                    continue;
+                }
+                const sid = m.nextId(cur, "s");
+                const seam = { id: sid, kind: "garment.seam", a: nodeOf.get(r.a), b: nodeOf.get(r.b), a_from: r.a_from, a_to: r.a_to, b_from: r.b_from, b_to: r.b_to, reversed: r.reversed,
+                    meta: { atelier: { a: anchorFor(r, "a", undefined), b: anchorFor(r, "b", undefined) } } };
+                ops.push({ op: "add", node: seam });
+                cur = m.withAdded(cur, [{ op: "add", node: seam }]);
+                seamList = [...seamList, sid];
+            }
+            if (Object.keys(fields).length) ops.push(...m.setPattern(nodes, id, fields));
+            if (!sameJson(seamList, gn.seams) || !sameJson(tackList, gn.tacks ?? [])) ops.push({ op: "set", id: "garment", fields: { seams: seamList, tacks: tackList.length ? tackList : null } });
+            ops.push(...goneSeams.map((x) => ({ op: "remove", id: x })), ...goneTacks.map((x) => ({ op: "remove", id: x })));
+            return { ops, result };
+        } finally { this.f("garment_free")(s); }
+    }
+    // A scratch garment's seams {id, a, a_from, a_to, b, b_from, b_to, reversed} by ascending id.
+    seamRows(s) {
+        return Array.from(this.f("garment_seams")(s)).map((id) => {
+            const [a, a_from, a_to, b, b_from, b_to, rev] = this.f("garment_seam")(s, id);
+            return { id, a, a_from, a_to, b, b_from, b_to, reversed: rev === 1 };
+        });
+    }
+    // Its tacks {id, pa, a_at, pb, b_at} (garment_tacks' septuples).
+    tackRows(s) {
+        const raw = this.f("garment_tacks")(s), out = [];
+        for (let i = 0; i + 6 < raw.length; i += 7) out.push({ id: raw[i], pa: raw[i + 1], a_at: [raw[i + 2], raw[i + 3]], pb: raw[i + 4], b_at: [raw[i + 5], raw[i + 6]] });
+        return out;
+    }
+    // Its pleat groups {id, pattern, spec (the document's form), internal, tacks: kernel tack ids}
+    // (garment_pleats' records).
+    pleatRows(s) {
+        const raw = this.f("garment_pleats")(s), out = [];
+        for (let i = 0; i < raw.length;) {
+            const [id, pattern, lx0, ly0, lx1, ly1, ax0, ay0, ax1, ay1, count, depth, kind, direction, top] = raw.subarray(i, i + 15);
+            const ni = raw[i + 15], internal = Array.from(raw.subarray(i + 16, i + 16 + ni));
+            const nt = raw[i + 16 + ni], tacks = Array.from(raw.subarray(i + 17 + ni, i + 17 + ni + nt));
+            out.push({ id, pattern, internal, tacks, spec: { line: [[lx0, ly0], [lx1, ly1]], across: [[ax0, ay0], [ax1, ay1]], count, depth,
+                kind: PLEAT_KINDS[kind] ?? "knife", direction: PLEAT_DIRECTIONS[direction] ?? "right", top_tack: top === 1 } });
+            i += 17 + ni + nt;
+        }
+        return out;
+    }
+    // Pattern `pid` of scratch garment `s` as the document records it: outline path, internal
+    // lines {kind, path, fold: [angle, strength] | null, prefold}, the internal lines' elastics
+    // (index -> {ratio, stiffness}), notches [at, kind code, depth], allowance and pins.
+    pieceRows(s, pid) {
+        const outline = this.pathOf(this.f("garment_pattern_outline")(s, pid));
+        const internal = [];
+        for (let i = 0, n = this.f("garment_pattern_internal_count")(s, pid); i < n; i++) {
+            const p = this.pathOf(this.f("garment_pattern_internal")(s, pid, i));
+            const fold = this.f("garment_fold")(s, pid, i);
+            internal.push({ kind: INTERNAL_KINDS[this.f("garment_pattern_internal_kind")(s, pid, i)] ?? "line", path: { start: p.start, segments: p.segments },
+                fold: fold ? Array.from(fold) : null, prefold: !!this.f("garment_fold_prefold")(s, pid, i) });
+        }
+        const el = this.f("garment_elastics")(s), elastic = new Map();
+        for (let i = 0; i + 6 < el.length; i += 7) if (el[i + 1] === 0 && el[i + 2] === pid) elastic.set(el[i + 3], { ratio: el[i + 5], stiffness: el[i + 6] });
+        const raw = Array.from(this.f("garment_pattern_notches")(s, pid)), notches = [];
+        for (let i = 0; i + 2 < raw.length; i += 3) notches.push([raw[i], raw[i + 1], raw[i + 2]]);
+        const pr = this.f("garment_pins")(s), pins = [];
+        for (let i = 0; i + 2 < pr.length; i += 3) if (pr[i] === pid) pins.push([pr[i + 1], pr[i + 2]]);
+        return { outline, internal, elastic, notches, allowance: Array.from(this.f("garment_pattern_allowance")(s, pid)), pins };
+    }
+    // The side starts of an outline path (as sidesOf, for a path not in the document).
+    withPathSides(path) {
+        return this.withPath(path, (p) => this.sideStarts(p, this.f("profile_length")(p, ACC)[0], path.segments.length));
+    }
+    // A dart closed or rotated (spec §1): `action` "cut" (garment_close_dart_cut: the outline takes
+    // the legs, a seam sews them), "fold" (garment_close_dart_folded: legs, centre fold, tacks) or
+    // "rotate" to outline arc length `to` (garment_rotate_dart). -> ops for one commit
+    dartOps(id, index, action, to = null) {
+        const node = m.byId(this.nodes()).get(id);
+        if (node?.internal?.[index]?.kind !== "dart") throw new Error("that line is not a dart");
+        return this.scratchOps(id, (s, pid) => {
+            if (action === "cut") return this.f("garment_close_dart_cut")(s, pid, index, ACC);
+            if (action === "fold") return this.f("garment_close_dart_folded")(s, pid, index, ACC);
+            if (action === "rotate") return this.f("garment_rotate_dart")(s, pid, index, to, ACC);
+            throw new Error(`no dart action ${action}`);
+        }).ops;
+    }
+    // The arc length on piece `id`'s outline nearest `at`, refused farther than `tol` mm from it.
+    outlineArcNear(id, at, tol) {
+        return this.withOutline(id, (p) => {
+            const s = this.nearestArc(p, at, true), q = this.f("profile_point_at_length")(p, s, ACC);
+            if (Math.hypot(q[0] - at[0], q[1] - at[1]) > tol) throw new Error("rotate: click on the piece's outline where the dart goes");
+            return s;
+        });
+    }
+    // Pleats (spec §1): pleat group `remove` (its index in the piece's `pleats`) taken off, then
+    // `spec` (the document's {line, across, count, depth, kind, direction, top_tack}) added, either
+    // or both: an edit of a group's numbers is both, one commit. -> ops
+    pleatOps(id, { spec = null, remove = null } = {}) {
+        return this.scratchOps(id, (s, pid, groupId) => {
+            if (remove != null) this.f("garment_remove_pleats")(s, groupId(id, remove));
+            if (spec) {
+                const [[lx0, ly0], [lx1, ly1]] = spec.line, [[ax0, ay0], [ax1, ay1]] = spec.across;
+                this.f("garment_add_pleats")(s, pid, lx0, ly0, lx1, ly1, ax0, ay0, ax1, ay1, spec.count, spec.depth,
+                    Math.max(0, PLEAT_KINDS.indexOf(spec.kind)), Math.max(0, PLEAT_DIRECTIONS.indexOf(spec.direction)), !!spec.top_tack, ACC);
+            }
+        }).ops;
+    }
+    // The live previews (the Rotate… hover, the Pleat tool's panel): each frame computed from the
+    // garment as committed (an open preview's last frame taken back first), then shown as a preview
+    // frame. A frame the kernel refuses leaves the piece as committed, and the error says why.
+    rotatePreview(id, index, at, tol) {
+        if (this.open) this.preview([]);
+        this.preview(this.dartOps(id, index, "rotate", this.outlineArcNear(id, at, tol)));
+    }
+    pleatPreview(id, spec, remove = null) {
+        if (this.open) this.preview([]);
+        this.preview(this.pleatOps(id, { spec, remove }));
     }
 
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }

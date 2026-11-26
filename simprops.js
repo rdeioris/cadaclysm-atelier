@@ -6,6 +6,7 @@
 // saves exactly as before.
 import { setPattern } from "./model.js";
 import { removeTack } from "./tacks.js";
+import { s2Fields, groupOfLine } from "./pleats.js";
 
 // An elastic's stiffness is a force per unit strain: the kernel's g·mm/s², the panel's newtons.
 export const N = 1e6;                    // g·mm/s² per N
@@ -60,6 +61,9 @@ export function simFields(selection, n, nodes) {
     if (selection.kind === "internal") {
         const l = n.internal?.[selection.index];
         if (!l) return [];
+        // a pleat group's line shows the group's numbers (S2): its lines are edited as one
+        const s2 = s2Fields(n, selection.index);
+        if (s2 && groupOfLine(n, selection.index) >= 0) return s2;
         const kinds = [{ value: "line", label: "line" }, { value: "fold", label: "fold" }, { value: "dart", label: "dart" }];
         return [
             { key: "line_kind", label: "Kind", unit: "", type: "select", value: l.kind, options: kinds,
@@ -71,6 +75,8 @@ export function simFields(selection, n, nodes) {
                     tip: "Multiplies the bending that holds the fold (0: a free hinge)." },
             ] : []),
             ...elasticFields(l.elastic ?? null),
+            // a dart's Close (cut), Close (fold) and Rotate… (S2)
+            ...(s2 ?? []),
             { key: "remove", label: "Remove line", unit: "", type: "action", value: null },
         ];
     }

@@ -9,6 +9,7 @@ import { makeGroupTool } from "./seamgroup.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 import { SIM_TOOLS, SIM_SNAPPING } from "./simtools.js";
+import { S2_TOOLS, S2_SNAPPING } from "./pleats.js";
 import { gradingOf } from "./grading.js";
 
 export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
@@ -364,7 +365,7 @@ const POINT_SNAPS = new Set(["end", "vertex", "point", "intersection"]);
 
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
-    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler", ...SIM_SNAPPING]);
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler", ...SIM_SNAPPING, ...S2_SNAPPING]);
 
 const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
@@ -863,6 +864,7 @@ function piecesOnly(t) {
 export function makeTool(name, ctx) {
     if (name === "segment" || name === "free") return piecesOnly(makeSewingTool(name, ctx));
     if (Object.hasOwn(SIM_TOOLS, name)) return piecesOnly(SIM_TOOLS[name](ctx));
+    if (Object.hasOwn(S2_TOOLS, name)) return piecesOnly(S2_TOOLS[name](ctx));
     if (name === "sewmn") return piecesOnly(makeGroupTool(ctx));
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
     const t = TOOLS[name](ctx);

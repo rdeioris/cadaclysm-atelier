@@ -124,7 +124,10 @@ export function dragTarget(start, basis, dx, dy) {
 // and a tack's ends re-mesh the pieces they are on (cloth_remesh_pattern reads them); adding or
 // removing a tack or an elastic is a rebuild, and so is a new particle distance in the saved
 // options. A piece's `frozen` and `pins` and the other options are live edits (frozenChanges,
-// optionsChanged): the same mesh.
+// optionsChanged): the same mesh. Darts and pleats (S2) are made of these: a closed dart adds a
+// seam or tacks and a pleat set tacks (a rebuild); a pre-folded line added, removed or moved (a
+// pleat set's) rebuilds too, since the cloth starts folded along it; a rotated dart is an outline
+// edit (a re-mesh).
 const PATTERN_KEYS = ["grain", "layer", "particle_distance", "strengthen", "pressure"];
 const SEAM_RANGE = ["a_from", "a_to", "b_from", "b_to", "reversed", "strengthen"];
 const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -134,6 +137,8 @@ const hasElastic = (e) => !!e && Object.keys(e).length > 0;
 const clothLines = (p) => (p.internal ?? []).filter((l) => l.kind === "fold" || hasElastic(l.elastic));
 // How many elastics a piece carries: its outline elastics and its elastic lines.
 const elasticCount = (p) => (p.elastic?.length ?? 0) + (p.internal ?? []).filter((l) => hasElastic(l.elastic)).length;
+// A piece's pre-folded lines (S2: a pleat's folds), which the cloth folds before it starts.
+const prefolded = (p) => (p.internal ?? []).filter((l) => l.prefold).map((l) => l.path);
 const optionsOf = (byId) => byId.get("garment")?.sim_options ?? {};
 export function garmentChange(before, after) {
     const kinds = (nodes, kind) => new Map(nodes.filter((n) => n.kind === kind).map((n) => [n.id, n]));
@@ -162,6 +167,8 @@ export function garmentChange(before, after) {
         const q = pb.get(id);
         if (p.fabric !== q.fabric) return { kind: "stale", why: `${p.label ?? id} changed fabric` };
         if (elasticCount(p) !== elasticCount(q)) return { kind: "stale", why: `${p.label ?? id}'s elastics changed` };
+        // a pre-folded line (a pleat's, S2) shapes the cloth's start: a new one, or one gone, rebuilds it
+        if (!same(prefolded(p), prefolded(q))) return { kind: "stale", why: `${p.label ?? id}'s pleats changed` };
         if (PATTERN_KEYS.some((k) => !same(p[k], q[k]))) changed.add(id);
         if (!same(p.elastic, q.elastic) || !same(clothLines(p), clothLines(q))) changed.add(id);
         if (!same(a.get(p.outline), b.get(q.outline)) || p.outline !== q.outline) changed.add(id);

@@ -69,6 +69,15 @@ const close = (a, b, eps = 1e-9) => a.length === b.length && a.every((x, i) => M
     assert.equal(garmentChange(base(), edit((m) => { m.get("p1").fabric = "f2"; })).kind, "stale");
     assert.equal(garmentChange(base(), base().filter((n) => n.id !== "s1")).kind, "stale");
     assert.equal(garmentChange(base(), [...base(), { id: "p3", kind: "garment.pattern" }]).kind, "stale");
+    // darts and pleats (S2): a rotated dart is an outline and line edit (re-mesh); a pre-folded line
+    // added or gone (a pleat set) rebuilds; a pleat group's record alone changes nothing the cloth reads
+    const line = (kind, extra = {}) => ({ kind, path: { start: [0, 0], segments: [{ type: "line", to: [0, 9] }] }, ...extra });
+    assert.deepEqual(garmentChange(base(), edit((m) => { m.get("p1_outline").path.start = [1, 0]; m.get("p1").internal = [line("dart")]; })), { kind: "remesh", patterns: ["p1"] });
+    const fold = edit((m) => { m.get("p1").internal = [line("fold", { angle: 0 })]; });
+    assert.equal(garmentChange(fold, edit((m) => { m.get("p1").internal = [line("fold", { angle: 0, prefold: true })]; })).kind, "stale");
+    const pleated = edit((m) => { m.get("p1").internal = [line("fold", { angle: 0, prefold: true })]; });
+    assert.equal(garmentChange(pleated, base()).kind, "stale", "the pleats removed");
+    assert.deepEqual(garmentChange(pleated, edit((m) => { m.get("p1").internal = [line("fold", { angle: 0, prefold: true })]; m.get("p1").pleats = [{ spec: {}, internal: [0], tacks: [] }]; })), { kind: "same" });
 }
 
 // sewing ends when every pair is welded, at SEW_FRAMES, or at once with no seams

@@ -722,7 +722,8 @@ function answer(data, make) {
 }
 
 // The messages that change the document; each answers with `doc` (see changed()).
-const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack", "form", "size", "sizes", "grade"]);
+const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack", "form", "size", "sizes", "grade",
+    "dart", "pleat", "dartPreview", "pleatPreview"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -809,6 +810,35 @@ self.onmessage = async ({ data }) => {
                 post({ kind: "status", text: r.dropped.length ? `${what}; dropped seam${r.dropped.length === 1 ? "" : "s"} ${r.dropped.join(", ")}: ${data.kind === "unfold" ? "on the fold side" : "on the mirrored side"}` : what });
                 break;
             }
+            // darts and pleats (S2): the kernel's edit on a scratch garment, read back as one batch (an
+            // open preview of it dropped first); a refusal changes nothing and names the fault
+            case "dart": {
+                if (atelier.previewing) atelier.endPreview(false);
+                const to = data.action === "rotate" ? atelier.outlineArcNear(data.id, data.at, data.tol) : null;
+                atelier.commit(atelier.dartOps(data.id, data.index, data.action, to), data.action === "rotate" ? "rotate dart" : `close dart (${data.action})`);
+                changed(data.seq);
+                if (data.action === "rotate") post({ kind: "status", text: "rotated the dart" });
+                break;
+            }
+            case "pleat": {
+                if (atelier.previewing) atelier.endPreview(false);
+                const spec = data.action === "remove" ? null : data.spec, remove = data.action === "add" ? null : data.group;
+                atelier.commit(atelier.pleatOps(data.id, { spec, remove }), `${data.action} pleats`);
+                changed(data.seq);
+                if (data.action === "add") post({ kind: "status", text: "pleats added" });
+                break;
+            }
+            // a frame of Rotate…'s hover: off the outline it shows the piece as committed, no error
+            case "dartPreview": {
+                try { atelier.rotatePreview(data.id, data.index, data.at, data.tol); }
+                catch (e) {
+                    if (!/^rotate: click/.test(String(e?.message ?? e))) throw e;
+                    post({ kind: "status", text: "rotate: point at the outline where the dart goes" });
+                }
+                changed(data.seq);
+                break;
+            }
+            case "pleatPreview": atelier.pleatPreview(data.id, data.spec, data.group ?? null); changed(data.seq); break;
             // grading (A3): a size switch, a size table change, a grade rule set; one batch each,
             // the seams that lose their side named
             case "size": case "sizes": case "grade": {
