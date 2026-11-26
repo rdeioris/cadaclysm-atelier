@@ -205,6 +205,31 @@ function onHole(a, flat, tol = 0.6) {
     a.free();
 }
 
+// Unfold and Fold back: a seam on the half's hole keeps it (the whole's first holes are the
+// half's); a seam on a mirrored hole is dropped by Fold back
+{
+    const a = setup();
+    const hs = a.drawing("p1").holes[0].sides;
+    a.apply(m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: hs[1], a_to: hs[2], b_from: 350, b_to: 550, a_loop: 1, anchor: { a: [1, 0, 1, 1, 1], b: [2, 0, 1] } }).ops, "sew");
+    const keep = () => JSON.stringify([seamNode(a, "s1").a_from, seamNode(a, "s1").a_to, seamNode(a, "s1").a_loop, seamNode(a, "s1").meta.atelier.a]);
+    const k0 = keep();
+    const u = a.unfoldOps("p1", 1);           // the right side (x = 300) is the fold
+    assert.deepEqual(u.dropped, []);
+    a.commit(u.ops, "unfold", "p1");
+    assert.equal(a.drawing("p1").holes.length, 2, "the armhole and its mirror");
+    assert.equal(keep(), k0, "the hole seam stays on the half's armhole");
+    // the mirrored armhole sewn too (loop 2), then Fold back: that seam goes, the first stays
+    const m2 = a.drawing("p1").holes[1].sides;
+    a.apply(m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: m2[0], a_to: m2[1], b_from: 0, b_to: 100, a_loop: 2, anchor: { a: [0, 0, 1, 0, 2], b: [0, 0, 0.5] } }).ops, "sew mirror");
+    assert.deepEqual(errors(a), []);
+    const f = a.foldBackOps("p1");
+    assert.deepEqual(f.dropped, ["s2"]);
+    a.commit(f.ops, "fold back", "p1");
+    assert.equal(keep(), k0);
+    assert.deepEqual(errors(a), []);
+    a.free();
+}
+
 // A cut beside the hole: the seam goes with the hole, renumbered among the new piece's holes
 {
     const a = setup();
