@@ -27,6 +27,8 @@
 //                                                        # the left knee bent (ATELIER_KNEE, default 30), draped
 //     ATELIER_V3_ONLY=1 ...                              # only the V3 block (custom forms), after the page is ready
 //     ATELIER_A2_ONLY=1 ...                              # only the A2 block (place on avatar, the gizmo), on the sample
+//     ATELIER_S2_ONLY=1 ...                              # only the S2 block (darts closed and rotated, a pleat set, simulated)
+//     ATELIER_SHOT_S2=s2.png ...                         # S2: s2-rotate.png (the hover preview), s2-pleat.png, s2-sim.png
 //     ATELIER_SHOT_GIZMO=gizmo.png ...                   # also the gizmo over the sample's Front, its X arrow hovered
 //     ATELIER_SHOT_PLACE=place.png ...                   # also a sleeve placed on an arm by Place (wrapped round it)
 //     ATELIER_SHOT_MN=mn.png ...                         # also the M:N group selected in 2D (its seams numbered)
@@ -483,6 +485,144 @@ async function check(cdp, base) {
                 failIfErrors();
                 ok(`gizmo: an X arrow drag (${readout}) made the slot custom; Ctrl+Z undid it; Escape cancels a drag`);
             };
+            // S2 (darts and pleats): the T-shirt with three darts drawn on it, opened; a dart closed by
+            // cutting, one by folding, one rotated (a hover previews it, a click moves it), a knife pleat
+            // added with the Pleat tool; then the garment simulates. Alone: ATELIER_S2_ONLY=1.
+            const s2Block = async () => {
+                const dartAt = (x) => ({ kind: "dart", path: { start: [x - 30, 280], segments: [{ type: "line", to: [x, 430] }, { type: "line", to: [x + 30, 280] }] } });
+                {
+                    const src = new Atelier(await loadKernel());
+                    src.load(readFileSync(join(root, "assets", "tshirt.json"), "utf8"));
+                    const add = (id, lines) => src.apply(mm.setPattern(src.nodes(), id, { internal: [...(src.nodes().find((n) => n.id === id).internal ?? []), ...lines] }), "darts");
+                    add("p1", [dartAt(-170), dartAt(170)]);
+                    add("p2", [dartAt(580)]);
+                    writeFileSync(join(downloads, "darts.json"), src.save());
+                    src.free();
+                }
+                const saveDoc = async () => { await key("s", "KeyS", 83, 2); return JSON.parse(await takeFile("garment.json")); };
+                const nodeIn = (doc, id) => doc.nodes.find((n) => n.id === id);
+                const statusNow = () => evaluate(`document.getElementById("status-text").textContent`);
+                const simNow = () => evaluate(`document.body.dataset.sim ?? "off"`);
+                const healthNow = () => evaluate(`document.getElementById("health").textContent`);
+                const shot = async (what) => {
+                    if (!process.env.ATELIER_SHOT_S2) return;
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_S2.replace(/(\.png)?$/i, `-${what}.png`), Buffer.from(data, "base64"));
+                };
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty document for the darts", async () => (await patternCount()) === 0, 30000);
+                await pickInto("menu-open", join(downloads, "darts.json"), ".json");
+                await until("the T-shirt with darts", async () => (await patternCount()) === 4 && (await seamCount()) === 10, 30000);
+                await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                await sleep(500);
+                // the 2D window's mapping, from three hovers
+                const [ux, uy, uw, uh] = await windowBox("rect2d");
+                const P0 = [Math.round(ux + uw / 2), Math.round(uy + uh / 2)];
+                const W0 = (await hoverInfo(P0)).world, W1 = (await hoverInfo([P0[0] + 60, P0[1]])).world, W2 = (await hoverInfo([P0[0], P0[1] + 60])).world;
+                const sx = (W1[0] - W0[0]) / 60, sy = (W2[1] - W0[1]) / 60;
+                const screenOf = ([x, y]) => [P0[0] + (x - W0[0]) / sx, P0[1] + (y - W0[1]) / sy];
+                // a click on a dart's leg selects the line: its panel offers the action
+                const pickDart = async (x, key) => {
+                    for (const f of [0.5, 0.35, 0.65, 0.25, 0.75]) {
+                        await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                        await click(screenOf([x - 30 + 30 * f, 280 + 150 * f]));
+                        try { await until(`the dart at ${x} selected`, () => evaluate(`!!${field(key)}`), 3000); return; } catch { /* the next point along the leg */ }
+                    }
+                    throw new Error(`no ${key} on the dart at ${x}: the panel has ${await evaluate(`document.getElementById("props").textContent`)}`);
+                };
+                // Close (cut): the outline takes the legs, a seam sews them
+                await pickDart(-170, "dart_cut");
+                await evaluate(`${field("dart_cut")}.click()`);
+                await until("the cut dart's seam", async () => (await seamCount()) === 11, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}"`); });
+                let doc = await saveDoc();
+                const front = () => nodeIn(doc, "p1"), back = () => nodeIn(doc, "p2");
+                if (front().internal.filter((l) => l.kind === "dart").length !== 1) throw new Error(`the cut dart is still a mark: ${JSON.stringify(front().internal.map((l) => l.kind))}`);
+                const outline = nodeIn(doc, "p1_outline").path;
+                if (![outline.start, ...outline.segments.map((s) => s.to)].some((p) => p && Math.hypot(p[0] + 170, p[1] - 430) < 1e-6)) throw new Error("the cut dart's apex is not on the outline");
+                await noStatusError();
+                ok("dart: Close (cut) took the wedge out of the Front's outline and sewed its legs");
+                // Close (fold): legs, a 360° centre fold, tacks
+                await pickDart(170, "dart_fold");
+                await evaluate(`${field("dart_fold")}.click()`);
+                await until("the folded dart's tacks", async () => ((doc = await saveDoc()), (nodeIn(doc, "garment").tacks ?? []).length >= 2), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}"`); });
+                if (!front().internal.some((l) => l.kind === "fold" && l.angle === 360)) throw new Error(`no centre fold: ${JSON.stringify(front().internal)}`);
+                await noStatusError();
+                ok(`dart: Close (fold) made legs, a centre fold and ${nodeIn(doc, "garment").tacks.length} tacks`);
+                // Rotate…: a hover on the Back's hem previews the dart there, a click moves it
+                await pickDart(580, "dart_rotate");
+                await evaluate(`${field("dart_rotate")}.click()`);
+                await until("Rotate armed", async () => /^rotate:/.test(await statusNow()), 30000);
+                await hoverInfo(screenOf([700, 290]));
+                await hoverInfo(screenOf([720, 280]));
+                await sleep(800);
+                await shot("rotate");
+                await noStatusError();
+                await click(screenOf([720, 280]));
+                await until("the rotated dart", async () => {
+                    doc = await saveDoc();
+                    const d = back().internal?.find((l) => l.kind === "dart");
+                    return d && Math.hypot(d.path.start[0] - 720, d.path.start[1] - 280) < 4;
+                }, 30000).catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}", ${JSON.stringify(back().internal)}`); });
+                await noStatusError();
+                ok("dart: Rotate… previewed on hover, a click moved the Back's dart to the hem point");
+                // the Pleat tool: the placement line up from the Front's hem, a drag across, Enter
+                const tacks0 = (nodeIn(doc, "garment").tacks ?? []).length;
+                await evaluate(`document.querySelector('#tools2d [data-tool=pleat]').click()`);
+                await drag(screenOf([-40, 280]), screenOf([-40, 980]));
+                await drag(screenOf([-40, 350]), screenOf([80, 350]));
+                await until("the pleat panel", () => evaluate(`/^Pleats on Front/.test(document.querySelector("#props h3")?.textContent ?? "")`), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}"`); });
+                if ((await evaluate(`${field("kind")}.value`)) !== "knife") throw new Error("not a knife pleat by default");
+                await sleep(500);
+                await shot("pleat");
+                await noStatusError();
+                await evaluate(`document.getElementById("view").focus()`);
+                await key("Enter", "Enter", 13);
+                await until("the pleats", async () => ((doc = await saveDoc()), front().pleats?.length === 1), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}"`); });
+                const group = front().pleats[0];
+                if (group.spec.kind !== "knife" || !group.internal.every((i) => front().internal[i].prefold === true)) throw new Error(`the pleat group: ${JSON.stringify(group)}`);
+                if ((nodeIn(doc, "garment").tacks ?? []).length !== tacks0 + group.tacks.length || !group.tacks.length) throw new Error(`the pleats' top tacks: ${JSON.stringify(group.tacks)}`);
+                await noStatusError();
+                ok(`Pleat: ${group.spec.count} knife pleat(s), ${group.internal.length} pre-folded lines, ${group.tacks.length} top tack(s)`);
+                // the group selected by a click on one of its lines: its depth edited (one undo step), Delete, Ctrl+Z
+                let picked = false;
+                for (const y of [600, 500, 700, 450]) {
+                    await evaluate(`document.querySelector('#tools2d [data-tool=edit]').click()`);
+                    await click(screenOf([-40, y]));
+                    try { await until("the pleat group selected", () => evaluate(`!!${field("pleat_depth")}`), 3000); picked = true; break; } catch { /* the next point along it */ }
+                }
+                if (!picked) throw new Error(`no pleat panel: ${await evaluate(`document.getElementById("props").textContent`)}`);
+                await setField("pleat_depth", "15");
+                await until("the pleats 15 deep", async () => ((doc = await saveDoc()), front().pleats?.[0]?.spec.depth === 15), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}"`); });
+                if (front().internal.filter((l) => l.prefold).length !== 2) throw new Error("the edit left the old folds");
+                await until("the edited group still selected", () => evaluate(`!!${field("pleat_remove")}`), 30000);
+                await evaluate(`document.getElementById("view").focus()`);
+                await key("Delete", "Delete", 46);
+                await until("the pleats removed", async () => ((doc = await saveDoc()), !front().pleats && !front().internal.some((l) => l.prefold)), 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}"`); });
+                if ((nodeIn(doc, "garment").tacks ?? []).length !== tacks0) throw new Error("Delete left the pleats' tacks");
+                await key("z", "KeyZ", 90, 2);
+                await until("the pleats back", async () => ((doc = await saveDoc()), front().pleats?.[0]?.spec.depth === 15), 30000);
+                await noStatusError();
+                ok("Pleat group: selected by a click on a fold, its depth set to 15 (remove + add in one batch), Delete removed it, Ctrl+Z brought it back");
+                // simulate: the cloth builds and runs
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("the cloth running", async () => (await simNow()) === "running", 120000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await statusNow()}", health "${await healthNow()}"`); });
+                await until("three frames", async () => Number(/frame (\d+)/.exec(await healthNow())?.[1] ?? -1) >= 3, 180000);
+                await shot("sim");
+                failIfErrors();
+                ok(`darts and pleats simulate: ${await healthNow()}`);
+                await evaluate(`document.getElementById("sim-reset").click()`);
+                await until("reset", async () => (await simNow()) === "off", 30000);
+                failIfErrors();
+            };
+            if (process.env.ATELIER_S2_ONLY === "1") { await s2Block(); failIfErrors(); ok("S2 block alone"); return; }
             if (process.env.ATELIER_V3_ONLY === "1") { await v3(); failIfErrors(); ok("V3 block alone"); return; }
             if (process.env.ATELIER_A2_ONLY === "1") {
                 await evaluate(`document.getElementById("menu-sample").click()`);
@@ -2106,6 +2246,8 @@ async function check(cdp, base) {
                 writeFileSync(process.env.ATELIER_SHOT_HOLES, Buffer.from(data, "base64"));
                 ok(`screenshot ${process.env.ATELIER_SHOT_HOLES}`);
             }
+            // 8a. S2: darts closed and rotated, a pleat set, simulated
+            await s2Block();
             // 8b. V3: custom forms and a posed drape
             await v3();
         } finally { try { rmSync(downloads, { recursive: true, force: true }); } catch { /* left behind */ } }

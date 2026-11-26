@@ -244,6 +244,34 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
   fabric's shrinkage or a tack's ends re-mesh the pieces they touch; adding or removing a tack
   or an elastic makes the cloth stale (Simulate rebuilds).
 
+### Darts and pleats
+
+- **Dart** (2D strip) draws a dart as before: two clicks on one edge, then the apex. Select it (a
+  click on it in **Edit**) and its panel offers:
+  - **Close (cut)**: the wedge leaves the piece, its two legs become outline and a seam sews them;
+  - **Close (fold)**: the wedge stays, folded under: the legs become lines tacked together at the
+    particle spacing, the centre line a fold at 360°;
+  - **Rotate…**: point at the outline where the dart should go (the piece previews the dart
+    moved there, the stretch between pivoting on the apex) and click; **Escape** cancels.
+  Each is one undo step. A dart the kernel refuses (a rotation onto a seam's range or into the
+  dart itself, say) changes nothing, and the status line names the fault.
+- **Pleat** (2D strip): drag the placement line on a piece, from the edge that gets the top
+  tacks (the waist) toward the hem, then drag across the area to pleat. The panel then sets the
+  count, the depth (a knife pleat takes in twice it, a box pleat four times), knife or box, the
+  way a knife pleat faces and the top tack; the piece previews the fold lines as they change.
+  **Enter** adds them (one undo step), **Escape** drops them. The folds start folded in the
+  cloth (pre-folded), and the top tacks hold each pleat closed at the waist.
+- **A pleat group**: a click on one of its folds selects the whole set (drawn in the accent); its
+  panel edits the numbers (the set removed and added again, one undo step), **Remove pleats** or
+  **Delete** removes the folds and their tacks together.
+- All of it is the kernel's (`garment_close_dart_cut`, `_folded`, `garment_rotate_dart`,
+  `garment_add_pleats`, `garment_remove_pleats`) run on a copy of the garment; the result is
+  written into the document as ordinary nodes (outline, internal lines, notches, seams, tacks, and
+  the pattern's `pleats`). Closing a dart or adding pleats makes a running cloth stale (Simulate
+  rebuilds it); a rotated dart re-meshes the piece.
+- Limits: dart and pleat edits are made in the base size of a graded garment; a piece's outline
+  elastics (not a seam's) are not carried through a dart edit that moves the outline.
+
 **Film hook** (`film.js`) — `?film=1` is for the tutorial video's driver: Simulate builds the
 cloth paused (and then does nothing to it), `atelierFilm.step(n)` steps exactly n frames and
 resolves once the View has drawn the last (steps queue), `atelierFilm.run()` / `pause()` run free
