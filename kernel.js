@@ -1,15 +1,20 @@
 // The kernel facade: the one place the app calls cadaclysm_blacksmith_*. It owns a
 // blacksmith document holding the garment, and hands back plain arrays for drawing.
 import * as m from "./model.js";
-import { reanchor, anchorOf } from "./sewing.js";
+import { reanchor, anchorOf, mapGroupRanges } from "./sewing.js";
+import { redistributeOps, namesPiece } from "./seamgroup.js";
 import { arcAt } from "./view2d.js";
 import { translatePath } from "./drape.js";
 import { bucklingMigration } from "./fabrics.js";
+import { reslotOps } from "./reslot.js";
+import * as G from "./grading.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
 const STEP = 1;          // outline sample spacing for picking, mm
 const NOTCH_KINDS = ["slit", "v", "t", "castle", "u"];
+// garment_pattern_internal_kind: 0 Line, 1 Fold, 2 Dart
+const INTERNAL_KINDS = ["line", "fold", "dart"];
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 const text = (e) => String(e && e.message ? e.message : e);
 const HOLE_GAP = 0.05;    // mm: a hole nearer the outline or another hole than this touches it
@@ -31,6 +36,10 @@ const CHAIN_TOL = 1e-6;                  // mm: an unfold's half and mirror meet
 // A piece's link to its partner {partner, axis} and its unfold {axis, half} (spec §6), or null.
 export const linkOf = (n) => n?.meta?.atelier?.link ?? null;
 export const unfoldOf = (n) => n?.meta?.atelier?.unfold ?? null;
+// grading (A3): an outline without its holes (holes are not graded), and two outlines alike
+const bare = (path) => ({ start: [...path.start], segments: JSON.parse(JSON.stringify(path.segments)) });
+const sameOutline = (a, b) => JSON.stringify([a.start, a.segments]) === JSON.stringify([b.start, b.segments]);
+const sameJson = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const ring = (points, from, to) => { const out = []; for (let j = from; j < to; j++) out.push(points[3 * j], points[3 * j + 1]); return out; };
 
 // A drawing without what only the worker draws (posted to the page with every `doc`).
@@ -45,6 +54,8 @@ const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "pr
     "profile_piece", "profile_chain", "profile_close_loop", "profile_beziers", "profile_contains", "profile_offset", "face", "mesh",
     // A1 (spec §3, §5): point editing and the notch marks
     "profile_insert_vertex", "profile_remove_vertex", "profile_smooth_vertex", "garment_pattern_notch_lines",
+    // A2 (spec §6): DXF import keeps internal lines and holes
+    "garment_pattern_internal_count", "garment_pattern_internal_kind", "garment_pattern_internal",
     // the simulation controls (S1): saved options and pins, Freeze
     "garment_sim_options", "garment_pins", "cloth_freeze"];
 
@@ -73,6 +84,7 @@ export class Atelier {
         this.holeChecks = new Map(); // checkHoles: an outline shape -> its error, or null
         this.evalErrors = [];
         this.drawn = null;   // this evaluation's drawings, and the patterns that failed to draw
+        this.avatar = null;  // the avatar the slots stand round, {bounds, landmarks}: setAvatar
     }
     free() { this.dropGarment(); this.f("document_free")(this.d); }
     dropGarment() { if (this.g) { this.f("garment_free")(this.g); this.g = 0; } }
@@ -107,21 +119,42 @@ export class Atelier {
     commit(ops, message, reanchorId = null, before = this.problems()) {
         const out = { removed: [] };
         if (!ops.length) return out;
-        const prior = this.nodes();
+        const prior = this.nodes(), anchors = this.customAnchors();
         this.f("document_batch_begin")(this.d, message ?? null);
         try {
             this.f("document_apply")(this.d, batch(ops), null);
             this.evaluate();
+            // grading (A3): in a graded size (or a size switch) the internal lines and notches of
+            // the pieces whose outline the ops changed follow it, before a partner is rebuilt from them
+            const graded = !!(this.grading(prior) || this.grading());
+            const mid = graded ? this.nodes() : null;
+            const follow = graded ? this.gradeFollowOps(prior) : [];
+            if (follow.length) { this.f("document_apply")(this.d, batch(follow), null); this.evaluate(); }
+            const own = [...ops, ...follow];
             // a linked partner or an unfolded whole rebuilt from what the ops changed (spec §6),
             // in the same batch; its seams re-anchored with the rest
-            const sym = this.symmetryOps(prior, ops, true);
+            const sym = this.symmetryOps(prior, own, true);
             if (sym.ops.length) { this.f("document_apply")(this.d, batch(sym.ops), null); this.evaluate(); }
+            // grading (A3): each changed outline's grade -- the base path in the base size, the
+            // current size's rules in another (a reshape there is refused)
+            if (graded) {
+                const rec = this.gradeRecordOps(prior, mid);
+                if (rec.length) { this.f("document_apply")(this.d, batch(rec), null); this.evaluate(); }
+            }
+            // the placed pieces whose outline changed, back on their slots (spec §5)
+            const slots = this.slotOps([...own, ...sym.ops], anchors);
+            if (slots.length) { this.f("document_apply")(this.d, batch(slots), null); this.evaluate(); }
             // several pieces (a transform of a multi-selection): each one's seams in turn
             for (const rid of [...new Set([reanchorId ?? [], sym.reanchor].flat())]) {
                 if (!m.byId(this.nodes()).has(rid) || this.newProblems(before)) continue;
                 const r = reanchor(this.nodes(), new Map([[rid, { sides: this.sidesOf(rid) }]]), rid);
                 if (r.ops.length) { this.f("document_apply")(this.d, batch(r.ops), null); this.evaluate(); }
                 out.removed.push(...r.removed);
+            }
+            // the M:N groups re-distributed on their ranges' sides now (seamgroup.js), in the same batch
+            if (!this.newProblems(before)) {
+                const groups = redistributeOps(this.nodes(), (id) => this.sidesOf(id));
+                if (groups.length) { this.f("document_apply")(this.d, batch(groups), null); this.evaluate(); }
             }
             const bad = this.newProblems(before);
             if (bad) throw new Error(bad);
@@ -139,7 +172,7 @@ export class Atelier {
         if (!this.open) {
             // `ops`: the last good frame as applied (a rebuilt partner's ops too: the cloth previews
             // it); `user`: that frame's own ops, which endPreview commits (the commit rebuilds again)
-            this.open = { nodes: this.nodes(), problems: this.problems(), ops: null, user: null };
+            this.open = { nodes: this.nodes(), problems: this.problems(), anchors: this.customAnchors(), ops: null, user: null };
             this.f("document_preview_begin")(this.d);
         }
         const p = this.open;
@@ -150,6 +183,9 @@ export class Atelier {
             // each frame rebuilds a linked partner or an unfolded whole too: both halves move live
             const sym = this.symmetryOps(p.nodes, ops, false);
             if (sym.ops.length) { full = [...ops, ...sym.ops]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
+            // and a placed piece stays on its slot while it is dragged
+            const slots = this.slotOps(full, p.anchors);
+            if (slots.length) { full = [...full, ...slots]; this.f("document_preview")(this.d, batch(full)); this.evaluate(); }
             bad = this.newProblems(p.problems);
         } catch (e) { bad = text(e); }
         if (bad) {
@@ -166,6 +202,41 @@ export class Atelier {
         this.open = null;
         try { this.f("document_end_preview")(this.d); } finally { this.evaluate(); }
         return commit && p.user ? this.commit(p.user, "edit", reanchorId, p.problems) : { removed: [] };
+    }
+    // ---- slot frames refresh (spec §5) ----
+    // The avatar the slots are placed round ({bounds, landmarks}, as arrange.js slotFields takes
+    // them), or null: with none, nothing is re-placed.
+    setAvatar(avatar) { this.avatar = avatar ? { bounds: avatar.bounds, landmarks: avatar.landmarks ?? null } : null; }
+    // Each piece's 2D bounds as it stands now, for reslotOps (a piece that does not evaluate has none).
+    slotBounds() {
+        return { get: (id) => { try { return { bounds: this.withOutline(id, (p) => Array.from(this.f("profile_bounds")(p))) }; } catch { return undefined; } } };
+    }
+    // The ops re-placing every placed piece whose outline `ops` changed (a 2D edit, a move, a
+    // transform, a point added or removed; the document holds them applied) on its slot, and the
+    // pieces "on" a re-placed one. A custom slot keeps its frame's axes and is anchored at its
+    // bounds centre: `anchors` (customAnchors before the ops) has the bounds it is anchored by.
+    slotOps(ops, anchors = null) {
+        if (!this.avatar) return [];
+        const nodes = this.nodes();
+        const only = new Set([...this.touchedPieces(ops, m.byId(nodes))].filter(([, t]) => t.outline).map(([id]) => id));
+        return only.size ? reslotOps(nodes, this.slotBounds(), this.avatar, only, anchors).ops : [];
+    }
+    // The 2D bounds of every piece on a custom (gizmo) slot as it stands now: id -> bounds.
+    customAnchors() {
+        const out = new Map();
+        if (!this.avatar) return out;
+        const b = this.slotBounds();
+        for (const n of this.nodes())
+            if (n.kind === "garment.pattern" && n.meta?.atelier?.slot === "custom") { const d = b.get(n.id); if (d?.bounds) out.set(n.id, d.bounds); }
+        return out;
+    }
+    // Every placed piece re-placed for the avatar now set, as one commit (one undo step), after a
+    // new avatar. Not while a preview is open. -> reslotOps' {ops, moved, skipped}
+    reslot(message = "re-arrange on the form") {
+        if (!this.avatar || this.open) return { ops: [], moved: [], skipped: [] };
+        const r = reslotOps(this.nodes(), this.slotBounds(), this.avatar);
+        if (r.ops.length) this.commit(r.ops, message);
+        return r;
     }
     // false when there is nothing to take back (New and Open start a fresh history).
     undo() {
@@ -469,6 +540,7 @@ export class Atelier {
             try {
                 out.push({
                     id: n.id, a: n.a, b: n.b, a_from: n.a_from, a_to: n.a_to, b_from: n.b_from, b_to: n.b_to, reversed: !!n.reversed,
+                    group: n.meta?.atelier?.group?.id ?? null, member: n.meta?.atelier?.member ?? null,
                     points_a: Array.from(this.f("garment_range_points")(this.g, this.patternIndex(n.a), n.a_from, n.a_to, TOL)),
                     points_b: Array.from(this.f("garment_range_points")(this.g, this.patternIndex(n.b), n.b_from, n.b_to, TOL)),
                 });
@@ -501,7 +573,7 @@ export class Atelier {
     // with its holes through profile_transform2d, each internal line through the same matrix, each
     // notch re-placed at its mapped point on the new outline, and the grain the matrix's linear
     // part applied and normalised. From the committed piece during a preview (as transformed()).
-    // -> {path, internal, notches, grain, pins?}
+    // -> {path, internal, notches, grain, pins?, matrix}
     transformedPiece(id, m6) {
         const byId = m.byId(this.open ? this.open.nodes : this.nodes()), node = byId.get(id), path = byId.get(`${id}_outline`)?.path;
         if (!node || !path) throw new Error(`no pattern ${id}`);
@@ -522,8 +594,10 @@ export class Atelier {
         const [gx, gy] = node.grain ?? [0, 1], tx = m6[0] * gx + m6[1] * gy, ty = m6[3] * gx + m6[4] * gy, gl = Math.hypot(tx, ty);
         if (!(gl > 0)) throw new Error("the transform collapses the piece");
         const r = { path: out, internal, notches, grain: [tx / gl, ty / gl] };
-        // the saved pins (S1, pattern space) go with the piece
+        // the saved pins (S1, pattern space) go with the piece, and so do its tacks' ends
+        // (model.pieceOps moves those through this matrix)
         if (node.pins?.length) r.pins = node.pins.map(map);
+        r.matrix = [...m6];
         // spec §6: a link's axis through the same matrix (model.pieceOps keeps it only when the
         // partner moves too), and an unfold's axis and half with it
         const axisThrough = ([x0, y0, x1, y1]) => [...map([x0, y0]), ...map([x1, y1])];
@@ -676,11 +750,36 @@ export class Atelier {
 
     // The ops of a cut (and with `sew`, one seam joining the cut edges): one batch, one undo.
     cutOps(id, cutter, { sew = false, consume = null } = {}) {
+        this.baseOnly();
         const r = this.cutPieces(id, cutter, consume);
         const label = m.byId(this.nodes()).get(id).label ?? "Piece";
         const out = m.replacePattern(this.nodes(), id, r.pieces.map((p, k) => ({ ...p, label: `${label} ${"AB"[k]}` })),
             { seamMoves: r.seamMoves, dropped: r.dropped, sew: sew ? { a: r.cutEdges[0], b: r.cutEdges[1], reversed: r.reversed } : null });
+        // a graded piece's halves are graded too (A3): each new vertex takes the rule at its place
+        const g = G.gradeOf(m.byId(this.nodes()).get(id));
+        if (g) out.ids.forEach((pid, k) => {
+            const node = out.ops.find((o) => o.node?.id === pid)?.node, path = bare(r.pieces[k].path);
+            if (node) node.meta = m.atelierMeta(node.meta, "grade", { base: path, rules: this.carryGrade(g, path) });
+        });
         return { ...out, dropped: r.dropped };
+    }
+    // The rules of grade `g` carried onto outline `path` cut from its base: a vertex on a base
+    // vertex takes its rule, one on a base side the rules interpolated along it, one inside (a
+    // cutter's bend) the piece's affine fit (grading.js rulesAtPlaces).
+    carryGrade(g, path) {
+        const vb = G.vertices(g.base);
+        const places = this.withPath(g.base, (p) => {
+            const samples = this.samplesOf(p), sides = this.sideStarts(p, this.f("profile_length")(p, ACC)[0], g.base.segments.length);
+            return G.vertices(path).map((q) => {
+                const k = vb.findIndex((v) => Math.hypot(v[0] - q[0], v[1] - q[1]) <= 1e-4);
+                if (k >= 0) return { vertex: k };
+                const at = arcAt(samples, sides, q);
+                if (at.d > 0.05) return { point: q };
+                const len = sides[at.side + 1] - sides[at.side];
+                return { side: at.side, t: len > 0 ? Math.min(1, Math.max(0, (at.s - sides[at.side]) / len)) : 0 };
+            });
+        });
+        return G.rulesAtPlaces(g.rules, g.base, places);
     }
 
     // Internal closed shape `index` of piece `id` as a new piece, moved by the kernel beside the
@@ -728,6 +827,7 @@ export class Atelier {
     }
     // The fillet's ops (one batch; Atelier.commit(ops, "fillet", id) re-anchors the seams in it).
     filletOps(id, corner, radius) {
+        this.baseOnly();
         const r = this.filletPath(id, corner, radius);
         return m.filletOps(this.nodes(), id, r.path, r.insertAt, r.notches);
     }
@@ -802,7 +902,7 @@ export class Atelier {
     // LAND exactly that), written as anchorOf writes it.
     anchorsOnto(id, from, to, nodes) {
         const f = this.f, ops = [];
-        const seams = nodes.filter((n) => n.kind === "garment.seam" && n.meta?.atelier && (n.a === id || n.b === id));
+        const seams = nodes.filter((n) => n.kind === "garment.seam" && n.meta?.atelier && (n.a === id || n.b === id || namesPiece(n, id)));
         if (!seams.length) return ops;
         this.withPath({ start: from.start, segments: from.segments }, (pf) => this.withPath({ start: to.start, segments: to.segments }, (pt) => {
             const sf = this.sideStarts(pf, f("profile_length")(pf, ACC)[0], from.segments.length);
@@ -811,19 +911,25 @@ export class Atelier {
                 const r = f("profile_point_at_length")(pf, s, ACC), a = arcAt(samples, st, [r[0], r[1]]).s;
                 return st.find((c) => Math.abs(c - a) < LAND) ?? a;
             };
+            const onto = ([a, ta, tb, b = a]) => {
+                if (a >= sf.length - 1 || b >= sf.length - 1) return null;
+                let s0 = arcOn(sf[a] + ta * (sf[a + 1] - sf[a])), s1 = arcOn(sf[b] + tb * (sf[b + 1] - sf[b]));
+                if (s0 >= P - 1e-9) s0 = 0;
+                if (s1 < s0 && s1 < LAND) s1 = P;
+                return anchorOf(st, s0, s1);
+            };
             for (const n of seams) {
-                const anchor = { ...n.meta.atelier };
-                let moved = false;
+                let anchor = { ...n.meta.atelier }, moved = false;
                 for (const end of ["a", "b"]) {
                     if (n[end] !== id || !anchor[end]) continue;
-                    const [a, ta, tb, b = a] = anchor[end];
-                    if (a >= sf.length - 1 || b >= sf.length - 1) continue;
-                    let s0 = arcOn(sf[a] + ta * (sf[a + 1] - sf[a])), s1 = arcOn(sf[b] + tb * (sf[b + 1] - sf[b]));
-                    if (s0 >= P - 1e-9) s0 = 0;
-                    if (s1 < s0 && s1 < LAND) s1 = P;
-                    anchor[end] = anchorOf(st, s0, s1);
+                    const next = onto(anchor[end]);
+                    if (!next) continue;
+                    anchor[end] = next;
                     moved = true;
                 }
+                // an M:N group's ranges on the piece move the same way (seamgroup.js)
+                const grouped = mapGroupRanges(anchor, id, onto);
+                if (grouped !== anchor) { anchor = grouped; moved = true; }
                 if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
             }
         }));
@@ -945,8 +1051,8 @@ export class Atelier {
         this.checkHoles(whole.path);
         const dropped = [], moves = [];
         for (const n of nodes) {
-            if (n.kind !== "garment.seam" || !n.meta?.atelier || (n.a !== id && n.b !== id)) continue;
-            const anchor = { ...n.meta.atelier };
+            if (n.kind !== "garment.seam" || !n.meta?.atelier || (n.a !== id && n.b !== id && !namesPiece(n, id))) continue;
+            let anchor = { ...n.meta.atelier };
             let gone = false;
             for (const end of ["a", "b"]) {
                 if (n[end] !== id || !anchor[end]) continue;
@@ -955,6 +1061,11 @@ export class Atelier {
                 if (x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt)) { gone = true; break; }
                 anchor[end] = x === y ? [x, tf, tt] : [x, tf, tt, y];
             }
+            // an M:N group's ranges follow their sides; one on the fold side dissolves the group
+            anchor = mapGroupRanges(anchor, id, ([sf, tf, tt, st = sf]) => {
+                const x = at(sf), y = at(st);
+                return x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt) ? null : x === y ? [x, tf, tt] : [x, tf, tt, y];
+            });
             if (gone) dropped.push(n.id);
             else moves.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
         }
@@ -973,19 +1084,24 @@ export class Atelier {
         const { node } = this.pieceOf(id), nodes = this.nodes(), U = unfoldOf(node);
         if (!U) throw new Error("fold back: the piece is not unfolded");
         const N = U.half.path.segments.length, dropped = [];
+        const mirrored = ([sf, tf, tt, st = sf]) => sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt);
         for (const n of nodes) {
             if (n.kind !== "garment.seam" || (n.a !== id && n.b !== id)) continue;
             for (const end of ["a", "b"]) {
                 if (n[end] !== id) continue;
-                const [sf, tf, tt, st = sf] = n.meta?.atelier?.[end] ?? [N, 0, 0];
-                if (sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt)) { dropped.push(n.id); break; }
+                if (mirrored(n.meta?.atelier?.[end] ?? [N, 0, 0])) { dropped.push(n.id); break; }
             }
         }
+        // an M:N group with a range on the mirrored side is dissolved (its members left as plain seams)
+        const dissolved = nodes.filter((n) => !dropped.includes(n.id) && namesPiece(n, id))
+            .map((n) => ({ n, atelier: mapGroupRanges(n.meta.atelier, id, (a) => (mirrored(a) ? null : a)) }))
+            .filter((x) => x.atelier !== x.n.meta.atelier)
+            .map(({ n, atelier }) => ({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier } } }));
         const h = U.half;
         return {
             ops: [...m.setOutline(nodes, id, h.path),
                 ...m.setPattern(nodes, id, { internal: h.internal ?? [], notches: h.notches ?? [], allowance: h.allowance ?? node.allowance ?? [10], meta: m.atelierMeta(node.meta, "unfold") }),
-                ...m.removeSeams(nodes, dropped)],
+                ...dissolved, ...m.removeSeams(nodes, dropped)],
             dropped,
         };
     }
@@ -1086,10 +1202,207 @@ export class Atelier {
     // -> ops (Atelier.commit(ops, "point", line == null ? id : null) re-anchors the seams).
     pointOps(d) {
         if (d.line != null) return this.internalPointOps(d.id, d.line, d);
+        this.baseOnly();
         if (d.op === "insert") return this.insertPointOps(d.id, d.s);
         if (d.op === "remove") return this.removePointsOps(d.id, d.indices);
         if (d.op === "smooth") return this.smoothPointsOps(d.id, d.points);
         throw new Error(`no point op ${d.op}`);
+    }
+
+    // ---- grading (A3 spec): sizes, grade rules, the size switch ----
+    // The garment's size table {sizes, base, current}, or null (an ungraded garment).
+    grading(nodes = this.nodes()) { return G.gradingOf(m.byId(nodes).get("garment")); }
+    // Refuses a shape edit in a size other than the base (spec §3).
+    baseOnly() {
+        const t = this.grading();
+        if (t && t.current !== t.base) throw new Error(`edit the shape in the base size (${t.base})`);
+    }
+    // Piece `id`'s grade, or for a piece without one its outline as base and no rules (an
+    // ungraded piece is the same in every size).
+    gradeOfPiece(id, nodes = this.nodes()) {
+        const byId = m.byId(nodes), path = byId.get(`${id}_outline`)?.path;
+        if (!path) throw new Error(`no pattern ${id}`);
+        return G.gradeOf(byId.get(id)) ?? { base: bare(path), rules: {} };
+    }
+    // A path through m6 by the kernel (profile_transform2d), as path JSON without holes.
+    pathThrough(path, m6) { return bare(this.withPath({ start: path.start, segments: path.segments }, (p) => this.pathOf(this.f("profile_transform2d")(p, Float64Array.from(m6))))); }
+    // Each side's start arc length and the perimeter (n + 1 numbers) of a path's outer loop.
+    sideArcs(path) { return this.withPath({ start: path.start, segments: path.segments }, (p) => this.sideStarts(p, this.f("profile_length")(p, ACC)[0], path.segments.length)); }
+    // The commit's first grading pass: in a graded size, or when the batch switches size, each
+    // piece whose outline the batch's ops reshaped has its internal lines moved by the change of
+    // its affine fit (base -> outline, grading.js affineFit) and its notches kept at their side
+    // fraction. A piece placed (moved or turned whole) is left alone, and so is an unfolded one
+    // (its whole is rebuilt from its half: spec §6).
+    gradeFollowOps(priorList) {
+        const before = m.byId(priorList), nodes = this.nodes(), now = m.byId(nodes);
+        const t0 = this.grading(priorList), t = this.grading(nodes);
+        if (!t) return [];
+        const switching = t0?.current !== t.current;
+        if (!switching && t.current === t.base) return [];
+        const ops = [];
+        for (const id of now.get("garment")?.patterns ?? []) {
+            const old = before.get(`${id}_outline`)?.path, cur = now.get(`${id}_outline`)?.path, node = now.get(id);
+            if (!old || !cur || sameOutline(old, cur) || !G.sameShape(old, cur) || unfoldOf(node)) continue;
+            const gradeSet = !sameJson(G.gradeOf(before.get(id)), G.gradeOf(node));
+            if (!switching && !gradeSet && G.rigidMotion(old, cur)) continue;
+            const base = G.gradeOf(node)?.base ?? bare(old);
+            if (!G.sameShape(base, cur)) continue;          // a reshape: the record pass refuses it
+            const vb = G.vertices(base), inv = G.invertAffine(G.affineFit(vb, G.vertices(old)));
+            const M = inv ? G.composeAffine(G.affineFit(vb, G.vertices(cur)), inv) : G.affineFit(G.vertices(old), G.vertices(cur));
+            const fields = {};
+            if (node.internal?.length && !G.isIdentity(M, 1e-12))
+                fields.internal = node.internal.map((l) => ({ ...l, path: this.pathThrough(l.path, M) }));
+            if (node.notches?.length) fields.notches = G.notchesByFraction(node.notches, this.sideArcs(old), this.sideArcs(cur));
+            if (Object.keys(fields).length) ops.push(...m.setPattern(nodes, id, fields));
+        }
+        return ops;
+    }
+    // The commit's last grading pass: every piece whose outline the batch changed (a rebuilt
+    // partner too) gets its grade from it. In the base size the base path follows the outline (the
+    // rules carried onto a point more or fewer by position, where the ops did not shift them); in
+    // another size each vertex's move from the base becomes its rule for that size, and anything
+    // else (a handle on its own, a point more or fewer) is refused. A piece placed whole keeps its
+    // rules, turned with it.
+    gradeRecordOps(priorList, midList) {
+        const before = m.byId(priorList), mid = m.byId(midList), nodes = this.nodes(), now = m.byId(nodes);
+        const t0 = this.grading(priorList), t = this.grading(nodes);
+        if (!t) return [];
+        const size = t.current, switching = t0?.current !== t.current, ops = [];
+        for (const id of now.get("garment")?.patterns ?? []) {
+            const old = before.get(`${id}_outline`)?.path, cur = now.get(`${id}_outline`)?.path, node = now.get(id);
+            if (!old || !cur || sameOutline(old, cur)) continue;
+            const g = G.gradeOf(node), pg = G.gradeOf(before.get(id)), mg = G.gradeOf(mid.get(id));
+            const gradeSet = !sameJson(pg, mg);
+            let next = null;
+            const motion = !switching && !gradeSet && G.rigidMotion(old, cur);
+            if (motion) {
+                if (!g) continue;
+                next = { base: size === t.base ? bare(cur) : this.pathThrough(g.base, motion), rules: G.turnRules(g.rules, motion) };
+            } else if (size === t.base) {
+                if (!g) continue;
+                // the rules the ops wrote (a point op shifts them), else those before
+                const src = gradeSet ? mid.get(`${id}_outline`)?.path ?? old : old, rules = (gradeSet ? mg?.rules : pg?.rules) ?? g.rules ?? {};
+                next = { base: bare(cur), rules: src.segments.length === cur.segments.length ? rules : G.carryRules(rules, src, cur) };
+            } else {
+                const base = g?.base ?? bare(old), d = G.vertexMoves(base, cur);
+                if (!d) throw new Error(`edit the shape in the base size (${t.base})`);
+                next = { base, rules: G.withSize(g?.rules ?? {}, size, d) };
+                if (!g && !Object.keys(next.rules).length) continue;
+            }
+            if (!sameJson(g, next)) ops.push(...m.setPattern(nodes, id, { meta: m.atelierMeta(node.meta, "grade", next) }));
+        }
+        return ops;
+    }
+    // The ops switching the garment to size `size`: every graded piece's outline its base moved
+    // by its rules for that size (holes kept), and the table's current size. The commit then moves
+    // internal lines and notches, rebuilds partners, re-places slots, re-anchors seams and
+    // re-distributes M:N groups. -> {ops, ids: the pieces whose outline changes}
+    sizeOps(size, nodes = this.nodes()) {
+        const t = this.grading(nodes);
+        if (!t) throw new Error("no sizes: add sizes first");
+        if (!t.sizes.includes(size)) throw new Error(`no size ${size}`);
+        if (size === t.current) return { ops: [], ids: [] };
+        const r = this.regradeOps({ ...t, current: size }, new Map(), nodes);
+        return { ops: [this.gradingOp({ ...t, current: size }, nodes), ...r.ops], ids: r.ids };
+    }
+    // Switches to size `size`: one batch ("size L"), one undo step. A refusal changes nothing.
+    switchSize(size) {
+        const r = this.sizeOps(size);
+        if (!r.ops.length) return { removed: [] };
+        try { return this.commit(r.ops, `size ${size}`, r.ids); } catch (e) { throw new Error(`size ${size}: ${text(e)}`); }
+    }
+    gradingOp(table, nodes = this.nodes()) {
+        const g = m.byId(nodes).get("garment");
+        if (!g) throw new Error("no garment");
+        return { op: "set", id: "garment", fields: { meta: m.atelierMeta(g.meta, "grading", table) } };
+    }
+    // The outlines of the graded pieces in table.current, with `grades` (id -> grade) in place of
+    // their own where given, and those grades written. -> {ops, ids: the outlines that change}
+    regradeOps(table, grades, nodes = this.nodes()) {
+        const byId = m.byId(nodes), ops = [], ids = [];
+        for (const id of byId.get("garment")?.patterns ?? []) {
+            const node = byId.get(id), cur = byId.get(`${id}_outline`)?.path, g = grades.get(id) ?? G.gradeOf(node);
+            if (!g || !cur) continue;
+            if (grades.has(id)) ops.push(...m.setPattern(nodes, id, { meta: m.atelierMeta(node.meta, "grade", g) }));
+            const next = G.gradedPath(g.base, g.rules, table.current);
+            if (cur.holes) next.holes = cur.holes;
+            if (!sameOutline(next, cur)) { ops.push(...m.setOutline(nodes, id, next)); ids.push(id); }
+        }
+        return { ops, ids };
+    }
+    // The size table dialog's changes (spec §4), each one batch: {op: "add", name, at?},
+    // {op: "rename", from, to}, {op: "remove", name}, {op: "reorder", sizes}, {op: "base", name}.
+    // Removing the current size switches to the base. -> {ops, ids}
+    sizesOps(action, nodes = this.nodes()) {
+        const t = this.grading(nodes), byId = m.byId(nodes);
+        const grades = {};
+        for (const id of byId.get("garment")?.patterns ?? []) { const g = G.gradeOf(byId.get(id)); if (g) grades[id] = g; }
+        let r;
+        switch (action.op) {
+            case "add": r = { table: G.addSize(t, action.name, action.at ?? null), grades }; break;
+            case "rename": r = G.renameSize(t, grades, action.from, action.to); break;
+            case "remove": r = G.removeSize(t, grades, action.name); break;
+            case "reorder": r = { table: G.reorderSizes(t, action.sizes), grades }; break;
+            case "base": r = G.changeBase(t, grades, action.name); break;
+            default: throw new Error(`no sizes op ${action.op}`);
+        }
+        const changed = new Map(Object.entries(r.grades).filter(([id, g]) => !sameJson(g, grades[id])));
+        const re = this.regradeOps(r.table, changed, nodes);
+        return { ops: [this.gradingOp(r.table, nodes), ...re.ops], ids: re.ids };
+    }
+    // Piece grades set by the grade panel's ops (spec §3), each one batch with the current size's
+    // outline re-graded: {op: "rule", id, vertex, size, d: [dx, dy]}, {op: "copy", id, from, to:
+    // [vertices]}, {op: "distribute", id, from, to}, {op: "proportional", ids, dw, dh}. -> {ops, ids}
+    gradeOps(action, nodes = this.nodes()) {
+        const t = this.grading(nodes);
+        if (!t) throw new Error("no sizes: add sizes first");
+        const grades = new Map();
+        const set = (id, rules) => { const g = this.gradeOfPiece(id, nodes); grades.set(id, { base: g.base, rules: G.normalRules(rules) }); };
+        switch (action.op) {
+            case "rule": {
+                if (action.size === t.base) throw new Error(`the base size's rule is 0, 0`);
+                if (!t.sizes.includes(action.size)) throw new Error(`no size ${action.size}`);
+                const g = this.gradeOfPiece(action.id, nodes), rules = JSON.parse(JSON.stringify(g.rules));
+                rules[action.vertex] = { ...(rules[action.vertex] ?? {}), [action.size]: [Number(action.d[0]), Number(action.d[1])] };
+                set(action.id, rules);
+                break;
+            }
+            case "copy": {
+                const g = this.gradeOfPiece(action.id, nodes), rules = JSON.parse(JSON.stringify(g.rules));
+                for (const v of action.to) if (v !== action.from) { if (rules[action.from]) rules[v] = JSON.parse(JSON.stringify(rules[action.from])); else delete rules[v]; }
+                set(action.id, rules);
+                break;
+            }
+            case "distribute": {
+                const g = this.gradeOfPiece(action.id, nodes);
+                set(action.id, G.distribute(g.rules, action.from, action.to, this.sideArcs(g.base), t.sizes));
+                break;
+            }
+            case "proportional":
+                for (const id of action.ids) {
+                    const g = this.gradeOfPiece(id, nodes), bounds = this.withPath(g.base, (p) => Array.from(this.f("profile_bounds")(p)));
+                    set(id, G.proportional(g.base, t.sizes, t.base, Number(action.dw), Number(action.dh), bounds));
+                }
+                break;
+            default: throw new Error(`no grade op ${action.op}`);
+        }
+        return this.regradeOps(t, grades, nodes);
+    }
+
+    // Show sizes (spec §5): the outlines of pieces `ids` in every size but the current one, as the
+    // switch grades them (grading.js gradedPath), not committed. -> [{id, size, k (its place in
+    // the table), n (sizes), beziers}]
+    sizeNest(ids, nodes = this.nodes()) {
+        const t = this.grading(nodes), byId = m.byId(nodes), out = [];
+        if (!t) return out;
+        for (const id of ids) {
+            const g = G.gradeOf(byId.get(id));
+            if (!g) continue;
+            t.sizes.forEach((size, k) => {
+                if (size !== t.current) out.push({ id, size, k, n: t.sizes.length, beziers: this.beziersOf(G.gradedPath(g.base, g.rules, size)) });
+            });
+        }
+        return out;
     }
 
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }
@@ -1111,7 +1424,15 @@ export class Atelier {
                 // a garment's pattern names must be distinct: suffix a repeat
                 const label = m.freeLabel(nodes, this.f("garment_pattern_name")(r, pid));
                 const add = m.addPattern(nodes, { label, path, fabric, allowance, grain: [gx, gy] });
-                add.ops.find((o) => o.node?.kind === "garment.pattern").node.notches = notches;
+                const node = add.ops.find((o) => o.node?.kind === "garment.pattern").node;
+                node.notches = notches;
+                // internal lines (0 line, 1 fold, 2 dart); the holes came in with the outline
+                const internal = [];
+                for (let i = 0, n = this.f("garment_pattern_internal_count")(r, pid); i < n; i++) {
+                    const l = this.pathOf(this.f("garment_pattern_internal")(r, pid, i));
+                    internal.push({ kind: INTERNAL_KINDS[this.f("garment_pattern_internal_kind")(r, pid, i)] ?? "line", path: { start: l.start, segments: l.segments } });
+                }
+                if (internal.length) node.internal = internal;
                 ops.push(...add.ops);
                 // keep `nodes` in step so the next id and the garment's list are right
                 nodes = nodes.concat(add.ops.filter((o) => o.op === "add").map((o) => o.node));

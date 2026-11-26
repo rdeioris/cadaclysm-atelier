@@ -2,9 +2,11 @@
 // Pure (no DOM, no kernel), so Node tests it. atelier.js draws the fields and posts the ops.
 import * as model from "./model.js";
 import { PRESETS, presetParams, DISPLAY, presetNote, matchingPreset } from "./fabrics.js";
-import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR } from "./arrange.js";
+import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR, AT_LABEL, CUSTOM_LABEL } from "./arrange.js";
 import { simFields, simValidate, simOps, SIM_KINDS } from "./simprops.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
+import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
+import { gradingOf, gradeOf, ruleOf } from "./grading.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 // The notch kinds the kernel draws (spec §5), in its order, as the panel names them.
@@ -69,6 +71,10 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             ...Object.entries(SLOTS).map(([value, s]) => ({ value, label: s.label })),
             ...(avatar?.landmarks?.head ? Object.entries(HOOD_SLOTS).map(([value, s]) => ({ value, label: s.label })) : []),
             ...placed.map((x) => ({ value: `on:${x.id}`, label: `On ${x.label ?? x.id}` }))];
+        // a point picked on the avatar (Place on avatar) or a gizmo placement: shown, not offered
+        const cur = n.meta?.atelier?.slot;
+        if (cur?.startsWith("at:")) slots.push({ value: cur, label: AT_LABEL });
+        if (cur === "custom") slots.push({ value: "custom", label: CUSTOM_LABEL });
         return [
             { key: "label", label: "Label", unit: "", type: "text", value: n.label ?? n.id },
             { key: "fabric", label: "Fabric", unit: "", type: "select", value: n.fabric ?? "", options: fabrics },
@@ -90,6 +96,21 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
             ...(n.meta?.atelier?.unfold ? [{ key: "foldBack", label: "Fold back", unit: "", type: "action", value: null, tip: "Back to the half this piece was unfolded from: seams on the mirrored side are dropped." }] : []),
             ...(n.meta?.atelier?.link || n.meta?.atelier?.unfold ? [{ key: "unlink", label: "Unlink", unit: "", type: "action", value: null,
                 tip: n.meta.atelier.link ? `Linked to ${find(nodes, n.meta.atelier.link.partner)?.label ?? n.meta.atelier.link.partner}: unlinked, each piece is edited on its own.` : "The whole becomes an ordinary piece: its halves are edited on their own." }] : []),
+        ];
+    }
+    if (selection.kind === "seam" && groupOf(n)) {
+        // an M:N group (A2 spec §1): its ranges and lengths, Ungroup, Remove
+        const g = groupOf(n), label = (id) => find(nodes, id)?.label ?? id;
+        const ranges = groupRanges(g, (id) => drawings?.get(id)?.sides);
+        const total = (side) => ranges.filter((r) => r.side === side).reduce((t, r) => t + r.length, 0);
+        const mm = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} mm` : "gone");
+        return [
+            { key: "members", label: "Seams", unit: "", type: "readonly", value: `${membersOf(nodes, n.id).length} (M:N ${g.a.length}:${g.b.length})` },
+            ...ranges.map((r) => ({ key: `range-${r.side}${r.k + 1}`, label: `${r.side}${r.k + 1}`, unit: "", type: "readonly", value: `${label(r.pattern)}, ${mm(r.length)}` })),
+            { key: "lengthA", label: "A length", unit: "", type: "readonly", value: mm(total("A")) },
+            { key: "lengthB", label: "B length", unit: "", type: "readonly", value: mm(total("B")) },
+            { key: "ungroup", label: "Ungroup", unit: "", type: "action", value: null, tip: "The group's seams stay as plain 1:1 seams, no longer re-distributed after an edit." },
+            { key: "remove", label: "Remove group", unit: "", type: "action", value: null },
         ];
     }
     if (selection.kind === "seam") {
@@ -247,7 +268,10 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         return model.setPattern(nodes, id, { notches: list.map((nt, j) => (j === i ? { ...nt, [key]: value } : nt)) });
     }
     if (selection.kind === "seam") {
-        if (key === "remove") return model.removeSeam(nodes, id);
+        const members = membersOf(nodes, id);
+        if (key === "remove") return members ? model.removeSeams(nodes, members) : model.removeSeam(nodes, id);
+        if (key === "ungroup") return members ? ungroupOps(nodes, members) : [];
+        if (members) throw new Error("a seam of an M:N group is edited through its group: Ungroup it first");
         const v = key === "reversed" ? value === true || value === "true" : value;
         const fields = { [key]: v };
         const n = find(nodes, id);
@@ -266,4 +290,46 @@ export function opsFor(selection, nodes, key, value, ctx = {}) {
         return [{ op: "set", id, fields: { [key]: DISPLAY[key].fromShown(value) } }];
     }
     throw new Error(`nothing to edit for ${selection.kind}`);
+}
+
+// ---- grading (A3 spec §3): the grade table of a selected outline point and its shortcuts ----
+// The garment's size table, or null (an ungraded garment).
+export const sizeTable = (nodes) => gradingOf(find(nodes, "garment"));
+// Point `vertex` of piece `id`'s rules as table rows: {size, base, current, d: [dx, dy]} for each
+// size (the base row 0, 0), or null for an ungraded garment.
+export function gradeRows(nodes, id, vertex) {
+    const t = sizeTable(nodes);
+    if (!t) return null;
+    const rules = gradeOf(find(nodes, id))?.rules ?? {};
+    return t.sizes.map((size) => ({ size, base: size === t.base, current: size === t.current, d: size === t.base ? [0, 0] : [...ruleOf(rules, vertex, size)] }));
+}
+// A typed row: the `grade` message's {op: "rule"} (dx, dy as typed text or numbers).
+export function gradeRuleAction(nodes, id, vertex, size, dx, dy) {
+    const t = sizeTable(nodes);
+    if (!t) throw new Error("no sizes: add sizes first");
+    if (size === t.base) throw new Error(`the base size's rule is 0, 0`);
+    const d = [dx, dy].map((v) => (typeof v === "string" ? (v.trim() === "" ? 0 : Number(v)) : v));
+    if (!d.every(Number.isFinite)) throw new Error("a grade rule is two numbers of mm");
+    return { op: "rule", id, vertex, size, d };
+}
+// Copy rule to…: point `from`'s rules onto the other selected points.
+export function gradeCopyAction(id, from, points) {
+    const to = points.filter((v) => v !== from);
+    if (!to.length) throw new Error("copy rule: select the points to copy it to as well");
+    return { op: "copy", id, from, to };
+}
+// Distribute: two selected points; the run between them the shorter way round an outline of
+// `n` points (the fewer points between; a tie forward from the first).
+export function gradeDistributeAction(id, points, n) {
+    if (points.length !== 2) throw new Error("distribute: select two points");
+    const [a, b] = points, fwd = (b - a + n) % n - 1, back = (a - b + n) % n - 1;
+    if (fwd < 1 && back < 1) throw new Error("distribute: no points between these two");
+    return fwd >= 1 && (back < 1 || fwd <= back) ? { op: "distribute", id, from: a, to: b } : { op: "distribute", id, from: b, to: a };
+}
+// Proportional…: a width and height change per size step (mm) for the selected pieces.
+export function gradeProportionalAction(ids, dw, dh) {
+    if (!ids.length) throw new Error("proportional: select a piece");
+    const d = [dw, dh].map(Number);
+    if (!d.every(Number.isFinite)) throw new Error("proportional: a width and a height change in mm");
+    return { op: "proportional", ids: [...ids], dw: d[0], dh: d[1] };
 }

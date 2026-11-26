@@ -9,10 +9,20 @@ import { addSeam } from "./model.js";
 const PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46a6b8",
     "#d2a100", "#e05fb0", "#7a9a01", "#9a6324", "#008080", "#808000"];
 export const seamColour = (i) => PALETTE[((i % 12) + 12) % 12];
+// Each seam's colour index in `seams` (the list's order): its own, or for a member of an M:N
+// group (seam.group, seamgroup.js) its group's first member's, so a group is one colour.
+export function seamColourIndex(seams) {
+    const first = new Map();
+    return seams.map((s, i) => {
+        if (!s.group) return i;
+        if (!first.has(s.group)) first.set(s.group, i);
+        return first.get(s.group);
+    });
+}
 
 // samples are flat triples (arc, x, y); the points whose arc lies in the range, in travel order
 // (a wrapped range runs from..end, then 0..to).
-function rangeLine(drawing, from, to) {
+export function rangeLine(drawing, from, to) {
     const s = drawing?.samples;
     if (!s || s.length < 3) return [];
     const pts = (keep) => { const o = []; for (let i = 0; i < s.length; i += 3) if (keep(s[i])) o.push([s[i + 1], s[i + 2]]); return o; };
@@ -44,7 +54,7 @@ const validSide = (ctx, hit) => {
 };
 
 // One pick on a piece: a whole side (segment sewing) as a range plus which end was nearer the click.
-function sidePick(ctx, hit) {
+export function sidePick(ctx, hit) {
     const sides = sidesOf(ctx, hit.id);
     if (!sides || !(hit.side >= 0) || hit.side >= sides.length - 1) return null;
     const near = frac(sides, hit.side, hit.s) >= 0.5 ? 1 : 0;
@@ -53,7 +63,7 @@ function sidePick(ctx, hit) {
 
 // Two free clicks on one outline -> the range between them, the short way round, and the
 // direction the user went (+1 increasing arc, -1 decreasing).
-function freeRange(ctx, id, h1, h2) {
+export function freeRange(ctx, id, h1, h2) {
     const sides = sidesOf(ctx, id);
     const P = sides.at(-1);
     let d = h2.s - h1.s;
@@ -145,44 +155,39 @@ export function reanchor(nodes, drawings, patternId) {
     return { ops, removed };
 }
 
-// After a side is inserted at `at` in piece `id` (a fillet's arc): every seam anchor on that
-// piece naming side `at` or later names the next one.
-export function shiftAnchors(nodes, id, at) {
+// Every anchor on piece `id` -- seam ends and M:N group ranges (seamgroup.js) -- through
+// fn(anchor) -> anchor. -> the set ops of the seams that changed
+function mapAnchors(nodes, id, fn) {
     const ops = [];
     for (const n of nodes) {
         if (n.kind !== "garment.seam" || !n.meta?.atelier) continue;
-        const anchor = { ...n.meta.atelier };
-        let moved = false;
+        let anchor = { ...n.meta.atelier }, moved = false;
         for (const end of ["a", "b"]) {
             if (n[end] !== id || !anchor[end]) continue;
-            const [sf, tf, tt, st] = anchor[end];
-            const bump = (s) => (s >= at ? s + 1 : s);
-            anchor[end] = st === undefined ? [bump(sf), tf, tt] : [bump(sf), tf, tt, bump(st)];
-            moved ||= bump(sf) !== sf || (st !== undefined && bump(st) !== st);
+            const next = fn(anchor[end]);
+            if (JSON.stringify(next) !== JSON.stringify(anchor[end])) { anchor[end] = next; moved = true; }
         }
+        const grouped = mapGroupRanges(anchor, id, fn);
+        if (grouped !== anchor) { anchor = grouped; moved = true; }
         if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
     }
     return ops;
 }
 
+// After a side is inserted at `at` in piece `id` (a fillet's arc): every seam anchor on that
+// piece naming side `at` or later names the next one.
+export function shiftAnchors(nodes, id, at) {
+    const bump = (s) => (s >= at ? s + 1 : s);
+    return mapAnchors(nodes, id, ([sf, tf, tt, st]) => (st === undefined ? [bump(sf), tf, tt] : [bump(sf), tf, tt, bump(st)]));
+}
+
 // Every seam anchor on piece `id` rewritten by map(end) -> [side, t] (`end` the anchor end
 // {side, t, isTo}): the 3-form when both ends land on one side running forward, else the 4-form.
 function remapAnchors(nodes, id, map) {
-    const ops = [];
-    for (const n of nodes) {
-        if (n.kind !== "garment.seam" || !n.meta?.atelier) continue;
-        const anchor = { ...n.meta.atelier };
-        let moved = false;
-        for (const end of ["a", "b"]) {
-            if (n[end] !== id || !anchor[end]) continue;
-            const [sf, tf, tt, st = sf] = anchor[end];
-            const [a, ta] = map({ side: sf, t: tf, isTo: false }), [b, tb] = map({ side: st, t: tt, isTo: true });
-            const next = a === b && ta <= tb ? [a, ta, tb] : [a, ta, tb, b];
-            if (JSON.stringify(next) !== JSON.stringify(anchor[end])) { anchor[end] = next; moved = true; }
-        }
-        if (moved) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
-    }
-    return ops;
+    return mapAnchors(nodes, id, ([sf, tf, tt, st = sf]) => {
+        const [a, ta] = map({ side: sf, t: tf, isTo: false }), [b, tb] = map({ side: st, t: tt, isTo: true });
+        return a === b && ta <= tb ? [a, ta, tb] : [a, ta, tb, b];
+    });
 }
 // After a point is inserted on side `side` of piece `id`, a fraction `t0` of its arc length
 // along it (the side splits there into `side` and `side + 1`): every seam anchor on that piece
@@ -208,4 +213,23 @@ export function mergeAnchors(nodes, id, vertex, count, w) {
         if (s === vertex) return [merged, w + t * (1 - w)];
         return [s > vertex ? s - 1 : s, t];
     });
+}
+
+// meta.atelier (`atelier`) with its group's ranges on piece `id` mapped by fn(anchor) -> anchor;
+// fn's null dissolves the group (no group, no member). The same object when nothing changes.
+export function mapGroupRanges(atelier, id, fn) {
+    const g = atelier?.group;
+    if (!g) return atelier;
+    let moved = false, dead = false;
+    const map = (rs) => rs.map((r) => {
+        if (r.pattern !== id) return r;
+        const next = fn(r.anchor);
+        if (!next) { dead = true; return r; }
+        if (JSON.stringify(next) === JSON.stringify(r.anchor)) return r;
+        moved = true;
+        return { ...r, anchor: next };
+    });
+    const a = map(g.a ?? []), b = map(g.b ?? []);
+    if (dead) { const out = { ...atelier }; delete out.group; delete out.member; return out; }
+    return moved ? { ...atelier, group: { ...g, a, b } } : atelier;
 }

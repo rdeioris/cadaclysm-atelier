@@ -4,6 +4,7 @@
 // (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
 import { shiftAnchors, splitAnchors, mergeAnchors } from "./sewing.js";
 import { removeTacks, tacksOn } from "./tacks.js";
+import { shiftRules } from "./grading.js";
 
 export const FABRIC_FIELDS = [
     "stretch_warp", "stretch_weft", "shear_left", "shear_right",
@@ -140,7 +141,16 @@ export function filletOps(nodes, id, path, insertAt, notches) {
     const allowance = p.allowance ?? [10];
     const list = allowance.length === oldSides && oldSides > 1
         ? [...allowance.slice(0, insertAt), allowance[Math.max(insertAt - 1, 0)], ...allowance.slice(insertAt)] : allowance;
-    return [...setOutline(nodes, id, path), ...setPattern(nodes, id, { allowance: list, ...(p.notches ? { notches } : {}) }), ...shiftAnchors(nodes, id, insertAt)];
+    // a graded piece's rules (A3): the corner's rule on both ends of the arc
+    const corner = insertAt === oldSides ? 0 : insertAt;
+    const grade = gradeFields(p, (r) => shiftRules(r, corner === 0 ? oldSides : corner + 1, +1, { copy: corner }));
+    return [...setOutline(nodes, id, path), ...setPattern(nodes, id, { allowance: list, ...(p.notches ? { notches } : {}), ...grade }), ...shiftAnchors(nodes, id, insertAt)];
+}
+// A graded piece's meta with its rules through fn(rules) -> rules ({} when it is not graded): a
+// point added or removed shifts the rule indices as it shifts the seam anchors (A3 spec §3).
+function gradeFields(p, fn) {
+    const g = p?.meta?.atelier?.grade;
+    return g ? { meta: atelierMeta(p.meta, "grade", { ...g, rules: fn(g.rules ?? {}) }) } : {};
 }
 
 // Point editing (spec §3), each one batch; the commit's re-anchor (reanchorId) then sets the
@@ -153,7 +163,9 @@ export function insertPointOps(nodes, id, path, side, t0) {
     const allowance = p.allowance ?? [10];
     const list = allowance.length === oldSides && oldSides > 1
         ? [...allowance.slice(0, side + 1), allowance[side], ...allowance.slice(side + 1)] : allowance;
-    return [...setOutline(nodes, id, path), ...(list !== allowance ? setPattern(nodes, id, { allowance: list }) : []), ...splitAnchors(nodes, id, side, t0)];
+    // a graded piece's new point takes the rule between its neighbours (A3)
+    const fields = { ...(list !== allowance ? { allowance: list } : {}), ...gradeFields(p, (r) => shiftRules(r, side + 1, +1, { t: t0, n: oldSides })) };
+    return [...setOutline(nodes, id, path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : []), ...splitAnchors(nodes, id, side, t0)];
 }
 // Points removed (kernel.js removePointsOps): `steps` in the order the kernel took them, each
 // {vertex, count (sides before it), w (the first merged side's share)}; each removal drops the
@@ -163,13 +175,15 @@ export function removePointsOps(nodes, id, path, steps, notches) {
     const p = byId(nodes).get(id);
     let list = [...(p.allowance ?? [10])], cur = nodes;
     const seamSets = new Map();
+    let rules = p.meta?.atelier?.grade?.rules ?? {};
     for (const { vertex, count, w } of steps) {
         if (list.length === count && count > 1) list.splice(vertex, 1);
+        rules = shiftRules(rules, vertex, -1);
         const ops = mergeAnchors(cur, id, vertex, count, w);
         for (const o of ops) seamSets.set(o.id, o);
         cur = withAdded(cur, ops);
     }
-    const fields = { ...(p.allowance && list.length !== p.allowance.length ? { allowance: list } : {}), ...(p.notches ? { notches } : {}) };
+    const fields = { ...(p.allowance && list.length !== p.allowance.length ? { allowance: list } : {}), ...(p.notches ? { notches } : {}), ...gradeFields(p, () => rules) };
     return [...setOutline(nodes, id, path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : []), ...seamSets.values()];
 }
 // Points made curve points or corners: the same sides, so the anchors stand; notches re-placed.
@@ -265,7 +279,7 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
     return { ops, ids, collapsed };
 }
 
-// Piece `id` set to a transformed piece r = {path, internal, notches, grain} (kernel.js
+// Piece `id` set to a transformed piece r = {path, internal, notches, grain, pins?, matrix?} (kernel.js
 // transformedPiece): its outline, and its internal lines, notches and grain where it has them
 // or the transform gives them. The caller re-anchors the seams in the same commit.
 // `ids`: every piece the same matrix moves. An unfolded piece's half and axis move with it (r.unfold);
@@ -282,7 +296,19 @@ export function pieceOps(nodes, id, r, ids = [id]) {
     const link = meta?.atelier?.link;
     if (r.linkAxis && link && ids.includes(link.partner)) meta = atelierMeta(meta, "link", { ...link, axis: r.linkAxis });
     if (meta !== n?.meta) fields.meta = meta;
-    return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : [])];
+    // a tack's end on this piece (S1, pattern space) moves with it; the other end stays with its own piece
+    const tackOps = [];
+    if (r.matrix) {
+        const [a0, a1, a2, a3, a4, a5] = r.matrix, map = ([x, y]) => [a0 * x + a1 * y + a2, a3 * x + a4 * y + a5];
+        for (const t of nodes) {
+            if (t.kind !== "garment.tack" || (t.a !== id && t.b !== id)) continue;
+            const f = {};
+            if (t.a === id) f.a_at = map(t.a_at);
+            if (t.b === id) f.b_at = map(t.b_at);
+            tackOps.push({ op: "set", id: t.id, fields: f });
+        }
+    }
+    return [...setOutline(nodes, id, r.path), ...(Object.keys(fields).length ? setPattern(nodes, id, fields) : []), ...tackOps];
 }
 
 // The in-app clipboard (spec §2): copies of pieces `ids` (each its node and outline path) and the
@@ -324,8 +350,21 @@ export function pasteOps(nodes, clip, placed) {
         ops.push(...r.ops); ids.push(r.id); idOf.set(node.id, r.id);
         cur = withAdded(cur, r.ops);
     });
+    // an M:N group's copies form a new group when all its ranges' pieces were copied, else they
+    // are plain seams (seamgroup.js)
+    const groupIds = new Map();
+    let groupNo = Math.max(0, ...nodes.map((n) => /^g(\d+)$/.exec(n.meta?.atelier?.group?.id ?? "")?.[1] ?? 0).map(Number));
     for (const sm of clip.seams) {
         const { id: _s, kind: _k, a, b, ...rest } = JSON.parse(JSON.stringify(sm));
+        const g = rest.meta?.atelier?.group;
+        if (g) {
+            const all = [...g.a, ...g.b].every((r) => idOf.has(r.pattern));
+            if (all) {
+                if (!groupIds.has(g.id)) groupIds.set(g.id, `g${++groupNo}`);
+                const map = (rs) => rs.map((r) => ({ ...r, pattern: idOf.get(r.pattern) }));
+                rest.meta.atelier.group = { ...g, id: groupIds.get(g.id), a: map(g.a), b: map(g.b) };
+            } else { delete rest.meta.atelier.group; delete rest.meta.atelier.member; }
+        }
         const id = nextId(cur, "s");
         const r = [{ op: "add", node: { id, kind: "garment.seam", a: idOf.get(a), b: idOf.get(b), ...rest } },
             ...garmentOps(cur, listOf(cur, "patterns"), [...listOf(cur, "seams"), id])];

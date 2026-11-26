@@ -1,6 +1,6 @@
 // Where a flat pattern stands around the avatar, and the pure helpers the worker draws with.
 // No kernel and no View in here, so Node can test it.
-import { seamColour } from "./sewing.js";
+import { seamColour, seamColourIndex } from "./sewing.js";
 
 // Slot origins are fractions of the avatar's bounds (min xyz, max xyz); x and y are the
 // pattern's 2D axes in world space (y up, the avatar facing +z, the panel facing outward).
@@ -16,6 +16,9 @@ export const SLOTS = {
     left_arm:   { label: "Left arm",   origin: [1.2, 0.8, 0.5],    x: [0, 0, -1], y: [0, 1, 0] },
     right_arm:  { label: "Right arm",  origin: [-0.2, 0.8, 0.5],   x: [0, 0, 1],  y: [0, 1, 0] },
 };
+
+// The reader's format for an avatar file: "stl" for .stl, else "step" (.stp, .step).
+export const avatarFormat = (name) => (/\.stl$/i.test(name) ? "stl" : "step");
 
 // A read scene's axis-aligned box (min xyz, max xyz) in the file's coordinates: its
 // vertices are nine floats each (position, normal, colour), relative to origin().
@@ -36,9 +39,11 @@ const vunit = (p) => vmul(p, 1 / Math.hypot(...p));
 // arrangement (frame, then wrap) puts pattern x along the cylinder from the frame's origin,
 // so the origin sits at the angle that lands the piece's centre on top.
 // -> the `frame` and `wrap` fields of the garment.pattern.
-export function limbFields(shoulder, dir, radius, dist, patternBounds) {
+// `top` (optional): the side of the limb the piece's centre lands on, the limb's top by default.
+export function limbFields(shoulder, dir, radius, dist, patternBounds, top = null) {
     const d = vunit(dir), back = vmul(d, -1);
-    const up = vunit(vadd([0, 1, 0], vmul(d, -vdot([0, 1, 0], d))));   // the limb's top
+    const ref = top ?? [0, 1, 0];
+    const up = vunit(vadd(ref, vmul(d, -vdot(ref, d))));   // the limb's top (or `top`)
     const t = cross(back, up);
     const th = (patternBounds[0] + patternBounds[2]) / 2 / radius;
     const rr = vadd(vmul(up, Math.cos(th)), vmul(t, -Math.sin(th)));
@@ -169,6 +174,33 @@ export function arrangedPoint(frame, wrap, x, y) {
     return [0, 1, 2].map((i) => a[i] + kk[i] * hgt + (rr[i] * Math.cos(theta) + tt[i] * Math.sin(theta)) * rad);
 }
 
+// A custom (gizmo) placement anchored at the piece's bounds centre (spec §5): the `frame` and
+// `wrap` that put 2D point `now` (the centre after an outline edit) where `was` (the centre
+// before it) stood. A flat frame keeps its axes and shifts its origin along them. A wrapped one
+// keeps its wrap: the shift is unrolled round the cylinder, its part across the limb a turn of
+// the frame about the wrap's axis, its part along the limb a shift along it, any part off the
+// cylinder a shift of the origin in or out (arrangedPoint is unchanged by all three).
+// A frame that is not {origin, x, y} (the floor, "xy") is left as it is. -> {frame, wrap}
+export function anchorFields(frame, wrap, was, now) {
+    if (!frame || typeof frame !== "object" || !frame.origin) return { frame, wrap: wrap ?? null };
+    const dv = vadd(vmul(frame.x, now[0] - was[0]), vmul(frame.y, now[1] - was[1]));
+    const kl = wrap && wrap.radius > 0 ? Math.hypot(...wrap.dir) : 0;
+    if (!(kl > 0)) return { frame: { origin: frame.origin.map((v, i) => v - dv[i]), x: [...frame.x], y: [...frame.y] }, wrap: wrap ?? null };
+    const kk = wrap.dir.map((v) => v / kl), a = wrap.origin;
+    const oa = frame.origin.map((v, i) => v - a[i]), radial = oa.map((v, i) => v - kk[i] * vdot(oa, kk));
+    const tx = frame.x.map((v, i) => v - kk[i] * vdot(frame.x, kk)), rl = Math.hypot(...radial), tl = Math.hypot(...tx);
+    if (!(rl > 0) || !(tl > 0)) return { frame, wrap };
+    const rr = vmul(radial, 1 / rl), tt = vmul(tx, 1 / tl);
+    const dr = vdot(dv, rr) < rl ? vdot(dv, rr) : 0;
+    // the turn about the axis that takes the angle back by dv.tt / radius (tt is k x rr or its opposite)
+    const side = Math.sign(vdot(kk, cross(rr, tt))) || 1, beta = -side * vdot(dv, tt) / wrap.radius;
+    const c = Math.cos(beta), s = Math.sin(beta);
+    const turn = (v) => { const kv = cross(kk, v), d = vdot(kk, v) * (1 - c); return v.map((x, i) => x * c + kv[i] * s + kk[i] * d); };
+    const o1 = oa.map((v, i) => v - dr * rr[i]), along = vdot(dv, kk);
+    const origin = turn(o1).map((v, i) => a[i] + v - along * kk[i]);
+    return { frame: { origin, x: turn(frame.x), y: turn(frame.y) }, wrap: { ...wrap } };
+}
+
 // A wrapped piece's mesh for the 3D window: its 2D fill ({positions xyz at z = 0, indices},
 // kernel.js fillOf) refined by longest-edge bisection until no 2D edge is over `maxEdge` mm,
 // then each point arranged. Each triangle is cut only as much as its own edges need (a small
@@ -273,8 +305,9 @@ export const isSelected = (selection, kind, id) => !!selection && selection.kind
 export function showSeams(viewer, seams, frames, selection, wraps = new Map()) {
     const shown = [];
     let error = null;
+    const index = seamColourIndex(seams);
     seams.forEach((s, i) => {
-        const colour = seamColour(i);
+        const colour = seamColour(index[i]);
         try {
             const segs = seamSegments(s, frames.get(s.a), frames.get(s.b), wraps.get(s.a) ?? null, wraps.get(s.b) ?? null);
             if (segs.length) shown.push({ item: viewer.showLines(segs, isSelected(selection, "seam", s.id) ? ACCENT : colour), id: s.id, colour });
@@ -317,6 +350,17 @@ export function slotFields(node, slot, avatarBounds, patternBounds, ctx = {}) {
     }
     atelier.slot = slot;
     const lm = ctx.landmarks ?? null;
+    // a gizmo placement (gizmo.js): the frame and wrap stay as they are
+    if (slot === "custom") return { frame: node.frame ?? "xy", wrap: node.wrap ?? null, meta: meta() };
+    // a point picked on the avatar (Place on avatar); near vertical, y keeps the frame's own
+    // (or the camera's up, `ctx.up`, when it is placed)
+    if (slot.startsWith("at:")) {
+        const at = parseAt(slot);
+        if (!at) throw new Error(`a bad avatar point ${slot}`);
+        if (!patternBounds) throw new Error("the pattern has no outline to place");
+        const prevY = node.frame && node.frame !== "xy" && node.frame.y ? node.frame.y : null;
+        return { ...atFields(at.point, at.normal, patternBounds, { landmarks: lm, layer: node.layer ?? 0, wrap: at.wrap, up: ctx.up ?? prevY }), meta: meta() };
+    }
     if (slot.startsWith("on:")) {
         const hostId = slot.slice(3), host = ctx.host;
         if (node.id !== undefined && hostId === node.id) throw new Error("a piece cannot go on itself");
@@ -340,4 +384,108 @@ export function slotFields(node, slot, avatarBounds, patternBounds, ctx = {}) {
     const frame = slotFrame(slot, bodyBounds(avatarBounds, lm), patternBounds);
     if (lm?.hps_y && (slot === "front" || slot === "back")) frame.origin[1] = lm.hps_y - patternBounds[3] * frame.y[1];
     return { frame, wrap: null, meta: meta() };
+}
+
+// ---- place on avatar (spec §4) ----------------------------------------------------------------
+// A piece placed by a click on the avatar: its slot is "at:x,y,z,nx,ny,nz" (the hit point and
+// the outward normal there), ",flat" after it when the Wrap toggle was off. Refresh re-places
+// from it as from any slot (slotFields).
+export const PLACE_GAP = 30;     // mm the frame stands out from the body, plus the layer gap
+export const ARM_REACH = 1.5;    // a hit within this many arm radii of an arm's axis wraps round it
+export const AT_LABEL = "On avatar";
+export const CUSTOM_LABEL = "Custom (3D)";   // a gizmo placement (gizmo.js)
+const num = (v, d) => String(Number(v.toFixed(d)));
+
+export function atSlot(point, normal, wrap = true) {
+    const n = vunit(normal);
+    return `at:${[...point.map((v) => num(v, 2)), ...n.map((v) => num(v, 5))].join(",")}${wrap ? "" : ",flat"}`;
+}
+// -> {point, normal (unit), wrap} or null
+export function parseAt(slot) {
+    if (typeof slot !== "string" || !slot.startsWith("at:")) return null;
+    const parts = slot.slice(3).split(",");
+    const flat = parts[parts.length - 1] === "flat";
+    if (flat) parts.pop();
+    if (parts.length !== 6) return null;
+    const v = parts.map(Number);
+    if (!v.every(Number.isFinite)) return null;
+    const l = Math.hypot(v[3], v[4], v[5]);
+    if (!(l > 0)) return null;
+    return { point: v.slice(0, 3), normal: v.slice(3).map((x) => x / l), wrap: !flat };
+}
+
+// The arm whose axis passes within ARM_REACH of its radius of `p` (and past the shoulder joint
+// by a radius, so the shoulder's top stays the body's): the nearest. -> {arm, t, r} or null
+export function armAt(arms, p) {
+    let best = null;
+    for (const a of arms ?? []) {
+        const d = vunit(a.dir), v = p.map((x, i) => x - a.shoulder[i]), t = vdot(v, d);
+        if (!(t > a.radius)) continue;
+        const r = Math.hypot(...v.map((x, i) => x - d[i] * t));
+        if (r <= ARM_REACH * a.radius && (!best || r < best.r)) best = { arm: a, t, r };
+    }
+    return best;
+}
+
+// The `frame` and `wrap` of a piece placed at `point` with outward `normal`: flat, its bounds
+// centre on the point, the frame PLACE_GAP + the layer gap out along the normal, y the world's
+// up on the tangent plane (`up` where the normal is near vertical); with `wrap` and the point on
+// an arm, wrapped round that arm as the arm slots are, its centre at the point.
+export function atFields(point, normal, pb, { landmarks = null, layer = 0, wrap = true, up = null } = {}) {
+    const n = vunit(normal);
+    const cx = (pb[0] + pb[2]) / 2, cy = (pb[1] + pb[3]) / 2;
+    const arm = wrap ? armAt(landmarks?.arms, point) : null;
+    if (arm) {
+        const a = arm.arm, d = vunit(a.dir);
+        const radial = point.map((x, i) => x - a.shoulder[i] - d[i] * arm.t);
+        const f = limbFields(a.shoulder, a.dir, a.radius + 15 + LAYER_GAP * layer, arm.t + (pb[3] - pb[1]) / 2, pb, radial);
+        f.frame.origin = f.frame.origin.map((v, i) => v - pb[1] * f.frame.y[i]);
+        return f;
+    }
+    const world = [0, 1, 0];
+    let ref = Math.abs(vdot(n, world)) > 0.9 ? up ?? [0, 0, -1] : world;
+    let y = vadd(ref, vmul(n, -vdot(ref, n)));
+    if (Math.hypot(...y) < 1e-6) { ref = Math.abs(n[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0]; y = vadd(ref, vmul(n, -vdot(ref, n))); }
+    y = vunit(y);
+    const x = cross(y, n);
+    const o = vadd(point, vmul(n, PLACE_GAP + LAYER_GAP * layer));
+    return { frame: { origin: o.map((v, i) => v - cx * x[i] - cy * y[i]), x, y }, wrap: null };
+}
+
+// The triangle of a mesh ({positions xyz, indices}) nearest `p` and its unit normal (by the
+// winding; the caller turns it toward the eye). A pick's point is on the surface, so the nearest
+// triangle is the one hit: a pick lookup, not geometry. -> {triangle, normal, distance} or null
+export function nearestTriangle(positions, indices, p) {
+    let best = null, bd = Infinity;
+    const P = positions, I = indices;
+    for (let t = 0; t + 2 < I.length; t += 3) {
+        const a = 3 * I[t], b = 3 * I[t + 1], c = 3 * I[t + 2];
+        const q = closestOnTriangle(p, [P[a], P[a + 1], P[a + 2]], [P[b], P[b + 1], P[b + 2]], [P[c], P[c + 1], P[c + 2]]);
+        const d = (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 + (q[2] - p[2]) ** 2;
+        if (d < bd) { bd = d; best = t / 3; }
+    }
+    if (best === null) return null;
+    const a = 3 * I[3 * best], b = 3 * I[3 * best + 1], c = 3 * I[3 * best + 2];
+    const e1 = [P[b] - P[a], P[b + 1] - P[a + 1], P[b + 2] - P[a + 2]], e2 = [P[c] - P[a], P[c + 1] - P[a + 1], P[c + 2] - P[a + 2]];
+    const nn = cross(e1, e2), l = Math.hypot(...nn);
+    return l > 0 ? { triangle: best, normal: vmul(nn, 1 / l), distance: Math.sqrt(bd) } : null;
+}
+// The point of triangle abc nearest p (Ericson, Real-Time Collision Detection 5.1.5).
+function closestOnTriangle(p, a, b, c) {
+    const sub = (u, v) => [u[0] - v[0], u[1] - v[1], u[2] - v[2]];
+    const ab = sub(b, a), ac = sub(c, a), ap = sub(p, a);
+    const d1 = vdot(ab, ap), d2 = vdot(ac, ap);
+    if (d1 <= 0 && d2 <= 0) return a;
+    const bp = sub(p, b), d3 = vdot(ab, bp), d4 = vdot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) return b;
+    const vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) return vadd(a, vmul(ab, d1 / (d1 - d3)));
+    const cp = sub(p, c), d5 = vdot(ab, cp), d6 = vdot(ac, cp);
+    if (d6 >= 0 && d5 <= d6) return c;
+    const vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) return vadd(a, vmul(ac, d2 / (d2 - d6)));
+    const va = d3 * d6 - d5 * d4;
+    if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) return vadd(b, vmul(sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    const den = 1 / (va + vb + vc);
+    return vadd(a, vadd(vmul(ab, vb * den), vmul(ac, vc * den)));
 }

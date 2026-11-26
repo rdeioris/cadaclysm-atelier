@@ -101,7 +101,7 @@ export function dragBasis(camera, point, heightPx) {
     if (!eye) return null;
     const depth = camera.orthographic ? camera.distance : dot([0, 1, 2].map((k) => point[k] - eye[k]), forward);
     const perPixel = (2 * Math.max(depth, 1e-6) * Math.tan(HALF_FOV)) / Math.max(heightPx, 1);
-    return { right, up, perPixel };
+    return { right, up, perPixel, forward, eye };
 }
 
 // Where a drag that started at `start` (world) has moved to, after the pointer moved (dx, dy)
@@ -246,6 +246,16 @@ export function frameOps(base, nodes, offsets) {
         }
         const off = offsets.get(p.id);
         if (off) ops.push({ op: "set", id: p.outline, fields: { path: translatePath(now, [-off[0], -off[1]]) } }, ...pieceBack(p, off));
+    }
+    // a tack's end on a moved piece (model.pieceOps carries it with the piece) goes back too
+    for (const t of nodes) {
+        if (t.kind !== "garment.tack") continue;
+        const fields = {};
+        for (const [end, at] of [["a", "a_at"], ["b", "b_at"]]) {
+            const off = offsets.get(t[end]);
+            if (off && t[at]) fields[at] = [t[at][0] - off[0], t[at][1] - off[1]];
+        }
+        if (Object.keys(fields).length) ops.push({ op: "set", id: t.id, fields });
     }
     return ops;
 }
