@@ -102,3 +102,21 @@ const at2d = (posts) => posts.filter((m) => m.kind === "at2d");
     assert.equal(await w, TIMED_OUT);
 }
 console.log("pointer2d: ok");
+{   // a pick on an item the 2D map does not hold (an overlay marker drawn on top): the piece under the pointer
+    const h = harness();
+    h.items.what = (item) => (item === 3 ? { kind: "fill", id: "p1" } : undefined);
+    let under = "p7";
+    h.p.env.pieceAt = () => under;
+    h.viewer.pick = async () => ({ item: 258, point: [50, 25, 0], node: 0 });
+    h.p.event({ seq: 1, phase: "down", x: 900, y: 300, snap: false });
+    await settle();
+    assert.deepEqual(at2d(h.posts).at(-1).hit, { kind: "pattern", id: "p7" }, "the marker answers the piece under it");
+    under = null;
+    h.p.event({ seq: 2, phase: "down", x: 900, y: 300, snap: false });
+    await settle();
+    assert.equal(at2d(h.posts).at(-1).hit, null, "a marker over no piece: no hit");
+    h.viewer.pick = async () => ({ item: 3, point: [50, 25, 0], node: 0 });
+    h.p.event({ seq: 3, phase: "down", x: 900, y: 300, snap: false });
+    await settle();
+    assert.deepEqual(at2d(h.posts).at(-1).hit, { kind: "pattern", id: "p1" }, "a known item answers itself");
+}

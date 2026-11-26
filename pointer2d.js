@@ -60,7 +60,11 @@ export class Pointer2d {
         const r = v.frameReport()[1];
         if (!shown(r)) { none(); return; }
         let world = pxToWorld(r, px), snapped = null;
-        const hit = p ? hitOf(items().what(p.item), p, drawings(), pieceAt, world) : null;
+        const what = p ? items().what(p.item) : null;
+        let hit = p ? hitOf(what, p, drawings(), pieceAt, world) : null;
+        // a pick on an item the 2D map does not hold -- a tool's overlay marker or the snap mark,
+        // drawn on top and pickable -- answers the piece under the pointer, as a label does
+        if (p && !what) { const id = pieceAt?.(world); hit = id ? { kind: "pattern", id } : null; }
         if (snapping() && snap) {
             const s = await within(v.snap(1, px[0], px[1]), ms, timers);
             if (s === TIMED_OUT) post({ kind: "status", text: "the 2D window did not answer a snap: the point is not snapped" });

@@ -1791,9 +1791,13 @@ async function check(cdp, base) {
                 ok("Fold line: drawn across a piece, selected, its angle set to 90");
                 const tacks = async () => (await saveJson()).nodes.filter((n) => n.kind === "garment.tack");
                 await evaluate(`document.querySelector('#tools2d [data-tool=tack]').click()`);
-                await click(screenOf([c0[0] + 62, c0[1] + 12]));
-                await click(screenOf([c0[0] + 20, c0[1] + 12]));
-                await until("the tack", async () => (await tacks()).length === 1, 30000);
+                // each click once the worker has answered a hover there (the tool switch has landed)
+                for (const q of [[c0[0] + 62, c0[1] + 12], [c0[0] + 20, c0[1] + 12]]) {
+                    await hoverInfo(screenOf(q));
+                    await click(screenOf(q));
+                }
+                await until("the tack", async () => (await tacks()).length === 1, 30000)
+                    .catch(async (e) => { throw new Error(`${e.message}: status "${await evaluate(`document.getElementById("status-text").textContent`)}", tool ${await evaluate(`document.querySelector('#tools2d [aria-pressed=true], #tools2d .active')?.dataset.tool ?? "?"`)}, hovers ${JSON.stringify([await hoverInfo(screenOf([c0[0] + 62, c0[1] + 12])), await hoverInfo(screenOf([c0[0] + 20, c0[1] + 12]))])}, right half ${rightHalf}`); });
                 const [tk] = await tacks();
                 if (tk.a !== rightHalf || tk.b === rightHalf || Math.abs(tk.a_at[0] - c0[0] - 62) > 3) throw new Error(`the tack: ${JSON.stringify(tk)}`);
                 await until("the tack selected", () => evaluate(`/^Tack/.test(document.querySelector("#props h3")?.textContent ?? "")`), 30000);
