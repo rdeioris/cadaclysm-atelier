@@ -67,7 +67,19 @@ assert.equal(e.kind, "edge"); assert.equal(e.side, 0); assert.ok(Math.abs(e.s - 
 assert.equal(hitOf({ kind: "seam", id: "s1", pattern: "p1" }, pick([100, 25]), drawings).seam, "s1");
 assert.deepEqual(hitOf({ kind: "fill", id: "p1" }, pick([50, 25]), drawings), { kind: "pattern", id: "p1" });
 assert.deepEqual(hitOf({ kind: "internal", id: "p1", index: 2 }, pick([5, 5]), drawings), { kind: "internal", id: "p1", index: 2 });
-assert.deepEqual(hitOf({ kind: "hole", id: "p1", index: 0 }, pick([5, 5]), drawings), { kind: "hole", id: "p1", index: 0 });
+// a hole without samples: the hole and its loop; with its samples (A2 spec §2) the arc length on
+// the hole and its side, as the sewing tools take it; a seam drawn on a hole answers that hole
+assert.deepEqual(hitOf({ kind: "hole", id: "p1", index: 0 }, pick([5, 5]), drawings), { kind: "hole", id: "p1", index: 0, loop: 1 });
+{
+    // a 10 x 10 hole at (20, 10), clockwise from its start: up, right, down, left
+    const hs = [], ring = [[20, 10], [20, 20], [30, 20], [30, 10]];
+    for (let k = 0; k < 40; k++) { const i = Math.floor(k / 10), t = (k % 10) / 10, a = ring[i], b = ring[(i + 1) % 4]; hs.push(k, a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])); }
+    const withHole = new Map([["p1", { id: "p1", samples, sides, holes: [{ samples: hs, sides: [0, 10, 20, 30, 40] }] }]]);
+    const h = hitOf({ kind: "hole", id: "p1", index: 0 }, pick([24, 20]), withHole);
+    assert.equal(h.kind, "hole"); assert.equal(h.loop, 1); assert.equal(h.side, 1); assert.ok(Math.abs(h.s - 14) < 1e-9, String(h.s));
+    const sh = hitOf({ kind: "seam", id: "s2", pattern: "p1", loop: 1 }, pick([30, 13]), withHole);
+    assert.deepEqual([sh.kind, sh.loop, sh.side, sh.seam], ["hole", 1, 2, "s2"]); assert.ok(Math.abs(sh.s - 27) < 1e-9, String(sh.s));
+}
 // a pick on a tangent line grabs the handle that tangent belongs to (the nearest tangent to the point)
 const tan = { kind: "tangents", id: "p1", handles: pts.handles, points: pts.points };
 assert.deepEqual(hitOf(tan, pick([105, 5]), drawings), { kind: "handle", id: "p1", index: 1, which: "c1" });

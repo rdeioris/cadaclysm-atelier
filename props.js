@@ -6,6 +6,7 @@ import { SLOTS, HOOD_SLOTS, slotFields, fabricColours, COLOUR, AT_LABEL, CUSTOM_
 import { simFields, simValidate, simOps, SIM_KINDS } from "./simprops.js";
 import { formOptions, bodyFields, poseFields, CUSTOM } from "./bodypanel.js";
 import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
+import { loopSides, loopOf, withLoop } from "./sewing.js";
 import { gradingOf, gradeOf, ruleOf } from "./grading.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
@@ -101,12 +102,12 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
     if (selection.kind === "seam" && groupOf(n)) {
         // an M:N group (A2 spec §1): its ranges and lengths, Ungroup, Remove
         const g = groupOf(n), label = (id) => find(nodes, id)?.label ?? id;
-        const ranges = groupRanges(g, (id) => drawings?.get(id)?.sides);
+        const ranges = groupRanges(g, (id, loop) => loopSides(drawings?.get(id), loop));
         const total = (side) => ranges.filter((r) => r.side === side).reduce((t, r) => t + r.length, 0);
         const mm = (v) => (Number.isFinite(v) ? `${v.toFixed(1)} mm` : "gone");
         return [
             { key: "members", label: "Seams", unit: "", type: "readonly", value: `${membersOf(nodes, n.id).length} (M:N ${g.a.length}:${g.b.length})` },
-            ...ranges.map((r) => ({ key: `range-${r.side}${r.k + 1}`, label: `${r.side}${r.k + 1}`, unit: "", type: "readonly", value: `${label(r.pattern)}, ${mm(r.length)}` })),
+            ...ranges.map((r) => ({ key: `range-${r.side}${r.k + 1}`, label: `${r.side}${r.k + 1}`, unit: "", type: "readonly", value: `${label(r.pattern)}${r.loop ? ` hole ${r.loop}` : ""}, ${mm(r.length)}` })),
             { key: "lengthA", label: "A length", unit: "", type: "readonly", value: mm(total("A")) },
             { key: "lengthB", label: "B length", unit: "", type: "readonly", value: mm(total("B")) },
             { key: "ungroup", label: "Ungroup", unit: "", type: "action", value: null, tip: "The group's seams stay as plain 1:1 seams, no longer re-distributed after an edit." },
@@ -115,7 +116,10 @@ export function fieldsFor(selection, nodes, drawings, avatar = null) {
     }
     if (selection.kind === "seam") {
         const yesNo = [{ value: "false", label: "no" }, { value: "true", label: "yes" }];
+        // an end sewn to a hole's edge (A2 spec §2) says so; its positions are on that hole
+        const holes = ["a", "b"].filter((e) => n[`${e}_loop`]).map((e) => ({ key: `${e}_loop`, label: `${e} on`, unit: "", type: "readonly", value: `hole ${n[`${e}_loop`]}` }));
         return [
+            ...holes,
             ...["a_from", "a_to", "b_from", "b_to"].map((key) => ({ key, label: key.replace("_", " "), unit: "mm", type: "number", value: n[key] })),
             { key: "reversed", label: "Reversed", unit: "", type: "select", value: n.reversed ? "true" : "false", options: yesNo },
             ...simFields(selection, n, nodes),
@@ -189,7 +193,9 @@ export function validate(selection, nodes, key, value) {
 // next side; a "to" on a corner ends the side before it.
 function typedAnchor(seam, end, after, drawings) {
     const anchor = { ...seam.meta.atelier };
-    const sides = drawings?.get(seam[end])?.sides;
+    // an end on a hole reads the hole's sides and keeps its loop
+    const loop = seam[`${end}_loop`] ?? loopOf(anchor[end]);
+    const sides = loopSides(drawings?.get(seam[end]), loop);
     if (!sides || sides.length < 2) { delete anchor[end]; return anchor; }
     const last = sides.length - 2;
     const at = (s, isTo) => {
@@ -199,7 +205,7 @@ function typedAnchor(seam, end, after, drawings) {
         return [i, len > 0 ? Math.min(1, Math.max(0, (s - sides[i]) / len)) : 0];
     };
     const [sf, tf] = at(after[`${end}_from`], false), [st, tt] = at(after[`${end}_to`], true);
-    anchor[end] = sf === st && tf <= tt ? [sf, tf, tt] : [sf, tf, tt, st];
+    anchor[end] = withLoop(sf === st && tf <= tt ? [sf, tf, tt] : [sf, tf, tt, st], loop);
     return anchor;
 }
 
