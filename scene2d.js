@@ -106,7 +106,8 @@ function xformSpecs(drawings, selection, mmPerPx, z) {
 }
 
 // xform: the Move tool is on (its box and handles round the selection); mmPerPx the 2D scale.
-export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null }) {
+// prints(d, band): a piece's prints as specs (prints.js printSpecs), drawn in its band.
+export function specs2d({ drawings = [], seams = [], nodes = [], selection = null, pointSel = [], ipointSel = [], hover = null, colours = new Map(), xform = false, mmPerPx = null, prints = null }) {
     const out = [];
     const picked = (id) => selection?.kind === "pattern" && (selection.id === id || selection.ids?.includes(id));
     const ordered = [...drawings].sort((a, b) => (a.layer ?? 0) - (b.layer ?? 0));
@@ -115,6 +116,7 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
         const id = d.id, sel = picked(id), line = sel ? ACCENT : hover === id ? HOVER : LINE;
         const z = bandOf(r), sig = `${d.sig}@${r}`;
         if (d.fill) out.push({ key: `${id}/fill`, show: "mesh", data: liftMesh(d.fill, z.fill), colour: fillColour(colours.get(d.fabric) ?? "#cccccc"), what: { kind: "fill", id }, sig });
+        if (prints) out.push(...prints(d, z));
         const notchAt = xyz((d.notches ?? []).map((n) => [n[0], n[1]]), z.line);
         out.push({ key: `${id}/sew`, show: "curves", data: liftBeziers(d.beziers, z.line), colour: line, what: { kind: "sew", id }, sig, snapPoints: notchAt, snapLabel: "notch" });
         if (d.cut?.length >= 4) out.push({ key: `${id}/cut`, show: "lines", data: segs(d.cut, true, z.line), colour: CUT, dash: { dash: 4, gap: 4 }, what: { kind: "cut", id }, sig });
@@ -242,6 +244,8 @@ export class Items2d {
             case "lines": item = v.showLines(s.data, s.colour); break;
             case "points": item = v.showPoints(s.data, s.colour, s.size ?? 8); break;
             case "mesh": item = v.showMesh({ positions: s.data.positions, indices: s.data.indices, colour: s.colour }); break;
+            // a print (prints.js): its corners and decoded pixels
+            case "image": item = v.showImage({ corners: s.corners, bitmap: s.bitmap }); break;
             case "glyphs": item = v.showGlyphs(s.data, { kind: s.glyph.kind, sizePt: s.glyph.sizePt ?? 10, colour: s.colour, dir: s.glyph.dir ?? null }); break;
             case "text": {
                 const o = { at: s.data, size: s.size ?? 12, colour: s.colour, align: "centre" };

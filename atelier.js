@@ -416,6 +416,7 @@ function freshTool() {
         get pointSel() { return pointSel; },
         get ipointSel() { return ipointSel; },
         get notchNext() { return notchNext; },
+        get images() { return looks.images; },        // the Print tool's images (prints.js)
         get pxToWorld() { return mmPerPx * dprNow(); },
         keep: toolKeep,
     };
@@ -517,6 +518,13 @@ function handle(r) {
 
 for (const b of document.querySelectorAll("[data-tool]")) b.addEventListener("click", () => setTool(b.dataset.tool));
 for (const b of document.querySelectorAll("[data-command]")) b.addEventListener("click", () => command(b.dataset.command));
+// Print image…: the image imported by the worker, then the Print tool places it on the next click (prints.js)
+$("print-image").addEventListener("click", () => pickFile(IMAGE_ACCEPT, async (f) => {
+    const r = await importImage(f);
+    if (toolName !== "print") setTool("print");
+    toolKeep.printNext = r;
+    status(`${r.name} (${r.width} × ${r.height}): click on a piece to place it`);
+}));
 
 // GIA (the cloth's global intersection analysis): a session choice, on by default (as the View's
 // GPU cloth), for the GPU cloth (the CPU always runs it: the button reads on there, disabled).
@@ -979,7 +987,8 @@ document.addEventListener("keydown", (e) => {
         const k = e.key;
         afterUps(() => {
             queue = queue.then(() => {
-                const points = toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0);
+                // the Print tool's selected print is its own Delete (prints.js)
+                const points = (toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0)) || (toolName === "print" && !!toolKeep.print);
                 if (!points && removeSelected()) return;
                 const r = tool?.key(k);
                 if (typeof r === "function" || (r && Object.keys(r).length)) apply(r);

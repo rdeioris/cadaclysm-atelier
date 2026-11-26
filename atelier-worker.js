@@ -25,6 +25,8 @@ import { TapeMeasures } from "./tape3d.js";
 import { concatParts, positionsBox, specKey } from "./dressform.js";
 import { reslotOps } from "./reslot.js";
 import { importImage, imageIndex, imageReader } from "./materials.js";
+import { printSpecs, decodeImage, encodeAtlas } from "./prints.js";
+import { Looks } from "./looks.js";
 
 const ready = (async () => {
     const module = await load();
@@ -96,6 +98,11 @@ async function createViewer(canvas) {
 const post = (msg) => self.postMessage(msg);
 // the user images (materials.js), each read from the document's meta once
 const readImage = imageReader((app) => atelier.meta(app));
+// the weave tiles, images and print atlases (looks.js); a print's image decoded draws the 2D again
+const looks = new Looks({
+    fetchBytes: async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`${url}: ${r.status}`); return new Uint8Array(await r.arrayBuffer()); },
+    readImage, decode: decodeImage, encode: encodeAtlas, onDecoded: () => refresh2d(),
+});
 const doc = () => ({ nodes: atelier.nodes(), drawings: atelier.drawings().map(forPage), seams: atelier.seams(), issues: atelier.issues(), images: imageIndex(atelier.nodes(), readImage) });
 
 const selected = (kind, id) => isSelected(selection, kind, id);
@@ -154,7 +161,8 @@ function refresh2d() {
     if (!viewer || !atelier || !items2d) return;
     const nodes = atelier.nodes();
     const r = viewer.frameReport?.()[1], scale = r && r.rect[2] > 0 ? mmPerPx(r) : null;
-    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale }));
+    items2d.apply(specs2d({ drawings: atelier.drawings(), seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale,
+        prints: (d, z) => printSpecs(d, nodes, (id) => looks.bitmap(id), z) }));
     post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d });
 }
 

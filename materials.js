@@ -282,7 +282,7 @@ export function viewMaterial(nodes, topology, assets = {}) {
     const textures = [], index = new Map();
     const tex = (key, bytes) => {
         if (!bytes) return undefined;
-        if (!index.has(key)) { index.set(key, textures.length); textures.push({ image: bytes }); }
+        if (!index.has(key)) { index.set(key, textures.length); textures.push({ image: bytes, key }); }   // `key`: the View reads only `image`
         return index.get(key);
     };
     let any = false;

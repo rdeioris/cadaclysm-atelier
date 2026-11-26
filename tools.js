@@ -7,6 +7,7 @@
 import { makeSewingTool } from "./sewing.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
+import { printTool } from "./prints.js";
 
 export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
 const CLOSE_PX = 6; // screen pixels: how near the first point a click closes the polygon
@@ -795,6 +796,9 @@ const TOOLS = {
     // an intersection, which start a two-click measure) measures that side's arc length. The measures stay drawn, a line and a label each, until
     // the tool changes or Escape; they live in ctx.keep (the app keeps it while the tool stays
     // armed, across the fresh tools a document change makes) and are never saved.
+    // Print (prints.js): place an image on a piece, move, turn and scale it
+    print: (ctx) => printTool(ctx),
+
     ruler(ctx) {
         const keep = ctx.keep ?? {};
         const measures = (keep.measures ??= []);
