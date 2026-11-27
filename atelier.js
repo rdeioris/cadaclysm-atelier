@@ -25,6 +25,7 @@ import { TapeTool, cmText } from "./tape3d.js";
 import { SimPanel } from "./simpanel.js";
 import { s2Request, isS2Key, groupOfLine, pleatFields } from "./pleats.js";
 import { CUSTOM, draftFrom, bodyCommit, isBodyKey } from "./bodypanel.js";
+import { loadLibrary, imageSlotOf, IMAGE_ACCEPT } from "./materials.js";
 
 const $ = (id) => document.getElementById(id);
 const CLICK_PX = 4;          // less pointer travel than this is a click, not a drag
@@ -43,6 +44,10 @@ let formLoading = null;       // the form the Form select asked for, until it la
 let bodyDraft = null;         // the Body panel's draft (bodypanel.js) while "Custom form…" is open
 let formAskedAt = null;       // when Build or Apply was hit: the browser test reads the time to the form shown
 let pickedFabric = null;      // the fabric new pieces get, when the user chose one
+// the fabric Material section's (materials.js): the weave library, the document's images (no data)
+const looks = { weaves: null, images: {} };
+loadLibrary((u) => fetch(u).then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`)))))
+    .then((lib) => { looks.weaves = lib; renderProps(); }).catch((e) => status(`the weave library: ${e?.message ?? e}`, true));
 let overlay = null;
 let toolName = "edit", tool = null, toolStale = false;
 let toolKeep = {};            // what a tool keeps while it stays armed (the Ruler's measures): fresh tools share it
@@ -229,8 +234,10 @@ function commitField(f, raw) {
     if (selection.kind === "pattern" && f.key === "duplicate") { duplicateSelected(); return; }
     // Fold back goes through the kernel (spec §6): the worker's batch, its status names dropped seams
     if (selection.kind === "pattern" && f.key === "foldBack") { cancelPreview(); change("foldBack", { id: selection.id }); return; }
+    // a fabric map's image: the file, imported by the worker (materials.js importImage), then one batch
+    if (selection.kind === "fabric" && imageSlotOf(f.key)) { pickMaterialImage(selection.id, imageSlotOf(f.key)); return; }
     try {
-        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings });
+        const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings, weaves: looks.weaves });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
         // an ungrouped M:N group: its first seam stays selected, as a plain seam
         if (selection.kind === "seam" && f.key === "ungroup") { const id = selection.id; selection = { kind: "seam", id }; post({ kind: "select", selection }); }
@@ -266,6 +273,20 @@ function s2Commit(key, value) {
     // an edited group is added again after the piece's other lines: its first line stays selected
     if (r.action === "edit") setSelection({ kind: "internal", id: r.id, index: (n?.internal?.length ?? 0) - (n?.pleats?.[r.group]?.internal.length ?? 0) });
     else setSelection({ kind: "pattern", id: r.id });
+}
+// An image file for fabric `id`'s map `slot`: stored in the document and named by the map, one batch.
+function pickMaterialImage(id, slot) {
+    pickFile(IMAGE_ACCEPT, async (f) => {
+        const r = await importImage(f);
+        const sel = { kind: "fabric", id };
+        change("ops", { ops: [r.op, ...opsFor(sel, nodes, `material.${slot}.image`, r.id, { weaves: looks.weaves })], message: `${slot} image` });
+        status(`${slot}: ${r.name} (${r.width} × ${r.height})`);
+    });
+}
+// A picked image file through the worker: downscaled, re-encoded, hashed. -> { id, op, name, width, height }
+async function importImage(f) {
+    const bytes = await f.arrayBuffer();
+    return request("importImage", { bytes, mime: f.type, name: f.name });
 }
 // "Custom form…": the Body panel, its draft from the form shown (or chart f-M at Rest)
 function openBody() {
@@ -337,7 +358,7 @@ function renderProps() {
         return;
     }
     const n = selection && selection.kind !== "avatar" ? nodes.find((x) => x.id === selection.id) : null;
-    const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar) : [];
+    const fields = selection && (selection.kind === "avatar" || n) ? fieldsFor(selection, nodes, drawings, avatar, looks) : [];
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
     h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
@@ -582,6 +603,7 @@ function freshTool() {
         get pointSel() { return pointSel; },
         get ipointSel() { return ipointSel; },
         get notchNext() { return notchNext; },
+        get images() { return looks.images; },        // the Print tool's images (prints.js)
         get pxToWorld() { return mmPerPx * dprNow(); },
         get rotateDart() { return rotateDart; },
         pleatNext,
@@ -691,6 +713,13 @@ function handle(r) {
 
 for (const b of document.querySelectorAll("[data-tool]")) b.addEventListener("click", () => setTool(b.dataset.tool));
 for (const b of document.querySelectorAll("[data-command]")) b.addEventListener("click", () => command(b.dataset.command));
+// Print image…: the image imported by the worker, then the Print tool places it on the next click (prints.js)
+$("print-image").addEventListener("click", () => pickFile(IMAGE_ACCEPT, async (f) => {
+    const r = await importImage(f);
+    if (toolName !== "print") setTool("print");
+    toolKeep.printNext = r;
+    status(`${r.name} (${r.width} × ${r.height}): click on a piece to place it`);
+}));
 
 // GIA (the cloth's global intersection analysis): a session choice, on by default (as the View's
 // GPU cloth), for the GPU cloth (the CPU always runs it: the button reads on there, disabled).
@@ -1179,7 +1208,8 @@ document.addEventListener("keydown", (e) => {
         const k = e.key;
         afterUps(() => {
             queue = queue.then(() => {
-                const points = toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0);
+                // the Print tool's selected print is its own Delete (prints.js)
+                const points = (toolName === "edit" && (pointSel.length > 0 || ipointSel.length > 0)) || (toolName === "print" && !!toolKeep.print);
                 if (!points && removeSelected()) return;
                 const r = tool?.key(k);
                 if (typeof r === "function" || (r && Object.keys(r).length)) apply(r);
@@ -1294,6 +1324,8 @@ worker.onmessage = ({ data: m }) => {
             if (selection?.kind === "avatar") renderProps();
             break;
         case "status": status(m.text); break;
+        // the cloth's materials as last drawn: how many textures (the browser test waits on it)
+        case "look": document.body.dataset.lookTextures = String(m.textures); break;
         case "gizmo": onGizmo(m); break;
         case "gizmoHover": gizmoHovers.done(); gizmoPart = m.part ?? null; document.body.dataset.gizmoHover = gizmoPart ?? ""; break;
         case "formBuilding": status("building the form…"); break;
@@ -1332,6 +1364,7 @@ function onDoc(m) {
     // a selected M:N group: its members after the change (a re-distribution may renew their ids)
     const group = selection?.kind === "seam" ? groupOf(nodes.find((n) => n.id === selection.id))?.id ?? null : null;
     nodes = m.nodes; drawingList = m.drawings; seams = m.seams; issues = m.issues ?? [];
+    looks.images = m.images ?? {};
     drawings = new Map(drawingList.map((d) => [d.id, d]));
     // a selection's pieces that went (an undo, a delete, an open) leave it; setSelection tells
     // the worker and drops the point selection

@@ -28,6 +28,9 @@ import { TapeMeasures } from "./tape3d.js";
 import { tackSpecs } from "./simtools.js";
 import { pinOps } from "./simprops.js";
 import { concatParts, positionsBox, specKey } from "./dressform.js";
+import { importImage, imageIndex, imageReader } from "./materials.js";
+import { printSpecs, decodeImage, encodeAtlas } from "./prints.js";
+import { Looks, pieceLook, lookOptions, lookMaterial } from "./looks.js";
 
 const ready = (async () => {
     const module = await load();
@@ -97,7 +100,14 @@ async function createViewer(canvas) {
 }
 
 const post = (msg) => self.postMessage(msg);
-const doc = () => ({ nodes: atelier.nodes(), drawings: atelier.drawings().map(forPage), seams: atelier.seams(), issues: atelier.issues() });
+// the user images (materials.js), each read from the document's meta once
+const readImage = imageReader((app) => atelier.meta(app));
+// the weave tiles, images and print atlases (looks.js); a print's image decoded draws the 2D again
+const looks = new Looks({
+    fetchBytes: async (url) => { const r = await fetch(url); if (!r.ok) throw new Error(`${url}: ${r.status}`); return new Uint8Array(await r.arrayBuffer()); },
+    readImage, decode: decodeImage, encode: encodeAtlas, onDecoded: () => refresh2d(),
+});
+const doc = () => ({ nodes: atelier.nodes(), drawings: atelier.drawings().map(forPage), seams: atelier.seams(), issues: atelier.issues(), images: imageIndex(atelier.nodes(), readImage) });
 
 const selected = (kind, id) => isSelected(selection, kind, id);
 
@@ -168,7 +178,8 @@ function refresh2d() {
     const r = viewer.frameReport?.()[1], scale = r && r.rect[2] > 0 ? mmPerPx(r) : null;
     const nest = sizeNest(nodes);
     const drawings = atelier.drawings();
-    items2d.apply([...specs2d({ drawings, seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale, nest }), ...tackSpecs({ nodes, drawings, selection })]);
+    items2d.apply([...specs2d({ drawings, seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale, nest,
+        prints: (d, z) => printSpecs(d, nodes, (id) => looks.bitmap(id), z) }), ...tackSpecs({ nodes, drawings, selection })]);
     post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d, nest: nest.map((g) => `${g.id}:${g.size}`).join(",") });
 }
 
@@ -298,6 +309,7 @@ function removeCloth() {
     if (sim.pinsItem) { viewer.remove(sim.pinsItem); sim.pinsItem = 0; }
     sim.positions = null; sim.pins = null; sim.health = null; sim.status = null; sim.lastMs = null;
     sim.mapColours = sim.mapValues = sim.triangles = null;
+    sim.topology = null; sim.lookSig = null;
     dragging = null;
     flatVisible(true);
 }
@@ -320,13 +332,19 @@ function onTopology(t) {
     const fabricOf = new Map(nodes.filter((n) => n.kind === "garment.pattern").map((n) => [n.id, n.fabric]));
     // the GPU cloth: one item, shown by the host; the vertex patterns kept for picks
     sim.vertexPatterns = t.vertexPatterns; sim.patterns = t.patterns; sim.triangles = t.triangles;
+    // the materials (looks.js) from what is loaded now: the GPU host showed its cloth with the same
+    sim.topology = { patterns: t.patterns, vertexPatterns: t.vertexPatterns, links: t.links, starts: t.starts };
+    const look = looks.now(nodes, sim.topology);
+    sim.lookSig = look?.sig ?? null;
+    post({ kind: "look", textures: look?.material.textures.length ?? 0 });
     if (t.gpu) sim.meshes.push({ item: t.gpu.item, id: null, verts: null, gpu: true, colour: null });
     else for (const [p, g] of splitByPattern(t.triangles, t.vertexPatterns)) {
         const id = t.patterns[p];
         const colour = colours.get(fabricOf.get(id)) ?? "#cccccc";
         const buf = gather(t.positions, g.verts);
-        const item = viewer.showMesh({ positions: buf, indices: g.indices, colour: selected("pattern", id) ? ACCENT : colour });
-        sim.meshes.push({ item, id, verts: g.verts, indices: g.indices, buf, colour });
+        const piece = pieceLook(look, g.verts);
+        const item = viewer.showMesh({ positions: buf, indices: g.indices, colour: selected("pattern", id) ? ACCENT : colour, ...lookOptions(piece) });
+        sim.meshes.push({ item, id, verts: g.verts, indices: g.indices, buf, colour, look: piece });
         items.set(item, { kind: "pattern", id });
     }
     sim.positions = t.positions; sim.pins = t.pins; sim.status = t.status; sim.phase = t.phase;
@@ -338,6 +356,34 @@ function onTopology(t) {
     drawGizmo();
     showPins();
     simPost();
+    syncLooks();
+}
+
+// The materials onto the shown cloth once their textures and atlases are in (looks.js): after a
+// new mesh and after every committed change (never a preview frame: a print's drag re-merges
+// the View once, at its release). Only a look that changed is sent: the GPU cloth through the
+// host's setClothMaterial, each CPU piece through setMeshMaterial (kept off while a map is on).
+let lookBusy = false, lookAgain = false;
+function syncLooks() {
+    if (!sim.live || !sim.topology || !atelier || atelier.previewing) return;
+    if (lookBusy) { lookAgain = true; return; }
+    lookBusy = true;
+    looks.prepare(atelier.nodes(), sim.topology)
+        .then(pushLook, (e) => post({ kind: "error", text: `materials: ${e?.message ?? e}` }))
+        .finally(() => { lookBusy = false; if (lookAgain) { lookAgain = false; syncLooks(); } });
+}
+function pushLook() {
+    if (!sim.live || !sim.topology) return;
+    const look = looks.now(atelier.nodes(), sim.topology);
+    if ((look?.sig ?? null) === sim.lookSig) return;
+    sim.lookSig = look?.sig ?? null;
+    post({ kind: "look", textures: look?.material.textures.length ?? 0 });
+    if (clothEngine === "gpu") { clothPort.postMessage({ kind: "material" }); return; }
+    for (const m of sim.meshes) {
+        if (m.gpu) continue;
+        m.look = pieceLook(look, m.verts);
+        if (!sim.mapColours) viewer.setMeshMaterial(m.item, lookMaterial(m.look));
+    }
 }
 
 function onFrame(f) {
@@ -600,6 +646,7 @@ function changed(seq) {
     refresh2d();
     if (!atelier.previewing) lastSaved = null;
     if (sim.live && clothPort) clothPort.postMessage({ kind: "update", ...garmentNow() });
+    syncLooks();
     syncForm();
 }
 
@@ -740,6 +787,7 @@ self.onmessage = async ({ data }) => {
                     clothEngine = "gpu";
                     clothPort = new GpuDrapeHost(viewer, await ready);
                     clothPort.onmessage = onCloth;
+                    clothPort.lookFor = (t) => looks.now(atelier.nodes(), t);   // the materials, at each show (looks.js)
                 }
                 startedResolve();
             } catch (e) { startedReject(e); throw e; }
@@ -864,6 +912,12 @@ self.onmessage = async ({ data }) => {
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
             case "viewStats": answer(data, () => viewer.stats()); break;
+            // an image file for a fabric map or a print (materials.js): its id and the op storing it
+            case "importImage": {
+                try { post({ kind: "path", reqId: data.reqId, path: await importImage(new Uint8Array(data.bytes), data.mime, data.name) }); }
+                catch (e) { post({ kind: "error", reqId: data.reqId, text: `image: ${e?.message ?? e}` }); }
+                break;
+            }
             // the cloth's sim vertex positions (xyz, mm) as they stand, read back from the GPU (film.js
             // clothPositions); null with no GPU cloth
             case "clothPositions": {

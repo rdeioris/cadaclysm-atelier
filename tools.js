@@ -8,6 +8,7 @@ import { makeSewingTool } from "./sewing.js";
 import { makeGroupTool } from "./seamgroup.js";
 import { addPattern, addHole, addInternal, convertToHole, setOutline, setPattern, pieceOps, polyPath, openPath, freeLabel, pieceLabel, isClosedPath, linkedCopyOps } from "./model.js";
 import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
+import { printTool } from "./prints.js";
 import { SIM_TOOLS, SIM_SNAPPING } from "./simtools.js";
 import { S2_TOOLS, S2_SNAPPING } from "./pleats.js";
 import { gradingOf } from "./grading.js";
@@ -820,6 +821,9 @@ const TOOLS = {
     // an intersection, which start a two-click measure) measures that side's arc length. The measures stay drawn, a line and a label each, until
     // the tool changes or Escape; they live in ctx.keep (the app keeps it while the tool stays
     // armed, across the fresh tools a document change makes) and are never saved.
+    // Print (prints.js): place an image on a piece, move, turn and scale it
+    print: (ctx) => printTool(ctx),
+
     ruler(ctx) {
         const keep = ctx.keep ?? {};
         const measures = (keep.measures ??= []);

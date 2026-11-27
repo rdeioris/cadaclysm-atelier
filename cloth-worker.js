@@ -31,7 +31,7 @@ function topology() {
     const t = drape.topology();
     const positions = drape.positions();
     send({ kind: "topology", ...t, positions, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, stale: drape.stale },
-        [t.triangles.buffer, t.vertexPatterns.buffer, positions.buffer]);
+        [t.triangles.buffer, t.vertexPatterns.buffer, t.links.buffer, t.starts.buffer, positions.buffer]);
     colours(true);
 }
 // The fit map's colours and values (fitmap.js), at most every MAP_EVERY_MS unless `now`; null colours: the map is off.

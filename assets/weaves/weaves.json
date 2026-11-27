@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "note": "Procedural tiles; every value (estimated).",
+  "weaves": {
+    "plain": {
+      "label": "Plain weave",
+      "tile_mm": [
+        8,
+        8
+      ],
+      "roughness": 0.75,
+      "sheen": "#303030",
+      "sheen_roughness": 0.6,
+      "estimated": "(estimated)"
+    },
+    "twill": {
+      "label": "Twill 2/1",
+      "tile_mm": [
+        10,
+        10
+      ],
+      "roughness": 0.7,
+      "sheen": "#303030",
+      "sheen_roughness": 0.5,
+      "estimated": "(estimated)"
+    },
+    "denim": {
+      "label": "Denim (3/1 twill)",
+      "tile_mm": [
+        12,
+        12
+      ],
+      "roughness": 0.85,
+      "sheen": "#202020",
+      "sheen_roughness": 0.6,
+      "estimated": "(estimated)"
+    },
+    "jersey": {
+      "label": "Single jersey knit",
+      "tile_mm": [
+        8,
+        8
+      ],
+      "roughness": 0.8,
+      "sheen": "#505050",
+      "sheen_roughness": 0.4,
+      "estimated": "(estimated)"
+    },
+    "rib": {
+      "label": "1x1 rib knit",
+      "tile_mm": [
+        10,
+        10
+      ],
+      "roughness": 0.8,
+      "sheen": "#404040",
+      "sheen_roughness": 0.5,
+      "estimated": "(estimated)"
+    },
+    "fleece": {
+      "label": "Fleece (brushed)",
+      "tile_mm": [
+        20,
+        20
+      ],
+      "roughness": 0.95,
+      "sheen": "#707070",
+      "sheen_roughness": 0.3,
+      "estimated": "(estimated)"
+    },
+    "satin": {
+      "label": "Satin 4/1",
+      "tile_mm": [
+        8,
+        8
+      ],
+      "roughness": 0.35,
+      "sheen": "#606060",
+      "sheen_roughness": 0.25,
+      "estimated": "(estimated)"
+    },
+    "canvas": {
+      "label": "Canvas (2/2 basket)",
+      "tile_mm": [
+        12,
+        12
+      ],
+      "roughness": 0.9,
+      "sheen": "#202020",
+      "sheen_roughness": 0.7,
+      "estimated": "(estimated)"
+    }
+  }
+}

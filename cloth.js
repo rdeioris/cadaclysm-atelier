@@ -2,6 +2,7 @@
 // of the garment document. The cloth worker drives it; Node tests it. It never touches the
 // View: positions, triangles and status come out as plain typed arrays.
 import { garmentChange, sewingDone, healthOf, frameOps, frozenChanges, optionsChanged } from "./drape.js";
+import { outlineStarts } from "./materials.js";
 
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 
@@ -102,14 +103,18 @@ export class Drape {
     status() { return Float64Array.from(this.f("cloth_status")(this.h)); }
     positions() { return this.f("cloth_positions")(this.h); }
     // What the View needs to draw the cloth: triangles, each vertex's pattern node id index into
-    // `patterns`, and the pattern node ids.
+    // `patterns`, and the pattern node ids; for the materials (materials.js), each vertex's exact
+    // pattern position (`links`, two a vertex, mm) and each pattern's outline start in the nodes
+    // the cloth was built from (`starts`, two a pattern): link - start is the vertex's place on
+    // its piece, wherever the piece has moved in 2D since.
     topology() {
         const ids = this.patternIds();             // kernel pattern id -> node id
         const patterns = [...new Set(ids.values())];
         const index = new Map(patterns.map((p, i) => [p, i]));
         const vp = this.f("cloth_vertex_patterns")(this.h);
         const vertexPatterns = Uint32Array.from(vp, (p) => index.get(ids.get(p)) ?? 0);
-        return { triangles: Uint32Array.from(this.f("cloth_triangles")(this.h)), vertexPatterns, patterns };
+        const links = Float64Array.from(this.f("cloth_vertex_links")(this.h));
+        return { triangles: Uint32Array.from(this.f("cloth_triangles")(this.h)), vertexPatterns, patterns, links, starts: outlineStarts(this.nodes, patterns) };
     }
     patternIds() {
         const order = this.nodes.find((n) => n.id === "garment")?.patterns ?? [];

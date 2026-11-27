@@ -6,6 +6,7 @@
 // (recolourMeshes). The colours are the kernel's on both engines, byte for byte.
 // No View and no DOM at the top level: the worker imports it too.
 import { gather, nearestVertex } from "./drape.js";
+import { lookOptions } from "./looks.js";
 
 // The maps, as the 3D strip's select lists them. `code` is cloth_strain's map number, `key`
 // setClothMap's name. Strains are fractions, shown in % (x 100); stress is in the solver's
@@ -116,13 +117,14 @@ export function valueAt(values, positions, point, verts = null) {
 }
 
 // The CPU cloth's pattern meshes re-shown with the map's colours (`colours`: three a sim
-// vertex, or null for each piece's fabric colour): each mesh gets a new item; `onItem(old,
-// next, mesh)` keeps the item map for picks.
+// vertex, or null for each piece's fabric colour and its material, `mesh.look`: a map drops
+// the material while it is on, as the GPU cloth's setClothMap does): each mesh gets a new
+// item; `onItem(old, next, mesh)` keeps the item map for picks.
 export function recolourMeshes(viewer, meshes, colours, onItem) {
     for (const m of meshes) {
         if (m.gpu || !m.indices) continue;
         const old = m.item;
-        const shown = colours ? { colours: gather(colours, m.verts) } : { colour: m.colour };
+        const shown = colours ? { colours: gather(colours, m.verts) } : { colour: m.colour, ...lookOptions(m.look) };
         m.item = viewer.showMesh({ positions: m.buf, indices: m.indices, ...shown });
         viewer.remove(old);
         onItem?.(old, m.item, m);

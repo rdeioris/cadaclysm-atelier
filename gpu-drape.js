@@ -6,6 +6,7 @@
 //   in:  avatar, build {text, ops, run}, update {text, ops}, run, pause, reset, pin {vertex},
 //        drag {vertex, target}, gia {on} (a live cloth is re-shown with it after a positions read)
 //        map {map: {key, code, min, max} | null} (the fit map: View.setClothMap, fitmap.js)
+//        material (the fabrics or prints changed: View.setClothMaterial with `lookFor`'s look)
 //   out: hello, topology (+ gpu: {item}), frame (positions: null), state, pinned (+ place: the
 //        pin's piece and pattern point, which the View's worker saves in the piece's `pins`)
 // Edits go through the View (pinCloth, dragCloth, setClothOptions), never straight to the
@@ -13,6 +14,7 @@
 import { Drape } from "./cloth.js";
 import { healthOf, SEW_FRAMES } from "./drape.js";
 import { fabricColours } from "./arrange.js";
+import { lookOptions, lookMaterial } from "./looks.js";
 
 // The 3D strip's engine label. GIA (the global intersection analysis: it untangles a cloth caught
 // through itself) is on by default on the GPU (as the View's showCloth) and the GIA button can
@@ -93,6 +95,7 @@ export class GpuDrape extends Drape {
         this.id = 0;                 // the View item, or 0 while not shown
         this.gen = 0;                // bumped whenever the item goes or comes: awaits check it
         this.shownGia = null;        // the `gia` the item was shown with (fixed for its life)
+        this.lookFor = null;         // (topology) -> the materials' look (looks.js), or null: drawn plain
         this.unstall();
     }
     unstall() { this.lastWelded = -1; this.weldedAt = 0; this.weldDistance = null; }
@@ -100,8 +103,10 @@ export class GpuDrape extends Drape {
     show(colour, gia = false) {
         if (this.id) this.viewer.remove(this.id);
         this.id = 0; this.gen++;
-        // thickness: the View draws each fabric's thickness (two faces and a rim along open edges)
-        this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, this.topology()), gia: !!gia, thickness: true });
+        // thickness: the View draws each fabric's thickness (two faces and a rim along open edges);
+        // the materials' UVs and material per sim vertex (the View copies them to the thick copies)
+        const t = this.topology();
+        this.id = this.viewer.showCloth(this.h, { colour, colours: vertexColours(this.nodes, t), gia: !!gia, thickness: true, ...lookOptions(this.lookFor?.(t) ?? null) });
         this.shownGia = !!gia;
         if (this.map) this.viewer.setClothMap(this.id, this.map);     // the fit map, kept across a re-show
         this.unstall();
@@ -181,12 +186,18 @@ export class GpuDrapeHost {
         this.pinPoints = new Float32Array(0);
         this.colour = "#cccccc";
         this.map = null;              // the fit map (setClothMap's { map, min, max }), or null
+        this.lookFor = null;          // (topology) -> the materials' look (looks.js): the View worker sets it
         this.yieldTask = taskYielder();
         this.inbox = Promise.resolve();
         Promise.resolve().then(() => this.send({ kind: "hello" }));
     }
 
     send(msg) { this.onmessage?.({ data: msg }); }
+    // The drape, made on first use; its shows ask this host's `lookFor`.
+    newDrape() {
+        if (!this.drape) { this.drape = new GpuDrape(this.k, this.viewer); this.drape.lookFor = (t) => this.lookFor?.(t) ?? null; }
+        return this.drape;
+    }
     postMessage(msg) {
         // one message at a time, in order, as a port delivers them (a pin awaits a readback)
         this.inbox = this.inbox.then(() => this.onPort(msg));
@@ -318,9 +329,9 @@ export class GpuDrapeHost {
     async onPort(data) {
         try {
             switch (data.kind) {
-                case "avatar": (this.drape ??= new GpuDrape(this.k, this.viewer)).avatar = data.avatar; break;
+                case "avatar": this.newDrape().avatar = data.avatar; break;
                 case "build": {
-                    const d = (this.drape ??= new GpuDrape(this.k, this.viewer));
+                    const d = this.newDrape();
                     this.pending = null; this.reshow = false;
                     this.running = false;
                     d.build(data.text, data.ops);             // drops the old item and cloth
@@ -348,6 +359,10 @@ export class GpuDrapeHost {
                 case "map":
                     this.map = data.map ? { map: data.map.key, min: data.map.min, max: data.map.max } : null;
                     if (this.drape) { this.drape.map = this.map; if (this.drape.id) this.viewer.setClothMap(this.drape.id, this.map); }
+                    break;
+                // the materials changed (not the mesh): the shown cloth takes them, no re-show
+                case "material":
+                    if (this.drape?.id) this.viewer.setClothMaterial(this.drape.id, lookMaterial(this.lookFor?.(this.drape.topology()) ?? null));
                     break;
                 case "reset": this.running = false; this.pending = null; this.reshow = false; this.drape?.freeCloth(); this.health = null; this.state(); break;
                 case "pin": {
