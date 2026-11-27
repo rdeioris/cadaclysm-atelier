@@ -533,6 +533,8 @@ const TOOLS = {
                 // a plain click on an internal line of the piece being edited selects that line (its
                 // simulation properties, simprops.js); a double click still inserts a point
                 if (!h && !mods?.dblclick && h0?.kind === "internal" && h0.id === selectedId(ctx)) return { select: { kind: "internal", id: h0.id, index: h0.index } };
+                // a click on a seam sewn to a hole's edge selects it (hole points are not edited)
+                if (!h && !mods?.dblclick && h0?.kind === "hole" && h0.seam) return { select: { kind: "seam", id: h0.seam } };
                 if (!h) return {};
                 if (sent) return locked ? {} : { ...last, endPreview: true };
                 if (h.kind === "point") {
