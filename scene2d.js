@@ -66,7 +66,7 @@ function inRing(ring, [x, y]) {
 // The point halfway along a polyline (x, y pairs, along a piece's outline `ring`) and the unit
 // normal there out of the piece: the side whose nearby point is not inside the ring (a seam's
 // range may run either way along the outline).
-function midOut(pts, ring) {
+function midOut(pts, ring, into = false) {
     const n = pts.length >> 1;
     let total = 0;
     for (let i = 0; i + 1 < n; i++) total += Math.hypot(pts[2 * i + 2] - pts[2 * i], pts[2 * i + 3] - pts[2 * i + 1]);
@@ -76,7 +76,7 @@ function midOut(pts, ring) {
         if (left <= l || i + 2 === n) {
             const t = l > 0 ? Math.min(left / l, 1) : 0, u = l || 1;
             const at = [pts[2 * i] + tx * t, pts[2 * i + 1] + ty * t], n = [ty / u, -tx / u];
-            const out = !ring || !inRing(ring, [at[0] + n[0] * 0.5, at[1] + n[1] * 0.5]);
+            const out = !ring || inRing(ring, [at[0] + n[0] * 0.5, at[1] + n[1] * 0.5]) === into;
             return { at, normal: out ? n : [-n[0], -n[1]] };
         }
         left -= l;
@@ -195,16 +195,19 @@ export function specs2d({ drawings = [], seams = [], nodes = [], selection = nul
         const on = selection?.kind === "seam" && (selection.id === s.id || !!selection.ids?.includes(s.id));
         const colour = on ? ACCENT : seamColour(index[i]);
         const no = s.group ? `${index[i] + 1}.${(s.member ?? 0) + 1}` : String(i + 1);
-        for (const [end, pts, pattern] of [["a", s.points_a, s.a], ["b", s.points_b, s.b]]) {
+        // an end on a hole (a_loop/b_loop k >= 1) is drawn on that hole's edge, picked as that hole
+        for (const [end, pts, pattern, loop] of [["a", s.points_a, s.a, s.a_loop ?? 0], ["b", s.points_b, s.b, s.b_loop ?? 0]]) {
             if (!pts || pts.length < 4) continue;
             const r = rank.get(pattern) ?? 0;
-            out.push({ key: `seam/${s.id}/${end}`, show: "lines", data: segs(pts, false, bandOf(r).seam), colour, what: { kind: "seam", id: s.id, pattern }, sig: `${byId.get(pattern)?.sig}@${r}|${pts.length}|${pts[0]},${pts[1]},${pts.at(-2)},${pts.at(-1)}` });
+            out.push({ key: `seam/${s.id}/${end}`, show: "lines", data: segs(pts, false, bandOf(r).seam), colour, what: { kind: "seam", id: s.id, pattern, ...(loop ? { loop } : {}) }, sig: `${byId.get(pattern)?.sig}@${r}|${loop}|${pts.length}|${pts[0]},${pts[1]},${pts.at(-2)},${pts.at(-1)}` });
         }
         if (s.points_a?.length >= 4) {
-            // the number stands out from the seam's middle, along the normal out of piece a, over a
-            // box of the background so it reads over any line
+            // the number stands out from the seam's middle, along the normal out of piece a (on a
+            // hole: into the hole, which is out of the piece), over a box of the background so it
+            // reads over any line
             const r = rank.get(s.a) ?? 0;
-            const { at, normal: [nx, ny] } = midOut(s.points_a, byId.get(s.a)?.sew);
+            const holeRing = s.a_loop ? byId.get(s.a)?.holes?.[s.a_loop - 1]?.ring : null;
+            const { at, normal: [nx, ny] } = holeRing ? midOut(s.points_a, holeRing, true) : midOut(s.points_a, byId.get(s.a)?.sew);
             const offset = [Math.round(SEAM_NO_PX * nx * 10) / 10 + 0, Math.round(SEAM_NO_PX * ny * 10) / 10 + 0];   // the View's offset y runs up the screen
             out.push({ key: `seam/${s.id}/no`, show: "text", text: no, data: [at[0], at[1], bandOf(r).seam], colour, size: 12,
                 offset, box: BG, padding: 1, what: { kind: "seam", id: s.id, pattern: s.a }, sig: `${no}@${at[0]},${at[1]}@${r}` });

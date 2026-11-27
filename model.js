@@ -195,7 +195,8 @@ export function setInternalPath(nodes, id, line, path) {
     return setPattern(nodes, id, { internal: (p.internal ?? []).map((l, i) => (i === line ? { ...l, path: { start: path.start, segments: path.segments } } : l)) });
 }
 
-// A hole added to piece `id`'s outline (path JSON, closed). Hole edges are not sewn this round.
+// A hole added to piece `id`'s outline (path JSON, closed), after the holes it has: their loop
+// numbers (a seam's a_loop/b_loop) stay as they are.
 export function addHole(nodes, id, path) {
     const outline = byId(nodes).get(`${id}_outline`).path;
     return setOutline(nodes, id, { ...outline, holes: [...(outline.holes ?? []), { start: path.start, segments: path.segments }] });
@@ -258,6 +259,8 @@ export function replacePattern(nodes, id, pieces, { seamMoves = [], dropped = []
         const fields = {}, anchor = { ...(seam.meta?.atelier ?? {}) };
         for (const mv of moves) {
             fields[mv.end] = ids[mv.piece]; fields[`${mv.end}_from`] = mv.from; fields[`${mv.end}_to`] = mv.to;
+            // a hole end: its hole's loop on the new piece (the holes renumber per piece)
+            if (mv.loop) fields[`${mv.end}_loop`] = mv.loop;
             anchor[mv.end] = mv.anchor;
         }
         fields.meta = { ...(seam.meta ?? {}), atelier: anchor };
@@ -375,8 +378,12 @@ export function pasteOps(nodes, clip, placed) {
 }
 
 // `id` (optional): the new seam's id, when `nodes` lacks seams whose ids must not come back.
-export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor, id = nextId(nodes, "s") }) {
+// `a_loop`/`b_loop`: the loop each end lies on (0 the outline, k hole k - 1), written only when
+// nonzero, as the kernel writes them.
+export function addSeam(nodes, { a, b, a_from, a_to, b_from, b_to, reversed, anchor, a_loop = 0, b_loop = 0, id = nextId(nodes, "s") }) {
     const node = { id, kind: "garment.seam", a, b, a_from, a_to, b_from, b_to, reversed: !!reversed };
+    if (a_loop) node.a_loop = a_loop;
+    if (b_loop) node.b_loop = b_loop;
     if (anchor) node.meta = { atelier: anchor };
     return { id, ops: [{ op: "add", node }, ...garmentOps(nodes, listOf(nodes, "patterns"), [...listOf(nodes, "seams"), id])] };
 }

@@ -4,6 +4,15 @@
 // (280..20 on a 100x50 rectangle is 280 -> corner -> 20), while 20..280 is the long way round.
 // Each seam keeps an anchor in meta.atelier, {a:[side, tFrom, tTo(, sideTo)], b:[...]}: the
 // range as side + fraction, so it follows its sides when an outline edit moves the arc lengths.
+//
+// Hole edges (A2 spec §2): a seam end may lie on a loop of its piece other than the outer one,
+// the seam's a_loop/b_loop (loop k >= 1 is hole k - 1; absent or 0 is the outer outline). A hole
+// range's arc lengths are the hole's own (from the hole's start point, in its direction of
+// travel), and its sides are the hole's segments. Its anchor is always the 5-form
+//     [side, tFrom, tTo, sideTo, loop]
+// with sideTo written out even when it equals side, so the loop sits alone at index 4 and the
+// 3- and 4-forms keep their meaning. An anchor with no 5th entry is on the outer outline
+// (loop 0): every anchor written before hole seams reads as before.
 import { addSeam } from "./model.js";
 
 const PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#46a6b8",
@@ -20,10 +29,31 @@ export function seamColourIndex(seams) {
     });
 }
 
+/** The loop an anchor lies on: 0 the outer outline, k hole k - 1. */
+export const loopOf = (anchor) => anchor?.[4] ?? 0;
+/** `anchor` put on loop `loop`: the 5-form for a hole; for loop 0 the outer 3- or 4-form. */
+export function withLoop(anchor, loop) {
+    const [sf, tf, tt, st = sf] = anchor;
+    if (loop > 0) return [sf, tf, tt, st, loop];
+    return anchor.length <= 4 ? anchor : sf === st && tf <= tt ? [sf, tf, tt] : [sf, tf, tt, st];
+}
+/** fn on outer-outline anchors only: a hole anchor passes through unchanged (an outline point
+ *  insert, removal or fillet renumbers the outline's sides, never a hole's). */
+export const outerOnly = (fn) => (anchor) => (anchor && loopOf(anchor) > 0 ? anchor : fn(anchor));
+/** A drawing's sides (arc length at each side start, then the perimeter) on loop `loop`;
+ *  undefined when the piece has no such hole. */
+export const loopSides = (d, loop = 0) => (loop > 0 ? d?.holes?.[loop - 1]?.sides : d?.sides);
+/** A drawing's 1 mm samples (flat triples arc, x, y) on loop `loop`. */
+export const loopSamples = (d, loop = 0) => (loop > 0 ? d?.holes?.[loop - 1]?.samples : d?.samples);
+/** A 2D hit the sewing tools take: an outline edge, or a hole edge with its arc length. */
+export const sewableHit = (hit) => hit?.kind === "edge" || (hit?.kind === "hole" && Number.isFinite(hit.s));
+/** The loop a hit lies on (0 for an outline edge). */
+export const hitLoop = (hit) => (hit?.kind === "hole" ? hit.loop ?? hit.index + 1 : 0);
+
 // samples are flat triples (arc, x, y); the points whose arc lies in the range, in travel order
-// (a wrapped range runs from..end, then 0..to).
-export function rangeLine(drawing, from, to) {
-    const s = drawing?.samples;
+// (a wrapped range runs from..end, then 0..to). `loop`: the outline (0) or a hole's samples.
+export function rangeLine(drawing, from, to, loop = 0) {
+    const s = loopSamples(drawing, loop);
     if (!s || s.length < 3) return [];
     const pts = (keep) => { const o = []; for (let i = 0; i < s.length; i += 3) if (keep(s[i])) o.push([s[i + 1], s[i + 2]]); return o; };
     return from <= to ? pts((a) => a >= from && a <= to) : [...pts((a) => a >= from), ...pts((a) => a <= to)];
@@ -34,8 +64,9 @@ const frac = (sides, side, s) => {
     return len > 0 ? Math.min(1, Math.max(0, (s - sides[side]) / len)) : 0;
 };
 // A range's anchor on `sides` (side + fractions, as the sewing tools write it): one side when the
-// range starts and ends on it running forward, else the start side and the end side.
-export function anchorOf(sides, from, to) {
+// range starts and ends on it running forward, else the start side and the end side. On a hole
+// (`loop` >= 1, `sides` the hole's) the 5-form with the loop.
+export function anchorOf(sides, from, to, loop = 0) {
     // the side a range starts on, and the one it ends on (a range ending at a side's end ends on
     // that side, not the next); a side start found by bisection lies a hair past the exact one:
     // 1e-6 mm of slack
@@ -43,28 +74,30 @@ export function anchorOf(sides, from, to) {
     const startSide = (s) => { let k = 0; for (let i = 0; i <= last; i++) if (sides[i] <= s + 1e-6) k = i; return k; };
     const endSide = (s) => { let k = 0; for (let i = 0; i <= last; i++) if (sides[i] < s - 1e-6) k = i; return k; };
     const a = startSide(from), b = endSide(to);
-    return a === b && from <= to ? [a, frac(sides, a, from), frac(sides, b, to)] : [a, frac(sides, a, from), frac(sides, b, to), b];
+    const anchor = a === b && from <= to ? [a, frac(sides, a, from), frac(sides, b, to)] : [a, frac(sides, a, from), frac(sides, b, to), b];
+    return withLoop(anchor, loop);
 }
 const arcOf = (sides, side, t) => sides[side] + t * (sides[side + 1] - sides[side]);
-const sidesOf = (ctx, id) => ctx.drawings.get(id)?.sides;
+const sidesOf = (ctx, id, loop = 0) => loopSides(ctx.drawings.get(id), loop);
 
 const validSide = (ctx, hit) => {
-    const sides = sidesOf(ctx, hit.id);
+    const sides = sidesOf(ctx, hit.id, hitLoop(hit));
     return !!sides && hit.side >= 0 && hit.side < sides.length - 1;
 };
 
-// One pick on a piece: a whole side (segment sewing) as a range plus which end was nearer the click.
+// One pick on a piece: a whole side (segment sewing) as a range plus which end was nearer the
+// click. A hole hit takes the hole's side, on its loop.
 export function sidePick(ctx, hit) {
-    const sides = sidesOf(ctx, hit.id);
+    const loop = hitLoop(hit), sides = sidesOf(ctx, hit.id, loop);
     if (!sides || !(hit.side >= 0) || hit.side >= sides.length - 1) return null;
     const near = frac(sides, hit.side, hit.s) >= 0.5 ? 1 : 0;
-    return { id: hit.id, from: sides[hit.side], to: sides[hit.side + 1], anchor: [hit.side, 0, 1], near };
+    return { id: hit.id, loop, from: sides[hit.side], to: sides[hit.side + 1], anchor: withLoop([hit.side, 0, 1], loop), near };
 }
 
-// Two free clicks on one outline -> the range between them, the short way round, and the
-// direction the user went (+1 increasing arc, -1 decreasing).
+// Two free clicks on one loop of one piece (the outline, or a hole) -> the range between them,
+// the short way round, and the direction the user went (+1 increasing arc, -1 decreasing).
 export function freeRange(ctx, id, h1, h2) {
-    const sides = sidesOf(ctx, id);
+    const loop = hitLoop(h1), sides = sidesOf(ctx, id, loop);
     const P = sides.at(-1);
     let d = h2.s - h1.s;
     d -= Math.round(d / P) * P; // into [-P/2, P/2]
@@ -73,15 +106,17 @@ export function freeRange(ctx, id, h1, h2) {
     const anchor = a.side === b.side && !(a.s > b.s)
         ? [a.side, frac(sides, a.side, a.s), frac(sides, b.side, b.s)]
         : [a.side, frac(sides, a.side, a.s), frac(sides, b.side, b.s), b.side];
-    return { id, from: a.s, to: b.s, anchor, dir };
+    return { id, loop, from: a.s, to: b.s, anchor: withLoop(anchor, loop), dir };
 }
+// Whether two hits lie on the same loop of the same piece (a free range's two clicks must).
+export const sameLoop = (h1, h2) => h1.id === h2.id && hitLoop(h1) === hitLoop(h2);
 
 export function makeSewingTool(name, ctx) {
     const free = name === "free";
     const picks = []; // edge hits so far
     const ranges = []; // finished ranges (free) or side picks (segment)
     const overlayOf = () => {
-        const lines = ranges.map((r) => rangeLine(ctx.drawings.get(r.id), r.from, r.to));
+        const lines = ranges.map((r) => rangeLine(ctx.drawings.get(r.id), r.from, r.to, r.loop));
         return { lines };
     };
     const finish = () => {
@@ -89,22 +124,23 @@ export function makeSewingTool(name, ctx) {
         const reversed = free ? A.dir !== B.dir : A.near !== B.near;
         const r = addSeam(ctx.nodes, {
             a: A.id, b: B.id, a_from: A.from, a_to: A.to, b_from: B.from, b_to: B.to, reversed,
-            anchor: { a: A.anchor, b: B.anchor },
+            a_loop: A.loop, b_loop: B.loop, anchor: { a: A.anchor, b: B.anchor },
         });
         return { ops: r.ops, overlay: { lines: [] }, select: { kind: "seam", id: r.id }, done: true };
     };
     return {
         down(w, hit) {
-            if (hit?.kind !== "edge" || !validSide(ctx, hit)) return {};
+            if (!sewableHit(hit) || !validSide(ctx, hit)) return {};
             if (!free) {
                 const p = sidePick(ctx, hit);
                 if (!p) return {};
-                if (ranges.length === 1 && ranges[0].id === p.id && ranges[0].anchor[0] === p.anchor[0]) return {};
+                if (ranges.length === 1 && ranges[0].id === p.id && ranges[0].loop === p.loop && ranges[0].anchor[0] === p.anchor[0]) return {};
                 ranges.push(p);
                 return ranges.length === 2 ? finish() : { overlay: overlayOf() };
             }
-            // free: the clicks pair up; the second click of a pair must be on the same piece as the first
-            if (picks.length % 2 === 1 && picks[picks.length - 1].id !== hit.id) return {};
+            // free: the clicks pair up; the second click of a pair must be on the same loop of the
+            // same piece as the first
+            if (picks.length % 2 === 1 && !sameLoop(picks[picks.length - 1], hit)) return {};
             picks.push(hit);
             if (picks.length % 2 === 1) return { overlay: { lines: overlayOf().lines, points: [[...w]] } };
             const n = picks.length;
@@ -122,14 +158,15 @@ export function makeSewingTool(name, ctx) {
 }
 
 // After an outline edit of patternId: set each seam's a_/b_ ends from its anchor and the new
-// sides; a seam whose side no longer exists is removed (named in `removed`).
+// sides; a seam whose side no longer exists is removed (named in `removed`). `drawings` holds
+// the piece's {sides, holes: [{sides}]}: a hole anchor reads its hole's sides, and a seam on a
+// hole the piece no longer has (a fold back dropping the mirrored holes) is removed too.
 export function reanchor(nodes, drawings, patternId) {
-    const sides = drawings.get(patternId)?.sides;
+    const d = drawings.get(patternId);
     const ops = [];
     const removed = [];
-    if (!sides) return { ops, removed };
+    if (!d?.sides) return { ops, removed };
     const dead = new Set();
-    const sideCount = sides.length - 1;
     for (const n of nodes) {
         if (n.kind !== "garment.seam") continue;
         const anchor = n.meta?.atelier;
@@ -138,11 +175,13 @@ export function reanchor(nodes, drawings, patternId) {
         let gone = false;
         for (const end of ["a", "b"]) {
             if (n[end] !== patternId || !anchor[end]) continue;
-            const [sf, tf, tt, st = sf] = anchor[end];
+            const [sf, tf, tt, st = sf] = anchor[end], loop = loopOf(anchor[end]);
+            const sides = loopSides(d, loop), sideCount = sides ? sides.length - 1 : 0;
             if (sf >= sideCount || st >= sideCount) { gone = true; break; }
             const from = arcOf(sides, sf, tf), to = arcOf(sides, st, tt);
             if (Math.abs(from - n[`${end}_from`]) > 1e-6) fields[`${end}_from`] = from;
             if (Math.abs(to - n[`${end}_to`]) > 1e-6) fields[`${end}_to`] = to;
+            if ((n[`${end}_loop`] ?? 0) !== loop) fields[`${end}_loop`] = loop;
         }
         if (gone) { dead.add(n.id); removed.push(n.id); }
         else if (Object.keys(fields).length) ops.push({ op: "set", id: n.id, fields });
@@ -155,9 +194,11 @@ export function reanchor(nodes, drawings, patternId) {
     return { ops, removed };
 }
 
-// Every anchor on piece `id` -- seam ends and M:N group ranges (seamgroup.js) -- through
-// fn(anchor) -> anchor. -> the set ops of the seams that changed
-function mapAnchors(nodes, id, fn) {
+// Every outer-outline anchor on piece `id` -- seam ends and M:N group ranges (seamgroup.js) --
+// through fn(anchor) -> anchor; hole anchors are left (outerOnly). -> the set ops of the seams
+// that changed
+function mapAnchors(nodes, id, fn0) {
+    const fn = outerOnly(fn0);
     const ops = [];
     for (const n of nodes) {
         if (n.kind !== "garment.seam" || !n.meta?.atelier) continue;
@@ -175,13 +216,13 @@ function mapAnchors(nodes, id, fn) {
 }
 
 // After a side is inserted at `at` in piece `id` (a fillet's arc): every seam anchor on that
-// piece naming side `at` or later names the next one.
+// piece's outline naming side `at` or later names the next one.
 export function shiftAnchors(nodes, id, at) {
     const bump = (s) => (s >= at ? s + 1 : s);
     return mapAnchors(nodes, id, ([sf, tf, tt, st]) => (st === undefined ? [bump(sf), tf, tt] : [bump(sf), tf, tt, bump(st)]));
 }
 
-// Every seam anchor on piece `id` rewritten by map(end) -> [side, t] (`end` the anchor end
+// Every outline seam anchor on piece `id` rewritten by map(end) -> [side, t] (`end` the anchor end
 // {side, t, isTo}): the 3-form when both ends land on one side running forward, else the 4-form.
 function remapAnchors(nodes, id, map) {
     return mapAnchors(nodes, id, ([sf, tf, tt, st = sf]) => {
@@ -193,6 +234,7 @@ function remapAnchors(nodes, id, map) {
 // along it (the side splits there into `side` and `side + 1`): every seam anchor on that piece
 // keeps its place -- a fraction on the split side goes to the half it lies on, later sides move
 // up one. A range's start exactly at the new point starts the second half; its end ends the first.
+// The point is on the outline: anchors on the piece's holes are left.
 export function splitAnchors(nodes, id, side, t0) {
     return remapAnchors(nodes, id, ({ side: s, t, isTo }) => {
         if (s < side) return [s, t];
@@ -205,7 +247,7 @@ export function splitAnchors(nodes, id, side, t0) {
 // before and after it (`vertex - 1` and `vertex`; for point 0 the last side and side 0) become
 // one, `w` the first one's share of their arc length. Its fractions are scaled onto the merged
 // side, and the sides past it move down one. Removing point 0 makes old point 1 the start: every
-// side moves down one, the merged side is the last.
+// side moves down one, the merged side is the last. Hole anchors are left.
 export function mergeAnchors(nodes, id, vertex, count, w) {
     const before = (vertex - 1 + count) % count, merged = vertex === 0 ? count - 2 : vertex - 1;
     return remapAnchors(nodes, id, ({ side: s, t }) => {

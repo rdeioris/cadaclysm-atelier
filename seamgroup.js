@@ -4,9 +4,12 @@
 // M + N - 1). Each member carries meta.atelier.group = {id, a: [ranges], b: [ranges]} (a range is
 // {pattern, anchor, dir}: the anchor in Segment sewing's form, dir +1 when the range runs with
 // the outline's arc length, -1 against it, as picked) and meta.atelier.member, its place in the
-// run. Arc-length arithmetic only: the sides come from the kernel's drawings.
+// run. Arc-length arithmetic only: the sides come from the kernel's drawings. A range may lie on
+// a hole of its piece (A2 spec §2): its anchor is then the 5-form with the loop (sewing.js), its
+// lengths the hole's own, and the member seams carry a_loop/b_loop. sidesOf(pattern, loop) gives
+// the sides of either.
 import { addSeam, nextId } from "./model.js";
-import { anchorOf, sidePick, freeRange, rangeLine } from "./sewing.js";
+import { anchorOf, sidePick, freeRange, rangeLine, loopOf, loopSides, sewableHit, hitLoop, sameLoop } from "./sewing.js";
 export { mapGroupRanges } from "./sewing.js";
 
 const EPS = 1e-9;
@@ -66,17 +69,23 @@ export function distribute(A, B) {
 // piece or side is gone (the group can no longer be distributed).
 export function groupMembers(group, sidesOf) {
     const resolve = (rs) => rs.map((r) => {
+        const loop = loopOf(r.anchor);
         let sides = null;
-        try { sides = sidesOf(r.pattern); } catch { sides = null; }
+        try { sides = sidesOf(r.pattern, loop); } catch { sides = null; }
         const arcs = rangeArcs(sides, r.anchor);
-        return arcs && arcs.len > 0 ? { ...arcs, sides, dir: r.dir < 0 ? -1 : 1, pattern: r.pattern } : null;
+        return arcs && arcs.len > 0 ? { ...arcs, sides, loop, dir: r.dir < 0 ? -1 : 1, pattern: r.pattern } : null;
     });
     const A = resolve(group.a ?? []), B = resolve(group.b ?? []);
     if (!A.length || !B.length || A.includes(null) || B.includes(null)) return null;
-    return distribute(A, B).map((p, k) => ({
-        a: A[p.ia].pattern, b: B[p.ib].pattern, a_from: p.a.from, a_to: p.a.to, b_from: p.b.from, b_to: p.b.to, reversed: p.reversed,
-        meta: { atelier: { a: anchorOf(A[p.ia].sides, p.a.from, p.a.to), b: anchorOf(B[p.ib].sides, p.b.from, p.b.to), group, member: k } },
-    }));
+    return distribute(A, B).map((p, k) => {
+        const ra = A[p.ia], rb = B[p.ib];
+        return {
+            a: ra.pattern, b: rb.pattern, a_from: p.a.from, a_to: p.a.to, b_from: p.b.from, b_to: p.b.to, reversed: p.reversed,
+            // a hole end's loop; an outline end has none (absent is 0, as the kernel writes it)
+            ...(ra.loop ? { a_loop: ra.loop } : {}), ...(rb.loop ? { b_loop: rb.loop } : {}),
+            meta: { atelier: { a: anchorOf(ra.sides, p.a.from, p.a.to, ra.loop), b: anchorOf(rb.sides, p.b.from, p.b.to, rb.loop), group, member: k } },
+        };
+    });
 }
 
 // Every group in `nodes`: id -> {group, members: the member nodes in run order}.
@@ -141,6 +150,7 @@ export function sewGroupOps(nodes, sidesOf, A, B) {
 const close = (x, y) => Math.abs(x - y) <= 1e-6;
 const sameSeam = (n, s) => n.a === s.a && n.b === s.b && !!n.reversed === s.reversed
     && ["a_from", "a_to", "b_from", "b_to"].every((k) => close(n[k], s[k]))
+    && ["a_loop", "b_loop"].every((k) => (n[k] ?? 0) === (s[k] ?? 0))
     && JSON.stringify(n.meta?.atelier ?? null) === JSON.stringify(s.meta.atelier);
 
 // After a batch: every group re-distributed from its ranges' anchors on the sides now
@@ -161,6 +171,8 @@ export function redistributeOps(nodes, sidesOf) {
             members.forEach((n, k) => {
                 if (sameSeam(n, want[k])) return;
                 const { meta, ...rest } = want[k];
+                // an end that moved off a hole onto the outline: its loop set back to 0
+                for (const l of ["a_loop", "b_loop"]) if (n[l] && !rest[l]) rest[l] = 0;
                 ops.push({ op: "set", id: n.id, fields: { ...rest, meta: { ...(n.meta ?? {}), atelier: meta.atelier } } });
             });
             continue;
@@ -170,7 +182,8 @@ export function redistributeOps(nodes, sidesOf) {
         const added = [];
         for (const s of want) {
             const id = nextId(fresh, "s");
-            const node = { id, kind: "garment.seam", a: s.a, b: s.b, a_from: s.a_from, a_to: s.a_to, b_from: s.b_from, b_to: s.b_to, reversed: s.reversed, meta: s.meta };
+            const { meta, ...fields } = s;
+            const node = { id, kind: "garment.seam", ...fields, meta };
             ops.push({ op: "add", node });
             fresh = [...fresh, node];
             added.push(id);
@@ -194,8 +207,8 @@ export function groupRanges(group, sidesOf) {
     for (const [side, rs] of [["A", group.a ?? []], ["B", group.b ?? []]]) {
         rs.forEach((r, k) => {
             let sides = null;
-            try { sides = sidesOf(r.pattern); } catch { sides = null; }
-            out.push({ side, k, pattern: r.pattern, length: rangeArcs(sides, r.anchor)?.len ?? NaN });
+            try { sides = sidesOf(r.pattern, loopOf(r.anchor)); } catch { sides = null; }
+            out.push({ side, k, pattern: r.pattern, loop: loopOf(r.anchor), length: rangeArcs(sides, r.anchor)?.len ?? NaN });
         });
     }
     return out;
@@ -206,15 +219,16 @@ export const namesPiece = (n, id) => !!groupOf(n) && [...(groupOf(n).a ?? []), .
 // The Sew M:N tool (key B): side A's ranges (a click on a side takes the whole side, running
 // away from the end nearer the click; Shift and two clicks take a free range, first click to
 // second), Enter, side B's the same way, Enter sews. Backspace drops the last range (or the
-// first click of a free one); Escape cancels.
+// first click of a free one); Escape cancels. A hole's edge is picked the same way: a click
+// takes the hole's side, Shift and two clicks on the same hole a free range on it.
 export function makeGroupTool(ctx) {
     const sides = { a: [], b: [] };
     let phase = "a", first = null;
-    const sidesOf = (id) => ctx.drawings.get(id)?.sides;
+    const sidesOf = (id, loop = 0) => loopSides(ctx.drawings.get(id), loop);
     const overlay = () => {
         const lines = [], labels = [];
         for (const k of ["a", "b"]) sides[k].forEach((r, i) => {
-            const pts = rangeLine(ctx.drawings.get(r.id), r.from, r.to);
+            const pts = rangeLine(ctx.drawings.get(r.id), r.from, r.to, r.loop);
             if (pts.length < 2) return;
             lines.push(r.dir > 0 ? pts : [...pts].reverse());
             labels.push({ at: pts[Math.floor(pts.length / 2)], text: `${k.toUpperCase()}${i + 1}` });
@@ -223,20 +237,20 @@ export function makeGroupTool(ctx) {
     };
     return {
         down(w, hit, mods) {
-            if (hit?.kind !== "edge") return {};
-            const s = sidesOf(hit.id);
+            if (!sewableHit(hit)) return {};
+            const s = sidesOf(hit.id, hitLoop(hit));
             if (!s || !(hit.side >= 0) || hit.side >= s.length - 1) return {};
             if (mods?.shift || first) {
                 if (!first) { first = { hit, w }; return { overlay: overlay() }; }
-                if (first.hit.id !== hit.id || first.hit.s === hit.s) return {};
+                if (!sameLoop(first.hit, hit) || first.hit.s === hit.s) return {};
                 const r = freeRange(ctx, hit.id, first.hit, hit);
                 first = null;
-                sides[phase].push({ id: r.id, from: r.from, to: r.to, anchor: r.anchor, dir: r.dir });
+                sides[phase].push({ id: r.id, loop: r.loop, from: r.from, to: r.to, anchor: r.anchor, dir: r.dir });
                 return { overlay: overlay() };
             }
             const p = sidePick(ctx, hit);
             if (!p) return {};
-            sides[phase].push({ id: p.id, from: p.from, to: p.to, anchor: p.anchor, dir: p.near ? -1 : 1 });
+            sides[phase].push({ id: p.id, loop: p.loop, from: p.from, to: p.to, anchor: p.anchor, dir: p.near ? -1 : 1 });
             return { overlay: overlay() };
         },
         move() { return {}; },

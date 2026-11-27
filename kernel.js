@@ -1,7 +1,7 @@
 // The kernel facade: the one place the app calls cadaclysm_blacksmith_*. It owns a
 // blacksmith document holding the garment, and hands back plain arrays for drawing.
 import * as m from "./model.js";
-import { reanchor, anchorOf, mapGroupRanges } from "./sewing.js";
+import { reanchor, anchorOf, mapGroupRanges, loopOf, withLoop, outerOnly } from "./sewing.js";
 import { redistributeOps, namesPiece } from "./seamgroup.js";
 import { arcAt } from "./view2d.js";
 import { translatePath } from "./drape.js";
@@ -151,13 +151,13 @@ export class Atelier {
             // several pieces (a transform of a multi-selection): each one's seams in turn
             for (const rid of [...new Set([reanchorId ?? [], sym.reanchor].flat())]) {
                 if (!m.byId(this.nodes()).has(rid) || this.newProblems(before)) continue;
-                const r = reanchor(this.nodes(), new Map([[rid, { sides: this.sidesOf(rid) }]]), rid);
+                const r = reanchor(this.nodes(), new Map([[rid, this.loopsOf(rid)]]), rid);
                 if (r.ops.length) { this.f("document_apply")(this.d, batch(r.ops), null); this.evaluate(); }
                 out.removed.push(...r.removed);
             }
             // the M:N groups re-distributed on their ranges' sides now (seamgroup.js), in the same batch
             if (!this.newProblems(before)) {
-                const groups = redistributeOps(this.nodes(), (id) => this.sidesOf(id));
+                const groups = redistributeOps(this.nodes(), (id, loop) => this.sidesOf(id, loop));
                 if (groups.length) { this.f("document_apply")(this.d, batch(groups), null); this.evaluate(); }
             }
             const bad = this.newProblems(before);
@@ -285,7 +285,8 @@ export class Atelier {
             let added = false;
             for (const end of ["a", "b"]) {
                 if (anchor[end]) continue;
-                try { anchor[end] = anchorOf(this.sidesOf(n[end]), n[`${end}_from`], n[`${end}_to`]); added = true; } catch { /* its piece failed */ }
+                const loop = n[`${end}_loop`] ?? 0;
+                try { anchor[end] = anchorOf(this.sidesOf(n[end], loop), n[`${end}_from`], n[`${end}_to`], loop); added = true; } catch { /* its piece failed */ }
             }
             if (added) ops.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
         }
@@ -335,10 +336,14 @@ export class Atelier {
             // the face first: it refuses crossing holes, and checkHoles counts on none crossing
             const fill = this.fillOf(id);
             this.checkHoles(outlineNode.path);
-            const holes = (outlineNode.path.holes ?? []).map((h) => ({
+            // each hole's 1 mm samples and side starts (A2 spec §2: hole edges are sewn), in the
+            // hole's own arc length: from its start, in its direction of travel, as the kernel's seams read it
+            const holes = (outlineNode.path.holes ?? []).map((h, k) => ({
                 beziers: this.beziersOf(h),
                 ring: this.openPoints({ start: h.start, segments: h.segments }),
                 cut: this.holeCutOf(h, allowance0),
+                samples: this.withPath({ start: h.start, segments: h.segments }, (hp) => this.samplesOf(hp)),
+                sides: this.sidesOf(id, k + 1),
             }));
             const internal = (node.internal ?? []).map((l) => ({
                 kind: l.kind, points: this.openPoints(l.path), beziers: this.beziersOf(l.path), closed: m.isClosedPath(l.path),
@@ -522,17 +527,52 @@ export class Atelier {
         starts.push(perimeter);
         return starts;
     }
-    sidesOf(id) {
-        let c = this.sidesCache.get(id);
+    // Piece `id`'s side starts on loop `loop`: 0 its outline, k its hole k - 1 (the hole's own
+    // arc length). Throws for a hole the piece does not have.
+    sidesOf(id, loop = 0) {
+        const key = loop ? `${id}#${loop}` : id;
+        let c = this.sidesCache.get(key);
         if (!c) {
             const node = m.byId(this.nodes()).get(`${id}_outline`);
-            c = this.withOutline(id, (p) => {
-                const perimeter = this.f("profile_length")(p, ACC)[0];
-                return this.sideStarts(p, perimeter, node.path.segments.length);
-            });
-            this.sidesCache.set(id, c);
+            if (loop) {
+                const h = node?.path?.holes?.[loop - 1];
+                if (!h) throw new Error(`${id} has no hole ${loop}`);
+                c = this.withPath({ start: h.start, segments: h.segments }, (p) => this.sideStarts(p, this.f("profile_length")(p, ACC)[0], h.segments.length));
+            } else {
+                c = this.withOutline(id, (p) => {
+                    const perimeter = this.f("profile_length")(p, ACC)[0];
+                    return this.sideStarts(p, perimeter, node.path.segments.length);
+                });
+            }
+            this.sidesCache.set(key, c);
         }
         return c;
+    }
+    // Piece `id`'s sides on every loop, as sewing.js reanchor reads a drawing: {sides, holes: [{sides}]}.
+    loopsOf(id) {
+        const n = m.byId(this.nodes()).get(`${id}_outline`)?.path?.holes?.length ?? 0;
+        return { sides: this.sidesOf(id), holes: Array.from({ length: n }, (_, k) => ({ sides: this.sidesOf(id, k + 1) })) };
+    }
+    // The points of range from..to on hole `loop` - 1 of piece `id` (flat x, y), in travel order
+    // (from > to runs through the hole's start): the range's two ends from profile_point_at_length,
+    // and the hole's 1 mm samples between them. garment_range_points reads the outline only.
+    holeRangePoints(id, loop, from, to) {
+        const h = m.byId(this.nodes()).get(`${id}_outline`)?.path?.holes?.[loop - 1];
+        if (!h) throw new Error(`${id} has no hole ${loop}`);
+        return this.withPath({ start: h.start, segments: h.segments }, (p) => {
+            const P = this.f("profile_length")(p, ACC)[0];
+            const at = (s) => { const r = this.f("profile_point_at_length")(p, Math.min(Math.max(s, 0), P), ACC); return [r[0], r[1]]; };
+            const smp = this.samplesOf(p), out = [...at(from)];
+            const take = (keep) => { for (let i = 0; i < smp.length; i += 3) if (keep(smp[i])) out.push(smp[i + 1], smp[i + 2]); };
+            if (from <= to) take((a) => a > from && a < to);
+            else { take((a) => a > from && a < P); take((a) => a < to); }
+            out.push(...at(to));
+            return out;
+        });
+    }
+    // A seam end's points: on the outline the kernel's garment_range_points, on a hole holeRangePoints.
+    endPoints(id, loop, from, to) {
+        return loop ? this.holeRangePoints(id, loop, from, to) : Array.from(this.f("garment_range_points")(this.g, this.patternIndex(id), from, to, TOL));
     }
 
     // A seam whose points cannot be read (its piece failed to draw) is left out.
@@ -544,9 +584,10 @@ export class Atelier {
             try {
                 out.push({
                     id: n.id, a: n.a, b: n.b, a_from: n.a_from, a_to: n.a_to, b_from: n.b_from, b_to: n.b_to, reversed: !!n.reversed,
+                    a_loop: n.a_loop ?? 0, b_loop: n.b_loop ?? 0,
                     group: n.meta?.atelier?.group?.id ?? null, member: n.meta?.atelier?.member ?? null,
-                    points_a: Array.from(this.f("garment_range_points")(this.g, this.patternIndex(n.a), n.a_from, n.a_to, TOL)),
-                    points_b: Array.from(this.f("garment_range_points")(this.g, this.patternIndex(n.b), n.b_from, n.b_to, TOL)),
+                    points_a: this.endPoints(n.a, n.a_loop ?? 0, n.a_from, n.a_to),
+                    points_b: this.endPoints(n.b, n.b_loop ?? 0, n.b_from, n.b_to),
                 });
             } catch { /* its piece is named by problems() */ }
         }
@@ -716,9 +757,19 @@ export class Atelier {
             }
             (node.internal ?? []).forEach((l, i) => { if (i !== consume) internal[holding(loops[0], l.path.start) ? 0 : 1].push(l); });
             const seamMoves = [], dropped = [];
+            const nodeOf = m.byId(this.nodes());
             for (const s of this.seams()) {
                 for (const end of ["a", "b"]) {
                     if (s[end] !== id) continue;
+                    // a hole end goes with its hole: the same range, renumbered among that piece's holes
+                    const loop = s[`${end}_loop`];
+                    if (loop) {
+                        const h = path.holes?.[loop - 1], k = holes[0].includes(h) ? 0 : 1, next = holes[k].indexOf(h) + 1;
+                        const old = nodeOf.get(s.id)?.meta?.atelier?.[end];
+                        const anchor = old ? withLoop(old, next) : anchorOf(this.sidesOf(id, loop), s[`${end}_from`], s[`${end}_to`], next);
+                        seamMoves.push({ id: s.id, end, piece: k, from: s[`${end}_from`], to: s[`${end}_to`], loop: next, anchor });
+                        continue;
+                    }
                     const flat = s[`points_${end}`], pts = [];
                     for (let i = 0; i + 1 < flat.length; i += 2) pts.push([flat[i], flat[i + 1]]);
                     const k = [0, 1].find((j) => pts.every((pt) => on(loops[j], pt)));
@@ -915,13 +966,14 @@ export class Atelier {
                 const r = f("profile_point_at_length")(pf, s, ACC), a = arcAt(samples, st, [r[0], r[1]]).s;
                 return st.find((c) => Math.abs(c - a) < LAND) ?? a;
             };
-            const onto = ([a, ta, tb, b = a]) => {
+            // a hole anchor stays: the holes are not reshaped by an outline edit
+            const onto = outerOnly(([a, ta, tb, b = a]) => {
                 if (a >= sf.length - 1 || b >= sf.length - 1) return null;
                 let s0 = arcOn(sf[a] + ta * (sf[a + 1] - sf[a])), s1 = arcOn(sf[b] + tb * (sf[b + 1] - sf[b]));
                 if (s0 >= P - 1e-9) s0 = 0;
                 if (s1 < s0 && s1 < LAND) s1 = P;
                 return anchorOf(st, s0, s1);
-            };
+            });
             for (const n of seams) {
                 let anchor = { ...n.meta.atelier }, moved = false;
                 for (const end of ["a", "b"]) {
@@ -1059,17 +1111,18 @@ export class Atelier {
             let anchor = { ...n.meta.atelier };
             let gone = false;
             for (const end of ["a", "b"]) {
-                if (n[end] !== id || !anchor[end]) continue;
+                // a hole end keeps its anchor: the whole's first holes are the half's, in order
+                if (n[end] !== id || !anchor[end] || loopOf(anchor[end])) continue;
                 const [sf, tf, tt, st = sf] = anchor[end], x = at(sf), y = at(st);
                 // on the fold side, or running round through it
                 if (x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt)) { gone = true; break; }
                 anchor[end] = x === y ? [x, tf, tt] : [x, tf, tt, y];
             }
             // an M:N group's ranges follow their sides; one on the fold side dissolves the group
-            anchor = mapGroupRanges(anchor, id, ([sf, tf, tt, st = sf]) => {
+            anchor = mapGroupRanges(anchor, id, outerOnly(([sf, tf, tt, st = sf]) => {
                 const x = at(sf), y = at(st);
                 return x === N - 1 || y === N - 1 || x > y || (x === y && tf > tt) ? null : x === y ? [x, tf, tt] : [x, tf, tt, y];
-            });
+            }));
             if (gone) dropped.push(n.id);
             else moves.push({ op: "set", id: n.id, fields: { meta: { ...n.meta, atelier: anchor } } });
         }
@@ -1088,7 +1141,14 @@ export class Atelier {
         const { node } = this.pieceOf(id), nodes = this.nodes(), U = unfoldOf(node);
         if (!U) throw new Error("fold back: the piece is not unfolded");
         const N = U.half.path.segments.length, dropped = [];
-        const mirrored = ([sf, tf, tt, st = sf]) => sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt);
+        // on the mirrored side; a hole anchor: on a hole the half does not have (a mirrored hole,
+        // or one added to the whole)
+        const H = U.half.path.holes?.length ?? 0;
+        const mirrored = (a) => {
+            if (loopOf(a)) return loopOf(a) > H;
+            const [sf, tf, tt, st = sf] = a;
+            return sf >= N - 1 || st >= N - 1 || sf > st || (sf === st && tf > tt);
+        };
         for (const n of nodes) {
             if (n.kind !== "garment.seam" || (n.a !== id && n.b !== id)) continue;
             for (const end of ["a", "b"]) {

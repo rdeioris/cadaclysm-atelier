@@ -136,6 +136,14 @@ export function hitOf(what, pick, drawings, pieceAt = null, cursor = null) {
         const { s, side } = arcAt(d.samples, d.sides, at);
         return { kind: "edge", id, s, side, ...extra };
     };
+    // a hole's edge (A2 spec §2): hole `index` of piece `id`, loop index + 1, with the arc length
+    // on the hole (the hole's own, from the kernel's hole samples) and the hole side it lies on
+    const holeEdge = (id, index, extra) => {
+        const h = drawings.get(id)?.holes?.[index];
+        if (!h?.samples || !at) return { kind: "hole", id, index, loop: index + 1, ...extra };
+        const { s, side } = arcAt(h.samples, h.sides, at);
+        return { kind: "hole", id, index, loop: index + 1, s, side, ...extra };
+    };
     switch (what.kind) {
         case "points": return { kind: "point", id: what.id, index: pick.node };
         case "handles": { const h = what.handles?.[pick.node]; return h ? { kind: "handle", id: what.id, index: h.index, which: h.which } : null; }
@@ -145,9 +153,9 @@ export function hitOf(what, pick, drawings, pieceAt = null, cursor = null) {
         case "ihandles": { const h = what.handles?.[pick.node]; return h ? { kind: "ihandle", id: what.id, line: h.line, index: h.index, which: h.which } : null; }
         case "itangents": { const h = tangentHandle(what, at); return h ? { kind: "ihandle", id: what.id, line: h.line, index: h.index, which: h.which } : null; }
         case "sew": return edge(what.id, {});
-        case "seam": return edge(what.pattern, { seam: what.id });
+        case "seam": return what.loop ? holeEdge(what.pattern, what.loop - 1, { seam: what.id }) : edge(what.pattern, { seam: what.id });
         case "internal": return { kind: "internal", id: what.id, index: what.index };
-        case "hole": return { kind: "hole", id: what.id, index: what.index };
+        case "hole": return holeEdge(what.id, what.index, {});
         case "tack": return { kind: "tack", id: what.id };
         case "label": { const q = cursor ?? at; return { kind: "pattern", id: (q && pieceAt?.(q)) ?? what.id }; }
         // a notch's mark: that notch (the Edit tool selects it); other tools read it as its piece
