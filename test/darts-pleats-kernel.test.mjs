@@ -9,6 +9,7 @@ import * as m from "../model.js";
 import { addTack } from "../tacks.js";
 import { pleatDraft, pleatSpec, s2Request, groupOfLine } from "../pleats.js";
 import { garmentChange } from "../drape.js";
+import { anchorOf, withLoop } from "../sewing.js";
 
 const k = await loadKernel();
 const params = Object.fromEntries(m.FABRIC_FIELDS.map((n) => [n, 1]));
@@ -195,5 +196,51 @@ const kernelTacks = (a) => a.f("garment_tacks")(a.g).length / 7;
     assert.equal(JSON.stringify(node(a, "p1_outline").path), o0, "a miss: the piece as committed");
     a.endPreview(false);
     assert.equal(JSON.stringify(node(a, "p1_outline").path), o0);
+}
+// ---- hole-edge seams (A2) through a dart cut: a sleeve sewn into a hole keeps its anchor; a hole
+// dropped with the wedge renumbers the sewn hole after it; a sewn hole in the wedge is refused ----
+{
+    // a 300 x 300 piece, a dart from its hem, holes: [0] small, inside the wedge; [1] sewn to a sleeve
+    const make = (sewWedgeHole) => {
+        const a = new Atelier(k);
+        a.reset(m.newDocumentOps({ slug: "x", label: "X", params }));
+        a.apply(m.addPattern(a.nodes(), { label: "A", path: m.rectPath(0, 0, 300, 300), fabric: "f_x" }).ops, "a");
+        a.apply(m.addPattern(a.nodes(), { label: "Sleeve", path: m.rectPath(400, 0, 200, 100), fabric: "f_x" }).ops, "sleeve");
+        a.apply(m.addHole(a.nodes(), "p1", m.rectPath(90, 250, 20, 20)), "wedge hole");
+        a.apply(m.addHole(a.nodes(), "p1", m.rectPath(200, 100, 60, 60)), "armhole");
+        const hs = a.sidesOf("p1", 2);
+        a.apply(m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: hs[0], a_to: hs[1], a_loop: 2, b_from: 0, b_to: 60, anchor: { a: anchorOf(hs, hs[0], hs[1], 2), b: [0, 0, 0.3] } }).ops, "sew");
+        if (sewWedgeHole) {
+            const ws = a.sidesOf("p1", 1);
+            a.apply(m.addSeam(a.nodes(), { a: "p1", b: "p2", a_from: ws[0], a_to: ws[1], a_loop: 1, b_from: 100, b_to: 120, anchor: { a: anchorOf(ws, ws[0], ws[1], 1), b: [1, 0, 0.2] } }).ops, "sew 2");
+        }
+        a.apply(m.setPattern(a.nodes(), "p1", { internal: [{ kind: "dart", path: { start: [40, 300], segments: [{ type: "line", to: [100, 100] }, { type: "line", to: [160, 300] }] } }] }), "dart");
+        return a;
+    };
+    const a = make(false);
+    const s0 = node(a, "s1");
+    assert.equal(s0.a_loop, 2);
+    a.commit(a.dartOps("p1", 0, "cut"), "close dart (cut)");
+    assert.equal(node(a, "p1_outline").path.holes.length, 1, "the wedge's hole left with it");
+    const s1 = node(a, "s1");
+    assert.equal(s1.a_loop, 1, "the sewn hole is loop 1 now");
+    assert.deepEqual([s1.a_from, s1.a_to, s1.b_from, s1.b_to], [s0.a_from, s0.a_to, s0.b_from, s0.b_to], "its ranges kept");
+    assert.deepEqual(s1.meta.atelier.a, withLoop(s0.meta.atelier.a, 1), "its anchor renumbered, nothing else");
+    assert.deepEqual(s1.meta.atelier.b, s0.meta.atelier.b);
+    assert.equal(a.issues().filter((i) => i.severity === "error").length, 0);
+    a.undo();
+    assert.equal(node(a, "s1").a_loop, 2, "one undo");
+    // a hole sewn and nowhere near the wedge: its seam's document record is untouched
+    const b = make(false);
+    b.apply(m.setPattern(b.nodes(), "p1", { internal: [{ kind: "dart", path: { start: [10, 300], segments: [{ type: "line", to: [30, 200] }, { type: "line", to: [50, 300] }] } }] }), "a dart elsewhere");
+    const before = JSON.stringify(node(b, "s1"));
+    const ops = b.dartOps("p1", 0, "cut");
+    assert.ok(!ops.some((o) => o.id === "s1"), "no op on the hole seam");
+    b.commit(ops, "close dart (cut)");
+    assert.equal(JSON.stringify(node(b, "s1")), before, "the hole seam's record unchanged");
+    assert.equal(node(b, "p1_outline").path.holes.length, 2);
+    // a sewn hole in the wedge: refused, naming the fault
+    const c = make(true);
+    assert.throws(() => c.dartOps("p1", 0, "cut"), /CrossesWedge/);
 }
 console.log("darts-pleats-kernel: ok");

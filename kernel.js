@@ -1540,29 +1540,52 @@ export class Atelier {
             const groups = this.pleatRows(s).filter((r) => r.pattern === pid);
             const pleats = groups.map((r) => ({ spec: r.spec, internal: r.internal, tacks: r.tacks.map((t) => tackIds.get(t)).filter(Boolean) }));
             if (!sameJson(node.pleats ?? [], pleats)) fields.pleats = pleats.length ? pleats : null;
-            // seams: gone, re-ranged, made; the ends on this piece anchored to its sides as they are now
+            // seams: gone, re-ranged, made. An end on this piece is anchored to its loop's sides as they
+            // are now: an outline end when the outline or its range changed; a hole end (A2: loop k is
+            // hole k - 1) keeps its anchor unless its range changed, and takes its new loop number when
+            // the kernel re-indexed the holes (a cut wedge that dropped an earlier hole)
             const seamsAfter = this.seamRows(s), liveSeams = new Set(seamsAfter.map((r) => r.id));
             const goneSeams = seamsBefore.filter((r) => !liveSeams.has(r.id)).map((r) => seamNode.get(r.id));
             const reshaped = !sameJson(before.outline, after.outline);
-            const sides = reshaped || seamsAfter.length !== seamsBefore.length ? this.withPathSides(after.outline) : this.sidesOf(id);
-            const anchorFor = (r, end, prior) => (nodeOf.get(r[end]) === id ? anchorOf(sides, r[`${end}_from`], r[`${end}_to`]) : prior);
+            const sidesCache = new Map();
+            const sidesOn = (loop) => {
+                if (!sidesCache.has(loop)) {
+                    const h = loop ? after.outline.holes?.[loop - 1] : after.outline;
+                    if (!h) throw new Error(`${id} has no hole ${loop}`);
+                    sidesCache.set(loop, !loop && !reshaped ? this.sidesOf(id) : this.withPathSides({ start: h.start, segments: h.segments }));
+                }
+                return sidesCache.get(loop);
+            };
+            const endAnchor = (r, old, end, prior) => {
+                if (nodeOf.get(r[end]) !== id) return prior;
+                const loop = r[`${end}_loop`], ranged = !old || old[`${end}_from`] !== r[`${end}_from`] || old[`${end}_to`] !== r[`${end}_to`];
+                if (loop === 0) return ranged || reshaped || old[`${end}_loop`] !== 0 || !prior ? anchorOf(sidesOn(0), r[`${end}_from`], r[`${end}_to`]) : prior;
+                if (ranged || !prior || loopOf(prior) === 0) return anchorOf(sidesOn(loop), r[`${end}_from`], r[`${end}_to`], loop);
+                return loopOf(prior) === loop ? prior : withLoop(prior, loop);
+            };
+            const loopFields = (r, old) => {
+                const f = {};
+                for (const end of ["a", "b"]) if (!old || old[`${end}_loop`] !== r[`${end}_loop`]) f[`${end}_loop`] = r[`${end}_loop`] || (old ? null : undefined);
+                for (const k of Object.keys(f)) if (f[k] === undefined) delete f[k];
+                return f;
+            };
             let seamList = gn.seams.filter((x) => !goneSeams.includes(x));
             for (const r of seamsAfter) {
                 const old = seamsBefore.find((q) => q.id === r.id);
                 if (old) {
                     const sn = byId.get(seamNode.get(r.id));
-                    const moved = ["a_from", "a_to", "b_from", "b_to"].some((k) => old[k] !== r[k]);
-                    const touches = nodeOf.get(r.a) === id || nodeOf.get(r.b) === id;
-                    if (!moved && !(reshaped && touches)) continue;
-                    const anchor = { ...(sn.meta?.atelier ?? {}) };
-                    anchor.a = anchorFor(r, "a", anchor.a);
-                    anchor.b = anchorFor(r, "b", anchor.b);
-                    ops.push({ op: "set", id: sn.id, fields: { a_from: r.a_from, a_to: r.a_to, b_from: r.b_from, b_to: r.b_to, meta: { ...(sn.meta ?? {}), atelier: anchor } } });
+                    const prior = sn.meta?.atelier ?? {};
+                    const anchor = { ...prior, a: endAnchor(r, old, "a", prior.a), b: endAnchor(r, old, "b", prior.b) };
+                    if (anchor.a === undefined) delete anchor.a;
+                    if (anchor.b === undefined) delete anchor.b;
+                    const ranged = ["a_from", "a_to", "b_from", "b_to"].some((k) => old[k] !== r[k]), loops = loopFields(r, old);
+                    if (!ranged && !Object.keys(loops).length && sameJson(anchor, prior)) continue;
+                    ops.push({ op: "set", id: sn.id, fields: { a_from: r.a_from, a_to: r.a_to, b_from: r.b_from, b_to: r.b_to, ...loops, meta: { ...(sn.meta ?? {}), atelier: anchor } } });
                     continue;
                 }
                 const sid = m.nextId(cur, "s");
                 const seam = { id: sid, kind: "garment.seam", a: nodeOf.get(r.a), b: nodeOf.get(r.b), a_from: r.a_from, a_to: r.a_to, b_from: r.b_from, b_to: r.b_to, reversed: r.reversed,
-                    meta: { atelier: { a: anchorFor(r, "a", undefined), b: anchorFor(r, "b", undefined) } } };
+                    ...loopFields(r, null), meta: { atelier: { a: endAnchor(r, null, "a", undefined), b: endAnchor(r, null, "b", undefined) } } };
                 ops.push({ op: "add", node: seam });
                 cur = m.withAdded(cur, [{ op: "add", node: seam }]);
                 seamList = [...seamList, sid];
@@ -1573,11 +1596,12 @@ export class Atelier {
             return { ops, result };
         } finally { this.f("garment_free")(s); }
     }
-    // A scratch garment's seams {id, a, a_from, a_to, b, b_from, b_to, reversed} by ascending id.
+    // A scratch garment's seams {id, a, a_from, a_to, b, b_from, b_to, reversed, a_loop, b_loop} by
+    // ascending id (garment_seam's 9 values: a loop 0 is the outline, k hole k - 1).
     seamRows(s) {
         return Array.from(this.f("garment_seams")(s)).map((id) => {
-            const [a, a_from, a_to, b, b_from, b_to, rev] = this.f("garment_seam")(s, id);
-            return { id, a, a_from, a_to, b, b_from, b_to, reversed: rev === 1 };
+            const [a, a_from, a_to, b, b_from, b_to, rev, a_loop = 0, b_loop = 0] = this.f("garment_seam")(s, id);
+            return { id, a, a_from, a_to, b, b_from, b_to, reversed: rev === 1, a_loop, b_loop };
         });
     }
     // Its tacks {id, pa, a_at, pb, b_at} (garment_tacks' septuples).
