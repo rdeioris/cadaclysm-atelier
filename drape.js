@@ -169,6 +169,8 @@ export function garmentChange(before, after) {
         if (elasticCount(p) !== elasticCount(q)) return { kind: "stale", why: `${p.label ?? id}'s elastics changed` };
         // a pre-folded line (a pleat's, S2) shapes the cloth's start: a new one, or one gone, rebuilds it
         if (!same(prefolded(p), prefolded(q))) return { kind: "stale", why: `${p.label ?? id}'s pleats changed` };
+        // a trim added, edited or removed (S3) is laid out on the cloth when it is built
+        if (!same(p.trims, q.trims)) return { kind: "stale", why: `${p.label ?? id}'s trims changed` };
         if (PATTERN_KEYS.some((k) => !same(p[k], q[k]))) changed.add(id);
         if (!same(p.elastic, q.elastic) || !same(clothLines(p), clothLines(q))) changed.add(id);
         if (!same(a.get(p.outline), b.get(q.outline)) || p.outline !== q.outline) changed.add(id);
@@ -177,13 +179,14 @@ export function garmentChange(before, after) {
         const t = sb.get(id);
         if (s.a !== t.a || s.b !== t.b) return { kind: "stale", why: "the seams changed" };
         if (hasElastic(s.elastic) !== hasElastic(t.elastic)) return { kind: "stale", why: "a seam's elastic changed" };
+        if (!same(s.zipper, t.zipper)) return { kind: "stale", why: "a zipper changed" };
         // a seam re-anchored by an outline edit moves with its pattern; one edited alone
         // re-meshes both its sides
         if ((SEAM_RANGE.some((k) => !same(s[k], t[k])) || !same(s.elastic, t.elastic)) && !changed.has(s.a) && !changed.has(s.b)) { changed.add(s.a); changed.add(s.b); }
     }
     for (const [id, t] of ta) {
         const u = tb.get(id);
-        if (t.a !== u.a || t.b !== u.b) return { kind: "stale", why: "the tacks changed" };
+        if (t.a !== u.a || t.b !== u.b || !same(t.fastens, u.fastens)) return { kind: "stale", why: "the tacks changed" };
         if (!same(t.a_at, u.a_at) || !same(t.b_at, u.b_at)) { changed.add(t.a); changed.add(t.b); }
     }
     return changed.size ? { kind: "remesh", patterns: [...changed] } : { kind: "same" };
@@ -273,6 +276,8 @@ function pieceBack(p, off) {
     const fields = {}, back = [-off[0], -off[1]];
     if (p.internal?.length) fields.internal = p.internal.map((l) => (l.path ? { ...l, path: translatePath(l.path, back) } : l));
     if (p.pins?.length) fields.pins = p.pins.map((q) => [q[0] + back[0], q[1] + back[1]]);
+    // a button's and a buttonhole's centre (S3); a topstitch's arc lengths do not move
+    if (p.trims?.some((t) => t.at)) fields.trims = p.trims.map((t) => (t.at ? { ...t, at: [t.at[0] + back[0], t.at[1] + back[1]] } : t));
     return Object.keys(fields).length ? [{ op: "set", id: p.id, fields }] : [];
 }
 

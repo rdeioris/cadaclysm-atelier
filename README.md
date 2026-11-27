@@ -289,6 +289,33 @@ avatar. **Pause** stops it, **Reset** drops the cloth and brings the flat pieces
 - Limits: dart and pleat edits are made in the base size of a graded garment; a piece's outline
   elastics (not a seam's) are not carried through a dart edit that moves the outline.
 
+### Trims
+
+- **Topstitch** (2D strip): a click on an edge stitches that side (a drag along an edge stitches
+  the stretch between), a click on an internal line stitches the line. Select it (a click on its
+  stitches in **Edit**) for its offset from the edge, stitch length, thread, one or two rows,
+  the gap between them and its colour.
+- **Button** and **Buttonhole**: a click on a piece places one. A button's panel sets its
+  diameter, thickness, holes (0, 2 or 4), mass (it weighs the cloth under it) and colour; a
+  buttonhole's its length (at least the button's diameter plus 2 mm), angle and colour.
+- **Fasten**: a click on a button, then one on a buttonhole: a tack holds them together (the
+  tack's panel names them). Deleting either removes the fastening.
+- **Zipper**: a click on a seam closes it with a zipper; the seam's panel then sets the tape
+  width, tooth pitch, tooth mass, stiffness (it multiplies the seam's strength) and colour, or
+  removes it.
+- A new trim is checked by the kernel (`garment_add_topstitch_outline`, `_internal`,
+  `garment_add_button`, `garment_add_buttonhole`, `garment_fasten`, `garment_add_zipper`) on a
+  copy of the garment: one it refuses (off the piece, a buttonhole too small for its button,
+  already fastened) changes nothing, and the status line names the fault. Each edit is one undo
+  step; the trims are the pattern's `trims`, the seam's `zipper` and the tack's `fastens`.
+- The 2D window draws them from the kernel's layout (`garment_trim_instances`): stitch dashes,
+  button discs, buttonhole bars, the zipper's tape and teeth. On the cloth they are blacksmith
+  meshes (`trimgeo.js`) placed on it: the GPU cloth draws them itself (`showClothTrims`), the CPU
+  cloth sends their vertices with every frame. The zipper's teeth and slider draw metallic.
+  Adding, editing or removing a trim makes a running cloth stale (Simulate rebuilds it); an
+  outline edit re-meshes with the trims laid out again, and one that no longer fits is named on
+  the status line.
+
 **Film hook** (`film.js`) — `?film=1` is for the tutorial video's driver: Simulate builds the
 cloth paused (and then does nothing to it), `atelierFilm.step(n)` steps exactly n frames and
 resolves once the View has drawn the last (steps queue), `atelierFilm.run()` / `pause()` run free

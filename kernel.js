@@ -10,6 +10,7 @@ import { reslotOps } from "./reslot.js";
 import * as G from "./grading.js";
 import { addTack } from "./tacks.js";
 import { PLEAT_KINDS, PLEAT_DIRECTIONS } from "./pleats.js";
+import * as T from "./trims.js";
 
 const TOL = 0.25;        // flattening tolerance for drawing, mm
 const ACC = 1e-6;        // arc-length accuracy (relative)
@@ -61,7 +62,10 @@ const NEEDS = ["document_clear_history", "document_head", "profile_ellipse", "pr
     // the simulation controls (S1): saved options and pins, Freeze
     "garment_sim_options", "garment_pins", "cloth_freeze",
     // darts and pleats (S2)
-    "garment_close_dart_cut", "garment_close_dart_folded", "garment_rotate_dart", "garment_add_pleats", "garment_remove_pleats", "garment_pleats", "garment_fold_prefold"];
+    "garment_close_dart_cut", "garment_close_dart_folded", "garment_rotate_dart", "garment_add_pleats", "garment_remove_pleats", "garment_pleats", "garment_fold_prefold",
+    // trims (S3)
+    "garment_add_topstitch_outline", "garment_add_topstitch_internal", "garment_add_button", "garment_add_buttonhole", "garment_fasten",
+    "garment_add_zipper", "garment_trims", "garment_trim_instances", "garment_trim_skipped"];
 
 // The kernel's seam-length warning (garment_issue: severity 1 = warning, kind 10 =
 // ISSUE_SEAM_LENGTH_MISMATCH): CLO's ease rule, a seam whose sides differ by more than 5 %.
@@ -97,6 +101,7 @@ export class Atelier {
     head() { return this.f("document_head")(this.d); }
 
     evaluate() {
+        this.evalGen = (this.evalGen ?? 0) + 1;    // trimLayout's cache key
         this.sidesCache.clear();
         this.dropGarment();
         this.drawn = null;
@@ -641,6 +646,9 @@ export class Atelier {
         const [gx, gy] = node.grain ?? [0, 1], tx = m6[0] * gx + m6[1] * gy, ty = m6[3] * gx + m6[4] * gy, gl = Math.hypot(tx, ty);
         if (!(gl > 0)) throw new Error("the transform collapses the piece");
         const r = { path: out, internal, notches, grain: [tx / gl, ty / gl] };
+        // the trims (S3) go with the piece: a button's or buttonhole's centre through the matrix (a
+        // buttonhole's direction too), an outline topstitch's range re-placed as the notches are
+        if (node.trims?.length) r.trims = this.trimsThrough(node.trims, path, out, m6);
         // the saved pins (S1, pattern space) go with the piece, and so do its tacks' ends
         // (model.pieceOps moves those through this matrix)
         if (node.pins?.length) r.pins = node.pins.map(map);
@@ -655,6 +663,34 @@ export class Atelier {
             r.unfold = { axis: axisThrough(U.axis), half: { ...U.half, path: h.path, internal: h.internal, notches: h.notches } };
         }
         return r;
+    }
+    // A piece's trims through m6 (pieceThrough): `path` its outline before, `out` after.
+    trimsThrough(trims, path, out, m6) {
+        const f = this.f, map = ([x, y]) => [m6[0] * x + m6[1] * y + m6[2], m6[3] * x + m6[4] * y + m6[5]];
+        const dir = (a) => { const x = Math.cos(a), y = Math.sin(a); return Math.round(Math.atan2(m6[3] * x + m6[4] * y, m6[0] * x + m6[1] * y) * 1e9) / 1e9; };
+        const ranged = trims.map((t, i) => (t.kind === "topstitch" && t.on === "outline" && !t.loop ? i : -1)).filter((i) => i >= 0);
+        const arcs = new Map();
+        if (ranged.length) {
+            this.withPath({ start: path.start, segments: path.segments }, (old) => this.withPath({ start: out.start, segments: out.segments }, (p) => {
+                const samples = this.samplesOf(p), P = f("profile_length")(p, ACC)[0], sides = this.sideStarts(p, P, out.segments.length);
+                const P0 = f("profile_length")(old, ACC)[0];
+                const to = (s) => { const q = f("profile_point_at_length")(old, s, ACC); return arcAt(samples, sides, map([q[0], q[1]])).s; };
+                const inside = (a, b, x) => (a <= b ? x >= a && x <= b : x >= a || x <= b);
+                for (const i of ranged) {
+                    const t = trims[i], mid = t.from <= t.to ? (t.from + t.to) / 2 : ((t.from + t.to + P0) / 2) % P0;
+                    const a = to(t.from), b = to(t.to), m = to(mid);
+                    // a mirror runs the outline the other way: the range's ends swap
+                    arcs.set(i, inside(a, b, m) ? [a, b] : [b, a]);
+                }
+            }));
+        }
+        const r6 = (v) => Math.round(v * 1e6) / 1e6;
+        return trims.map((t, i) => {
+            if (t.kind === "button") return { ...t, at: map(t.at).map(r6) };
+            if (t.kind === "buttonhole") return { ...t, at: map(t.at).map(r6), angle: dir(t.angle) };
+            if (arcs.has(i)) { const [from, to] = arcs.get(i); return { ...t, from: r6(from), to: r6(to) }; }
+            return t;
+        });
     }
     // Clipboard pieces ([{node, path}]) through m6: what a paste places. -> [{path, internal, notches, grain}]
     piecesThrough(pieces, m6) { return pieces.map((p) => this.pieceThrough(p.node, p.path, m6)); }
@@ -1694,6 +1730,93 @@ export class Atelier {
     pleatPreview(id, spec, remove = null) {
         if (this.open) this.preview([]);
         this.preview(this.pleatOps(id, { spec, remove }));
+    }
+
+    // ---- trims (S3 spec §1, §7) ----
+    // Garment `g`'s trims by kernel id -> where the document keeps them: {kind: "trim", id
+    // (pattern node), index (in its `trims`)}, {kind: "zipper", id (seam node)} or {kind: "tack",
+    // id (the fastening's tack node)}. The garment numbers them afresh at each evaluation: each
+    // pattern's in `patterns` order, then the zippers, then the fastenings (kinds/garment.rs).
+    trimRefs(g = this.g, nodes = this.nodes()) {
+        const refs = new Map(), gn = m.byId(nodes).get("garment");
+        if (!g || !gn) return refs;
+        const kp = Array.from(this.f("garment_patterns")(g));
+        const patternNode = new Map(kp.map((k, i) => [k, gn.patterns[i]]));
+        const seamNode = new Map(Array.from(this.f("garment_seams")(g)).map((k, i) => [k, gn.seams[i]]));
+        const tackNode = new Map(this.tackRows(g).map((r, i) => [r.id, (gn.tacks ?? [])[i]]));
+        const raw = this.f("garment_trims")(g), count = new Map();
+        for (let i = 0; i + 14 < raw.length; i += 15) {
+            const id = raw[i], kind = raw[i + 1];
+            if (kind <= 2) {
+                const p = patternNode.get(raw[i + 2]), k = count.get(p) ?? 0;
+                count.set(p, k + 1);
+                refs.set(id, { kind: "trim", id: p, index: k });
+            } else if (kind === 4) refs.set(id, { kind: "zipper", id: seamNode.get(raw[i + 2]) });
+            else if (kind === 3) refs.set(id, { kind: "tack", id: tackNode.get(raw[i + 4]) });
+        }
+        return refs;
+    }
+    // The trims as the kernel lays them out (garment_trim_instances), for the 2D window: {instances:
+    // [{ref, pattern (node id), x, y, angle, offset, template, size: [3], colour: [3], mass}],
+    // skipped: [{ref, issue}]} (the trims that no longer fit). Kept until the next evaluation.
+    trimLayout() {
+        if (!this.g) return { instances: [], skipped: [] };
+        if (this.layoutCache?.gen === this.evalGen) return this.layoutCache.layout;
+        const nodes = this.nodes(), gn = m.byId(nodes).get("garment"), refs = this.trimRefs(this.g, nodes);
+        const kp = Array.from(this.f("garment_patterns")(this.g)), patternNode = new Map(kp.map((k, i) => [k, gn.patterns[i]]));
+        const raw = this.f("garment_trim_instances")(this.g, ACC), instances = [];
+        for (let r = 0; r + 13 < raw.length; r += 14) {
+            instances.push({ ref: refs.get(raw[r]) ?? null, pattern: patternNode.get(raw[r + 1]), x: raw[r + 2], y: raw[r + 3], angle: raw[r + 4], offset: raw[r + 5],
+                template: raw[r + 6], size: [raw[r + 7], raw[r + 8], raw[r + 9]], colour: [raw[r + 10], raw[r + 11], raw[r + 12]], mass: raw[r + 13] });
+        }
+        const sk = this.f("garment_trim_skipped")(this.g, ACC), skipped = [];
+        for (let i = 0; i + 1 < sk.length; i += 2) skipped.push({ ref: refs.get(sk[i]) ?? null, issue: sk[i + 1] });
+        const layout = { instances, skipped };
+        this.layoutCache = { gen: this.evalGen, layout };
+        return layout;
+    }
+    // A new trim (the tools' request, trims.js): checked by the kernel's own garment_add_* (or
+    // garment_fasten) on a scratch copy of the garment as evaluated, so a refusal (off the piece, a
+    // hole too small for its button, already fastened...) says why and changes nothing; then the
+    // document ops that write it. `req`: {action: "add", id, record} | {action: "fasten", button:
+    // {id, index}, hole: {id, index}} | {action: "zipper", seam, zipper}. -> ops for one commit
+    trimOps(req) {
+        const nodes = this.nodes(), gn = m.byId(nodes).get("garment");
+        if (!this.g || !gn) throw new Error("no garment: draw a piece first");
+        const s = this.f("document_result_garment")(this.d, "garment");
+        try {
+            const kp = Array.from(this.f("garment_patterns")(s));
+            const pid = (id) => { const i = gn.patterns.indexOf(id); if (i < 0) throw new Error(`no pattern ${id}`); return kp[i]; };
+            const rgb = (c) => [c[0], c[1], c[2]];
+            if (req.action === "add") {
+                const t = req.record, p = pid(req.id);
+                if (t.kind === "topstitch" && t.on === "internal")
+                    this.f("garment_add_topstitch_internal")(s, p, t.index, t.stitch_length, t.thread, t.rows, t.gap, ...rgb(t.colour), ACC);
+                else if (t.kind === "topstitch")
+                    this.f("garment_add_topstitch_outline")(s, p, t.from, t.to, t.loop ?? 0, t.offset, t.stitch_length, t.thread, t.rows, t.gap, ...rgb(t.colour), ACC);
+                else if (t.kind === "button") this.f("garment_add_button")(s, p, t.at[0], t.at[1], t.diameter, t.thickness, t.holes, ...rgb(t.colour), t.mass, ACC);
+                else if (t.kind === "buttonhole") this.f("garment_add_buttonhole")(s, p, t.at[0], t.at[1], t.angle, t.length, ...rgb(t.colour), ACC);
+                else throw new Error(`no trim kind ${t.kind}`);
+                return T.addTrimOps(nodes, req.id, t).ops;
+            }
+            if (req.action === "fasten") {
+                const byRef = new Map([...this.trimRefs(s, nodes)].filter(([, r]) => r.kind === "trim").map(([k, r]) => [`${r.id}/${r.index}`, k]));
+                const b = byRef.get(`${req.button.id}/${req.button.index}`), h = byRef.get(`${req.hole.id}/${req.hole.index}`);
+                if (b === undefined || h === undefined) throw new Error("fasten: that button or buttonhole is gone");
+                const ops = T.fastenOps(nodes, req.button, req.hole).ops;      // the app's own checks first: already fastened, kinds
+                this.f("garment_fasten")(s, b, h, ACC);
+                return ops;
+            }
+            if (req.action === "zipper") {
+                const i = gn.seams.indexOf(req.seam);
+                if (i < 0) throw new Error(`no seam ${req.seam}`);
+                const sid = Array.from(this.f("garment_seams")(s))[i], z = req.zipper;
+                if (m.byId(nodes).get(req.seam)?.zipper) throw new Error("that seam has a zipper: select the seam to edit it");
+                this.f("garment_add_zipper")(s, sid, z.tape_width, z.tooth_pitch, z.tooth_mass, z.stiffness, ...rgb(z.colour), ACC);
+                return T.zipperOps(req.seam, z);
+            }
+            throw new Error(`no trim action ${req.action}`);
+        } finally { this.f("garment_free")(s); }
     }
 
     toDxf() { return this.f("garment_to_aama")(this.g, 0.1, null); }

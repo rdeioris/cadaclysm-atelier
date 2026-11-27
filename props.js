@@ -9,6 +9,7 @@ import { materialFields, validateMaterial, materialOps, isMaterialKey } from "./
 import { groupOf, membersOf, groupRanges, ungroupOps } from "./seamgroup.js";
 import { loopSides, loopOf, withLoop } from "./sewing.js";
 import { gradingOf, gradeOf, ruleOf } from "./grading.js";
+import { trimFields, zipperFields, trimValidate, trimSetOps } from "./trims.js";
 
 const find = (nodes, id) => nodes.find((n) => n.id === id);
 // The notch kinds the kernel draws (spec §5), in its order, as the panel names them.
@@ -68,6 +69,8 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
     }
     // an internal line, a tack: the simulation's (simprops.js)
     if (SIM_KINDS.has(selection.kind)) return simFields(selection, n, nodes);
+    // a trim on a piece (S3): its own rows
+    if (selection.kind === "trim") return trimFields(selection, n, nodes);
     if (selection.kind === "pattern") {
         const fabrics = nodes.filter((x) => x.kind === "garment.fabric").map((f) => ({ value: f.id, label: f.label ?? f.id }));
         const placed = nodes.filter((x) => x.kind === "garment.pattern" && x.id !== n.id && x.frame && x.frame !== "xy");
@@ -126,6 +129,7 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
             ...["a_from", "a_to", "b_from", "b_to"].map((key) => ({ key, label: key.replace("_", " "), unit: "mm", type: "number", value: n[key] })),
             { key: "reversed", label: "Reversed", unit: "", type: "select", value: n.reversed ? "true" : "false", options: yesNo },
             ...simFields(selection, n, nodes),
+            ...zipperFields(n),
             { key: "remove", label: "Remove seam", unit: "", type: "action", value: null },
         ];
     }
@@ -149,6 +153,8 @@ export function fieldsFor(selection, nodes, drawings, avatar = null, looks = {})
 
 // An error message when `value` cannot go into field `key` (what the kernel would reject), else null.
 export function validate(selection, nodes, key, value) {
+    const trim = trimValidate(selection, nodes, key, value);
+    if (trim !== undefined) return trim;
     const sim = simValidate(selection, nodes, key, value);
     if (sim !== undefined) return sim;
     const num = (v) => typeof v === "number" && Number.isFinite(v);
@@ -252,6 +258,8 @@ export function transformMatrix(key, value, bounds) {
 // library) for a fabric's Material section.
 export function opsFor(selection, nodes, key, value, ctx = {}) {
     const id = selection.id;
+    const trim = trimSetOps(selection, nodes, key, value);
+    if (trim) return trim;
     const sim = simOps(selection, nodes, key, value);
     if (sim) return sim;
     if (selection.kind === "pattern") {

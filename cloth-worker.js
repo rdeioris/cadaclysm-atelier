@@ -27,11 +27,16 @@ let map = null, mapAt = -Infinity;   // the fit map ({code, min, max}) and when 
 const text = (e) => String(e && e.message ? e.message : e);
 const send = (msg, transfer) => port.postMessage(msg, transfer ?? []);
 
+// The trims (S3) ride along: their mesh with a new topology, their vertices (cloth_trim_vertices:
+// positions then normals) with it and with every frame; the View's worker draws them as one mesh.
 function topology() {
     const t = drape.topology();
     const positions = drape.positions();
-    send({ kind: "topology", ...t, positions, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, stale: drape.stale },
-        [t.triangles.buffer, t.vertexPatterns.buffer, t.links.buffer, t.starts.buffer, positions.buffer]);
+    const trims = drape.trimMesh(), trimVertices = trims ? drape.trimVertices() : null;
+    const extra = trims ? [trims.indices.buffer, trimVertices.buffer, ...(trims.colours ? [trims.colours.buffer, trims.groups.buffer] : [])] : [];
+    send({ kind: "topology", ...t, positions, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, stale: drape.stale,
+        trims, trimVertices, trimNotes: drape.trimNotes },
+        [t.triangles.buffer, t.vertexPatterns.buffer, t.links.buffer, t.starts.buffer, positions.buffer, ...extra]);
     colours(true);
 }
 // The fit map's colours and values (fitmap.js), at most every MAP_EVERY_MS unless `now`; null colours: the map is off.
@@ -45,9 +50,9 @@ function colours(now = false) {
     send({ kind: "colours", colours: c, values }, [c.buffer, values.buffer]);
 }
 function frame(health, ms) {
-    const positions = drape.positions();
-    send({ kind: "frame", positions, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, health, ms, running, stale: drape.stale },
-        [positions.buffer]);
+    const positions = drape.positions(), trims = drape.trimVertices();
+    send({ kind: "frame", positions, trims, pins: drape.pinPositions(positions), status: drape.status(), phase: drape.phase, health, ms, running, stale: drape.stale },
+        trims ? [positions.buffer, trims.buffer] : [positions.buffer]);
     colours();
 }
 function state(extra = {}) { send({ kind: "state", running, live: !!drape?.live, stale: drape?.stale ?? null, ...extra }); }

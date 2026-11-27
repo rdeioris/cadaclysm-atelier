@@ -26,6 +26,7 @@ import { filmCommand } from "./film.js";
 import { valueAt, recolourMeshes, BurstCache } from "./fitmap.js";
 import { TapeMeasures } from "./tape3d.js";
 import { tackSpecs } from "./simtools.js";
+import { trimSpecs } from "./trims.js";
 import { pinOps } from "./simprops.js";
 import { concatParts, positionsBox, specKey } from "./dressform.js";
 import { importImage, imageIndex, imageReader } from "./materials.js";
@@ -80,7 +81,40 @@ const sim = {
     lastMs: null,                        // the last reported frame's step time
     stops: 0,                            // how many times the cloth has said it stopped
     drawn: null,                         // film: the View's framesDrawn after it drew the last stop
+    trimsItem: 0,                        // the CPU trims' mesh item (S3), 0 when none
+    trimVerts: null,                     // its last vertices (positions then normals)
+    trimsGpu: false,                     // the GPU cloth draws its trims itself (showClothTrims)
 };
+
+// The trims as the CPU path draws them (S3 §7): one mesh, the View's plain look, the zipper's
+// metal parts glossy (the View's showClothTrims metal set, estimated values).
+const TRIM_PLAIN = { roughnessFactor: 0.8 }, TRIM_METAL = { roughnessFactor: 0.3, sheen: [0.6, 0.6, 0.6], sheenRoughness: 0.35 };
+function removeTrims() {
+    if (sim.trimsItem) viewer.remove(sim.trimsItem);
+    sim.trimsItem = 0; sim.trimVerts = null; sim.trimsGpu = false;
+}
+function showTrims(mesh, verts) {
+    removeTrims();
+    if (!mesh || !verts) return;
+    const n = mesh.vertices;
+    const spec = { positions: verts.subarray(0, 3 * n), normals: verts.subarray(3 * n, 6 * n), indices: mesh.indices, colour: "#3a3a3c" };
+    if (mesh.colours) spec.colours = mesh.colours;
+    if (mesh.metal && mesh.groups) { spec.uvs = new Float32Array(2 * n); spec.material = { textures: [], groups: mesh.groups, sets: [TRIM_PLAIN, TRIM_METAL] }; }
+    try { sim.trimsItem = viewer.showMesh(spec); }
+    catch (e) {
+        // a View that takes no plain material: the trims in their colours, unlit metal
+        delete spec.material; delete spec.uvs;
+        sim.trimsItem = viewer.showMesh(spec);
+        post({ kind: "status", text: `trims drawn plain: ${e.message ?? e}` });
+    }
+    sim.trimVerts = verts;
+}
+function moveTrims(verts) {
+    if (!sim.trimsItem || !verts) return;
+    const n = verts.length / 6;
+    viewer.setMeshPositions(sim.trimsItem, verts.subarray(0, 3 * n), verts.subarray(3 * n, 6 * n));
+    sim.trimVerts = verts;
+}
 let dragging = null;                     // { vertex, start, x, y, basis } while a cloth drag is on
 let fitmap = null;                       // the fit map ({key, code, min, max}) the engines draw, or null
 const mapCache = new BurstCache();       // the GPU cloth's map values, read once per hover burst
@@ -179,7 +213,8 @@ function refresh2d() {
     const nest = sizeNest(nodes);
     const drawings = atelier.drawings();
     items2d.apply([...specs2d({ drawings, seams: atelier.seams(), nodes, selection, pointSel, ipointSel, hover: hover2d, colours: fabricColours(nodes), xform: tool2d === "transform", mmPerPx: scale, nest,
-        prints: (d, z) => printSpecs(d, nodes, (id) => looks.bitmap(id), z) }), ...tackSpecs({ nodes, drawings, selection })]);
+        prints: (d, z) => printSpecs(d, nodes, (id) => looks.bitmap(id), z) }), ...tackSpecs({ nodes, drawings, selection }),
+        ...trimSpecs({ layout: atelier.trimLayout(), drawings, selection, nodes })]);
     post({ kind: "scene2d", items: items2d.byKey.size, hover: hover2d, nest: nest.map((g) => `${g.id}:${g.size}`).join(",") });
 }
 
@@ -307,6 +342,7 @@ function removeCloth() {
     for (const m of sim.meshes) { if (!m.gpu) viewer.remove(m.item); items.items.delete(m.item); }
     sim.meshes = [];
     if (sim.pinsItem) { viewer.remove(sim.pinsItem); sim.pinsItem = 0; }
+    removeTrims();
     sim.positions = null; sim.pins = null; sim.health = null; sim.status = null; sim.lastMs = null;
     sim.mapColours = sim.mapValues = sim.triangles = null;
     sim.topology = null; sim.lookSig = null;
@@ -347,6 +383,10 @@ function onTopology(t) {
         sim.meshes.push({ item, id, verts: g.verts, indices: g.indices, buf, colour, look: piece });
         items.set(item, { kind: "pattern", id });
     }
+    // the trims (S3): the GPU cloth's are its own item (gpu.trims); the CPU's a mesh moved each frame
+    showTrims(t.trims ?? null, t.trimVertices ?? null);
+    sim.trimsGpu = !!t.gpu?.trims;
+    if (t.trimNotes?.length) post({ kind: "status", text: t.trimNotes.join("; ") });
     sim.positions = t.positions; sim.pins = t.pins; sim.status = t.status; sim.phase = t.phase;
     sim.health = healthOf(t.status, t.phase);
     sim.stale = t.stale ?? null;
@@ -390,6 +430,7 @@ function onFrame(f) {
     sim.positions = f.positions ?? sim.positions; sim.pins = f.pins; sim.status = f.status; sim.phase = f.phase;
     if (f.health) { sim.health = f.health; sim.lastMs = f.ms; sim.rate.add(performance.now(), f.ms); }
     if (f.positions) for (const m of sim.meshes) viewer.setMeshPositions(m.item, gather(f.positions, m.verts, m.buf), null);
+    if (f.trims) moveTrims(f.trims);
     showPins();
     simPost();
 }
@@ -400,6 +441,7 @@ function onCloth({ data: m }) {
             case "hello": if (avatarCollider) clothPort.postMessage({ kind: "avatar", avatar: avatarCollider }); break;
             case "topology": onTopology(m); break;
             case "frame": onFrame(m); break;
+            case "trims": moveTrims(m.vertices); break;      // the GPU cloth's trims drawn by the CPU (gpu-drape.js)
             case "colours": onColours(m); break;
             case "pinned": post({ kind: "status", text: m.on ? "pinned" : "unpinned" }); savePin(m); break;
             case "state":
@@ -424,6 +466,22 @@ function savePin(m) {
     if (!ops.length) return;
     atelier.apply(ops, m.on ? "pin" : "unpin");
     changed();
+}
+
+// {engine, item, vertices, sum: [x, y, z], first: [x, y, z]} of the trims drawn on the cloth, or
+// null when none are.
+async function trimProbe() {
+    let item = sim.trimsItem, verts = sim.trimVerts;
+    if (clothEngine === "gpu" && clothPort?.trimProbe) {
+        const g = await clothPort.trimProbe();
+        if (!g) return null;
+        if (g.item) item = g.item;
+        verts = g.vertices;
+    }
+    if (!item || !verts) return null;
+    const n = verts.length / 6, sum = [0, 0, 0];
+    for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) sum[k] += verts[3 * i + k];
+    return { engine: clothEngine, item, vertices: n, sum, first: Array.from(verts.subarray(0, 3)) };
 }
 
 function simCommand(action, data = {}) {
@@ -770,7 +828,7 @@ function answer(data, make) {
 
 // The messages that change the document; each answers with `doc` (see changed()).
 const CHANGES = new Set(["ops", "preview", "endPreview", "undo", "redo", "open", "new", "importDxf", "cut", "trace", "fillet", "point", "unfold", "foldBack", "form", "size", "sizes", "grade",
-    "dart", "pleat", "dartPreview", "pleatPreview"]);
+    "dart", "pleat", "dartPreview", "pleatPreview", "trim"]);
 
 self.onmessage = async ({ data }) => {
     try {
@@ -887,6 +945,14 @@ self.onmessage = async ({ data }) => {
                 break;
             }
             case "pleatPreview": atelier.pleatPreview(data.id, data.spec, data.group ?? null); changed(data.seq); break;
+            // a trim (S3): the kernel checks it on a scratch garment, one batch writes it; a refusal
+            // changes nothing and names the fault
+            case "trim": {
+                if (atelier.previewing) atelier.endPreview(false);
+                atelier.commit(atelier.trimOps(data), data.action === "fasten" ? "fasten" : data.action === "zipper" ? "add zipper" : `add ${data.record?.kind ?? "trim"}`);
+                changed(data.seq);
+                break;
+            }
             // grading (A3): a size switch, a size table change, a grade rule set; one batch each,
             // the seams that lose their side named
             case "size": case "sizes": case "grade": {
@@ -912,6 +978,13 @@ self.onmessage = async ({ data }) => {
             case "pickRect": answer(data, () => (rects && items2d ? boxSelect(data) : { indices: [], ids: [] })); break;
             case "save": post({ kind: "saved", text: atelier.save() }); break;
             case "viewStats": answer(data, () => viewer.stats()); break;
+            // the trims on the cloth (S3), for the browser check: the item that draws them and their
+            // vertices now (the GPU's read back through the kernel cloth), summed
+            case "trimProbe": {
+                try { post({ kind: "path", reqId: data.reqId, path: await trimProbe() }); }
+                catch (e) { post({ kind: "error", reqId: data.reqId, text: String(e?.message ?? e) }); }
+                break;
+            }
             // an image file for a fabric map or a print (materials.js): its id and the op storing it
             case "importImage": {
                 try { post({ kind: "path", reqId: data.reqId, path: await importImage(new Uint8Array(data.bytes), data.mime, data.name) }); }

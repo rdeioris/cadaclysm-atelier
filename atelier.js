@@ -24,6 +24,7 @@ import { FitMap, MAPS, Latest, renderLegend, valueText } from "./fitmap.js";
 import { TapeTool, cmText } from "./tape3d.js";
 import { SimPanel } from "./simpanel.js";
 import { s2Request, isS2Key, groupOfLine, pleatFields } from "./pleats.js";
+import { trimDefaults, trimName, trimsOf, rememberTrim, isZipperKey } from "./trims.js";
 import { CUSTOM, draftFrom, bodyCommit, isBodyKey } from "./bodypanel.js";
 import { loadLibrary, imageSlotOf, IMAGE_ACCEPT } from "./materials.js";
 
@@ -54,6 +55,7 @@ let toolKeep = {};            // what a tool keeps while it stays armed (the Rul
 let previewing = false, previewPattern = null;
 let rotateDart = null;        // the dart Rotate… moves ({id, index}), the dart-rotate tool's target
 const pleatNext = {};         // the Pleat tool's depth, kind, facing and top tack last added
+const trimNext = trimDefaults();   // the trim tools' numbers (S3): a panel edit of a trim sets its kind's
 let selSeq = 0;               // bumped by every selection change; a `picked` older than it is dropped
 let seq = 0;                  // the `seq` of the last doc-changing message sent
 let fitNext = false;
@@ -72,6 +74,9 @@ const film = filmMode ? createFilm({
     nextPaint: () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
 }) : null;
 if (film) window.atelierFilm = film.film;
+// The trims drawn on the cloth (S3), for the browser check: {engine, item, vertices, sum, first}
+// (the GPU's read back through the kernel cloth), or null when none are drawn.
+window.atelierTrims = () => request("trimProbe");
 function startClothWorker() {
     const clothWorker = new Worker(new URL("./cloth-worker.js", import.meta.url), { type: "module" });
     const ch = new MessageChannel();
@@ -146,6 +151,7 @@ function exists(sel) {
     if (sel.kind === "avatar") return !!avatar;
     if (sel.kind === "internal") return !!nodes.find((n) => n.id === sel.id)?.internal?.[sel.index];
     if (sel.kind === "notch") return !!nodes.find((n) => n.id === sel.id)?.notches?.[sel.index];
+    if (sel.kind === "trim") return !!nodes.find((n) => n.id === sel.id)?.trims?.[sel.index];
     return nodes.some((n) => n.id === sel.id);
 }
 function setSelection(sel) {
@@ -213,7 +219,7 @@ const parseField = (f, raw) => {
     if (f.type === "numbers") return raw.split(/[\s,;]+/).filter(Boolean).map(Number);
     return raw;
 };
-const TITLES = { pattern: "Pattern", seam: "Seam", group: "Seam group", fabric: "Fabric", avatar: "Avatar", notch: "Notch", internal: "Internal line on", tack: "Tack" };
+const TITLES = { pattern: "Pattern", seam: "Seam", group: "Seam group", fabric: "Fabric", avatar: "Avatar", notch: "Notch", internal: "Internal line on", tack: "Tack", trim: "Trim" };
 function commitField(f, raw) {
     if (!selection) return;
     // a user's STEP called like a form has no landmarks: choosing that form loads the real one
@@ -239,6 +245,13 @@ function commitField(f, raw) {
     try {
         const ops = opsFor(selection, nodes, f.key, value, { avatarBounds: avatar?.bounds, landmarks: avatar?.landmarks ?? null, drawings, weaves: looks.weaves });
         if (ops.length) change("ops", { ops, message: f.type === "action" ? f.label.toLowerCase() : `set ${f.key}` });
+        // a trim's numbers (S3) are also its tool's next; a removed trim leaves its piece selected
+        if (selection.kind === "trim") {
+            const t = trimsOf(nodes.find((x) => x.id === selection.id))[selection.index];
+            if (t) rememberTrim(trimNext, t.kind, f.key, value);
+            if (f.key === "remove") { setSelection({ kind: "pattern", id: selection.id }); status("removed the trim"); return; }
+        }
+        if (selection.kind === "seam" && isZipperKey(f.key)) rememberTrim(trimNext, "seam", f.key, value);
         // an ungrouped M:N group: its first seam stays selected, as a plain seam
         if (selection.kind === "seam" && f.key === "ungroup") { const id = selection.id; selection = { kind: "seam", id }; post({ kind: "select", selection }); }
         status(f.type === "action" ? f.label : `${f.label}: set`);
@@ -362,6 +375,7 @@ function renderProps() {
     if (!fields.length) { el.innerHTML = '<p class="dim">Nothing selected</p>'; return; }
     const h = document.createElement("h3");
     h.textContent = selection.kind === "notch" ? `Notch ${selection.index + 1} on ${n.label ?? n.id}`
+        : selection.kind === "trim" ? `${trimName(n, selection.index)} on ${n.label ?? n.id}`
         : selection.kind === "seam" && groupOf(n) ? `${TITLES.group} ${groupOf(n).id}`
         : `${TITLES[selection.kind]} ${selection.kind === "avatar" ? "" : n.label ?? n.id}`.trim();
     const dl = document.createElement("dl");
@@ -556,6 +570,15 @@ function removeSelected() {
         s2Commit("pleat_remove", null);
         return true;
     }
+    // a trim (S3): a fastened button or buttonhole takes its fastening's tack
+    if (selection?.kind === "trim" && exists(selection)) {
+        cancelPreview();
+        const name = trimName(nodes.find((n) => n.id === selection.id), selection.index).toLowerCase();
+        change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${name}` });
+        status(`removed the ${name.replace(/ \d+$/, "")}`);
+        setSelection({ kind: "pattern", id: selection.id });
+        return true;
+    }
     if (selection && (selection.kind === "tack" || selection.kind === "internal") && exists(selection)) {
         cancelPreview();
         change("ops", { ops: opsFor(selection, nodes, "remove", null), message: `remove ${selection.kind === "tack" ? "tack" : "line"}` });
@@ -607,6 +630,7 @@ function freshTool() {
         get pxToWorld() { return mmPerPx * dprNow(); },
         get rotateDart() { return rotateDart; },
         pleatNext,
+        trimNext,
         keep: toolKeep,
     };
     tool = makeTool(toolName, ctx);
@@ -688,6 +712,8 @@ function handle(r) {
     // darts and pleats (S2): the kernel's edit as one batch, or a preview frame of it
     if (r.dart) change("dart", r.dart);
     if (r.pleat) change("pleat", r.pleat);
+    // a trim (S3): checked by the kernel, written as one batch (kernel.js trimOps)
+    if (r.trim) change("trim", r.trim);
     if (r.dartPreview) { previewing = true; previewPattern = null; change("dartPreview", r.dartPreview); }
     if (r.pleatPreview) { previewing = true; previewPattern = null; change("pleatPreview", r.pleatPreview); }
     if (r.panel) renderProps();

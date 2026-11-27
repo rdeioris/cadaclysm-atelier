@@ -3,6 +3,10 @@
 // View: positions, triangles and status come out as plain typed arrays.
 import { garmentChange, sewingDone, healthOf, frameOps, frozenChanges, optionsChanged } from "./drape.js";
 import { outlineStarts } from "./materials.js";
+import { TemplateCache } from "./trimgeo.js";
+import { lookKey, isMetal } from "./trims.js";
+
+const TRIM_ACC = 1e-6;     // garment_trim_instances' accuracy (kernel.js ACC)
 
 const batch = (ops) => JSON.stringify({ op: "batch", ops });
 
@@ -20,6 +24,9 @@ export class Drape {
         this.offsets = new Map();   // pattern id -> [dx, dy] it moved in 2D since the cloth was built
         this.gravity = null;
         this.user = null;           // the garment's options (its saved ones over the defaults): 20 doubles
+        this.trims = null;          // the trims set on the cloth (trimArrays), or null
+        this.trimNotes = [];        // why trims were left off at the last build or re-mesh
+        this.templates = new TemplateCache();
     }
 
     // A document from its saved text, with a preview's ops on top (a 2D drag under way),
@@ -82,8 +89,81 @@ export class Drape {
         this.pins.clear();
         this.offsets.clear();
         this.savedPins();
+        this.setTrims();
         this.maybeDrape();
     }
+
+    // ---- trims (S3 spec §3, §7) ----
+    // Garment `g`'s trims laid out (garment_trim_instances: only the trims that fit) as the cloth
+    // takes them: {placements (8 numbers each: trim, pattern, x, y, angle, offset, template, mass),
+    // templates (flat {n, positions, normals, m, indices} each), colours (three a template),
+    // metallic (one a template), meshes, trimIds (each placement's trim)}; null without trims.
+    // Templates are trimgeo.js's blacksmith meshes, one per kind, size and colour (showClothTrims
+    // colours and metals by template).
+    trimArrays(g) {
+        const rows = this.f("garment_trim_instances")(g, TRIM_ACC), n = Math.floor(rows.length / 14);
+        if (!n) return null;
+        const meshes = [], keys = new Map(), colours = [], metallic = [];
+        const placements = new Float64Array(n * 8), trimIds = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            const r = i * 14, key = lookKey(rows, r);
+            if (!keys.has(key)) {
+                keys.set(key, meshes.length);
+                meshes.push(this.templates.get(this.k, rows[r + 6], [rows[r + 7], rows[r + 8], rows[r + 9]]));
+                colours.push(rows[r + 10], rows[r + 11], rows[r + 12]);
+                metallic.push(isMetal(rows[r + 6]));
+            }
+            placements.set([rows[r], rows[r + 1], rows[r + 2], rows[r + 3], rows[r + 4], rows[r + 5], keys.get(key), rows[r + 13]], i * 8);
+            trimIds[i] = rows[r];
+        }
+        let size = 0;
+        for (const m of meshes) size += 2 + m.positions.length * 2 + m.indices.length;
+        const templates = new Float64Array(size);
+        let o = 0;
+        for (const m of meshes) {
+            templates[o++] = m.positions.length / 3;
+            templates.set(m.positions, o); o += m.positions.length;
+            templates.set(m.normals, o); o += m.normals.length;
+            templates[o++] = m.indices.length;
+            templates.set(m.indices, o); o += m.indices.length;
+        }
+        return { placements, templates, colours: Float32Array.from(colours), metallic, meshes, trimIds, dropped: new Set(), own: true };
+    }
+    // The garment's trims onto the new cloth, before its first step (cloth_set_trims). A refusal
+    // keeps the cloth without trims and says why (trimNotes).
+    setTrims() {
+        this.trims = null; this.trimNotes = [];
+        let t;
+        try { t = this.trimArrays(this.g); } catch (e) { this.trimNotes = [`trims not drawn: ${e.message ?? e}`]; return; }
+        if (!t) return;
+        try { this.f("cloth_set_trims")(this.h, t.placements, t.templates); this.trims = t; }
+        catch (e) { this.trimNotes = [`trims not set: ${e.message ?? e}`]; }
+    }
+    // The trims' mesh as the CPU path draws it: {indices, colours (three a vertex), groups (0
+    // plain, 1 metal, one a vertex), metal, vertices}; null without trims. The cloth places every
+    // placement's template vertices in order (the dropped trims' left out).
+    trimMesh() {
+        if (!this.trims || !this.h) return null;
+        const count = this.f("cloth_trim_vertex_count")(this.h);
+        if (!count) return null;
+        const t = this.trims, indices = Uint32Array.from(this.f("cloth_trim_indices")(this.h));
+        const colours = new Float32Array(count * 3), groups = new Uint16Array(count);
+        let v = 0;
+        for (let i = 0; i < t.trimIds.length; i++) {
+            if (t.dropped.has(t.trimIds[i])) continue;
+            const slot = t.placements[i * 8 + 6], nv = t.meshes[slot].positions.length / 3;
+            if (v + nv > count) { v = -1; break; }
+            for (let j = 0; j < nv; j++, v++) {
+                colours.set(t.colours.subarray(slot * 3, slot * 3 + 3), v * 3);
+                groups[v] = t.metallic[slot] ? 1 : 0;
+            }
+        }
+        // another vertex order than the placements': one colour, plain
+        if (v !== count) return { indices, colours: null, groups: null, metal: false, vertices: count };
+        return { indices, colours, groups, metal: t.metallic.some(Boolean), vertices: count };
+    }
+    // Every trim vertex placed for the current positions: positions (xyz) then normals; null without trims.
+    trimVertices() { return this.trims && this.h ? this.f("cloth_trim_vertices")(this.h) : null; }
     get live() { return this.h !== 0; }
 
     // Gravity on once sewing is done (see sewingDone).
@@ -151,7 +231,18 @@ export class Drape {
         try {
             if (change.kind === "remesh") {
                 try {
-                    for (const id of change.patterns) this.f("cloth_remesh_pattern")(this.h, this.g, this.kernelPattern(id));
+                    // a cloth with trims, or a garment that has some, re-meshes with the edited garment's
+                    // trims laid out afresh (the ones that no longer fit dropped and named)
+                    const t = this.trims || this.f("garment_trim_instances")(this.g, TRIM_ACC).length ? this.trimArrays(this.g) : null;
+                    if (t || this.trims) {
+                        const none = new Float64Array(0);
+                        for (const id of change.patterns) this.f("cloth_remesh_pattern_trims")(this.h, this.g, this.kernelPattern(id), t?.placements ?? none, t?.templates ?? none);
+                        this.trims = t;
+                        this.trimNotes = [];
+                        const skipped = Array.from(this.f("cloth_skipped_trims")(this.h));
+                        skipped.forEach((id, i) => { t?.dropped.add(id); this.trimNotes.push(`trim dropped: ${this.f("cloth_skipped_trim_reason")(this.h, i)}`); });
+                        if (t) t.own = false;       // the cloth's own now: the View checks against those
+                    } else for (const id of change.patterns) this.f("cloth_remesh_pattern")(this.h, this.g, this.kernelPattern(id));
                 } catch (e) {
                     this.stale = `re-mesh refused: ${e.message ?? e}`;
                     throw e;
@@ -220,6 +311,6 @@ export class Drape {
     // Pull `v` towards `target` (xyz, mm); null lets go.
     drag(v, target) { this.f("cloth_drag")(this.h, v, target ? Float64Array.from(target) : undefined); }
 
-    freeCloth() { if (this.h) { this.f("cloth_free")(this.h); this.h = 0; } this.pins.clear(); }
+    freeCloth() { if (this.h) { this.f("cloth_free")(this.h); this.h = 0; } this.pins.clear(); this.trims = null; }
     free() { this.freeCloth(); this.swap({ d: 0, g: 0, nodes: [] }); }
 }

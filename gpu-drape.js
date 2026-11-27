@@ -86,6 +86,8 @@ function taskYielder() {
 // weld order), against a stiff constraint (ten times the sewing stiffness closes 0.3 mm of it).
 // Such a cloth gets STALL_WELD times the weld distance, once, until the drape.
 export const STALL_FRAMES = 5, STALL_WELD = 2;
+// The frames between two read backs of trims drawn by the CPU on a GPU cloth (showClothTrims refused).
+export const TRIM_EVERY = 10;
 
 // A Drape shown on the View: item `id`. Pins, drags and the sewing switch go through the View.
 export class GpuDrape extends Drape {
@@ -110,7 +112,26 @@ export class GpuDrape extends Drape {
         this.shownGia = !!gia;
         if (this.map) this.viewer.setClothMap(this.id, this.map);     // the fit map, kept across a re-show
         this.unstall();
+        this.showTrims();
         return this.id;
+    }
+    // The trims (S3 §7), set on the kernel cloth before showCloth (Drape.setTrims, or the re-mesh's
+    // cloth_remesh_pattern_trims): drawn by the GPU's attach pass as the cloth's own item, colour
+    // and metal by template. The View refuses where it has no compute or no vertex target: the
+    // trims are then drawn by the CPU from cloth_trim_vertices (the host reads them back now and
+    // then). The arrays given are those set_trims took; after a re-mesh the cloth's own (null).
+    showTrims() {
+        this.trimsGpu = false; this.trimsCpu = false;
+        if (!this.trims || !this.id) return;
+        const own = this.trims.own;
+        try {
+            this.viewer.showClothTrims(this.id, own ? this.trims.templates : null, own ? this.trims.placements : null,
+                { colours: this.trims.colours, metallic: this.trims.metallic });
+            this.trimsGpu = true;
+        } catch (e) {
+            this.trimsCpu = true;
+            this.trimNotes = [...this.trimNotes, `trims drawn by the CPU: ${e?.message ?? e}`];
+        }
     }
     // Before showCloth (in build) the kernel cloth is current: Drape's own switch.
     maybeDrape(health = null, frames = 0) {
@@ -216,6 +237,17 @@ export class GpuDrapeHost {
         return { positions, values: this.k.cadaclysm_blacksmith_cloth_strain(this.drape.h, code, positions) };
     }
 
+    // The trims on the cloth now (S3): {item: the GPU's trims item (clothTrimsItem: it changes on a
+    // re-show) or 0, vertices: cloth_trim_vertices after a positions read (what the attach pass
+    // writes, bit for bit)}; null without trims.
+    async trimProbe() {
+        const d = this.drape;
+        if (!d?.id || !d.trims) return null;
+        await this.viewer.clothPositions(d.id);
+        if (!d.id) return null;
+        return { item: d.trimsGpu ? this.viewer.clothTrimsItem(d.id) ?? 0 : 0, vertices: d.trimVertices() };
+    }
+
     status() {
         if (this.health) return statusFromHealth(this.health, this.frames, ...this.counts);
         const s = this.drape.status();
@@ -229,7 +261,10 @@ export class GpuDrapeHost {
         const s = d.status();
         this.counts = [s[1], s[2]];
         this.pinPoints = d.pinPositions(positions);
-        this.send({ kind: "topology", ...t, positions, pins: this.pinPoints, status: this.status(), phase: d.phase, stale: d.stale, gpu: { item: d.id } });
+        // the trims: the GPU's own item, or (refused) a mesh the View's worker draws from the vertices sent
+        const trims = d.trimsCpu ? d.trimMesh() : null;
+        this.send({ kind: "topology", ...t, positions, pins: this.pinPoints, status: this.status(), phase: d.phase, stale: d.stale, gpu: { item: d.id, trims: !!d.trimsGpu },
+            trims, trimVertices: trims ? d.trimVertices() : null, trimNotes: d.trimNotes });
     }
     frame(health, ms) {
         const d = this.drape;
@@ -314,6 +349,10 @@ export class GpuDrapeHost {
         if (d !== this.drape || d.gen !== gen) return;   // reset or re-shown meanwhile
         this.health = health0;
         this.frames += n;
+        // trims the GPU could not draw: the CPU's, from a read back every TRIM_EVERY frames
+        if (d.trimsCpu && n && this.frames % TRIM_EVERY === 0) {
+            this.viewer.clothPositions(d.id).then(() => { if (d === this.drape && d.gen === gen) this.send({ kind: "trims", vertices: d.trimVertices() }); }).catch(() => {});
+        }
         d.maybeDrape(health0, this.frames);
         d.nudgeStall(health0, this.frames);
         if (!n || !this.running) return;                 // a round trip held the frame back, or paused

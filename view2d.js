@@ -157,6 +157,9 @@ export function hitOf(what, pick, drawings, pieceAt = null, cursor = null) {
         case "internal": return { kind: "internal", id: what.id, index: what.index };
         case "hole": return holeEdge(what.id, what.index, {});
         case "tack": return { kind: "tack", id: what.id };
+        // a trim's drawing (S3, trims.js): that trim; a zipper's: its seam
+        case "trim": return { kind: "trim", id: what.id, index: what.index };
+        case "zipper": return { kind: "zipper", id: what.id, pattern: what.pattern };
         case "label": { const q = cursor ?? at; return { kind: "pattern", id: (q && pieceAt?.(q)) ?? what.id }; }
         // a notch's mark: that notch (the Edit tool selects it); other tools read it as its piece
         case "notch": return what.index === undefined ? { kind: "pattern", id: what.id } : { kind: "notch", id: what.id, index: what.index };

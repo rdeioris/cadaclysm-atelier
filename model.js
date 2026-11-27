@@ -4,6 +4,7 @@
 // (sewing.js imports addSeam from here: neither module touches the other's exports at load.)
 import { shiftAnchors, splitAnchors, mergeAnchors } from "./sewing.js";
 import { removeTacks, tacksOn } from "./tacks.js";
+import { lineRemovedOps } from "./trims.js";
 import { shiftRules } from "./grading.js";
 
 export const FABRIC_FIELDS = [
@@ -212,7 +213,7 @@ export function addInternal(nodes, id, path, kind = "line") {
 export function convertToHole(nodes, id, index) {
     const p = byId(nodes).get(id), entry = p?.internal?.[index];
     if (!entry || !isClosedPath(entry.path)) return null;
-    return [...setPattern(nodes, id, { internal: p.internal.filter((_, i) => i !== index) }), ...addHole(nodes, id, entry.path)];
+    return [...setPattern(nodes, id, { internal: p.internal.filter((_, i) => i !== index) }), ...lineRemovedOps(nodes, id, index), ...addHole(nodes, id, entry.path)];
 }
 
 // A piece traced from internal shape `path` of piece `id` (spec §4: Trace): the source's fabric,
@@ -294,6 +295,7 @@ export function pieceOps(nodes, id, r, ids = [id]) {
     if (n?.notches || r.notches?.length) fields.notches = r.notches ?? [];
     if (r.grain) fields.grain = r.grain;
     if (n?.pins?.length && r.pins) fields.pins = r.pins;
+    if (n?.trims?.length && r.trims) fields.trims = r.trims;
     let meta = n?.meta;
     if (r.unfold && meta?.atelier?.unfold) meta = atelierMeta(meta, "unfold", r.unfold);
     const link = meta?.atelier?.link;

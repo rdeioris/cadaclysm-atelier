@@ -11,6 +11,7 @@ import { pointsOf, internalPointsOf, isCurvePoint } from "./view2d.js";
 import { printTool } from "./prints.js";
 import { SIM_TOOLS, SIM_SNAPPING } from "./simtools.js";
 import { S2_TOOLS, S2_SNAPPING } from "./pleats.js";
+import { S3_TOOLS } from "./trims.js";
 import { gradingOf } from "./grading.js";
 
 export const NOTCH_DEFAULT = { kind: "slit", depth: 6 };
@@ -366,7 +367,7 @@ const POINT_SNAPS = new Set(["end", "vertex", "point", "intersection"]);
 
 // The tools that place points: snapping is on while one is armed (plan ruling 16).
 export const SNAPPING = new Set(["rectangle", "polygon", "ellipse", "internal", "internal-rectangle", "internal-ellipse", "internal-polygon",
-    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler", ...SIM_SNAPPING, ...S2_SNAPPING]);
+    "hole-rectangle", "hole-ellipse", "hole-polygon", "cut", "cut-sew", "dart", "mirror", "sym", "grain", "ruler", ...SIM_SNAPPING, ...S2_SNAPPING, "button", "buttonhole"]);
 
 const TOOLS = {
     rectangle: (ctx) => boxShape(ctx, "rectangle", newPiece(ctx)),
@@ -479,6 +480,9 @@ const TOOLS = {
                 if (h?.kind === "pattern" || (h?.kind === "internal" && h.id !== selectedId(ctx))) return { select: { kind: "pattern", id: h.id } };
                 // a tack: its own properties (the simulation's, simprops.js)
                 if (h?.kind === "tack") return { select: { kind: "tack", id: h.id } };
+                // a trim (S3): its own properties; a zipper's drawing selects its seam
+                if (h?.kind === "trim") return { select: { kind: "trim", id: h.id, index: h.index } };
+                if (h?.kind === "zipper") return { select: { kind: "seam", id: h.id } };
                 // an internal line's point or handle (drawn on the selected piece only, spec §4)
                 if (h && (h.kind === "ipoint" || h.kind === "ihandle")) {
                     const internal = nodeOf(ctx, h.id)?.internal;
@@ -862,7 +866,8 @@ const TOOLS = {
 };
 
 // A notch's mark is picked as that notch; every tool but Edit reads it as its piece.
-const asPiece = (h) => (h?.kind === "notch" ? { kind: "pattern", id: h.id } : h);
+// So is a trim's drawing (S3), and a zipper's (the piece under it); the trim tools take them as they are.
+const asPiece = (h) => (h?.kind === "notch" || h?.kind === "trim" ? { kind: "pattern", id: h.id } : h?.kind === "zipper" ? { kind: "pattern", id: h.pattern } : h);
 function piecesOnly(t) {
     for (const k of ["down", "move", "up"]) { const fn = t[k]; if (fn) t[k] = (w, h, mods) => fn.call(t, w, asPiece(h), mods); }
     return t;
@@ -871,6 +876,7 @@ export function makeTool(name, ctx) {
     if (name === "segment" || name === "free") return piecesOnly(makeSewingTool(name, ctx));
     if (Object.hasOwn(SIM_TOOLS, name)) return piecesOnly(SIM_TOOLS[name](ctx));
     if (Object.hasOwn(S2_TOOLS, name)) return piecesOnly(S2_TOOLS[name](ctx));
+    if (Object.hasOwn(S3_TOOLS, name)) return S3_TOOLS[name](ctx);
     if (name === "sewmn") return piecesOnly(makeGroupTool(ctx));
     if (!Object.hasOwn(TOOLS, name)) throw new Error(`unknown tool ${name}`);
     const t = TOOLS[name](ctx);

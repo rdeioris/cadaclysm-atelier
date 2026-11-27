@@ -6,6 +6,7 @@
 // saves exactly as before.
 import { setPattern } from "./model.js";
 import { removeTack } from "./tacks.js";
+import { lineRemovedOps, trimName } from "./trims.js";
 import { s2Fields, groupOfLine } from "./pleats.js";
 
 // An elastic's stiffness is a force per unit strain: the kernel's g·mm/s², the panel's newtons.
@@ -86,6 +87,8 @@ export function simFields(selection, n, nodes) {
             { key: "pieces", label: "Joins", unit: "", type: "readonly", value: `${label(n.a)} – ${label(n.b)}` },
             { key: "a_at", label: `At ${label(n.a)}`, unit: "mm", type: "numbers", value: n.a_at },
             { key: "b_at", label: `At ${label(n.b)}`, unit: "mm", type: "numbers", value: n.b_at },
+            // a fastening's tack (S3): the button and buttonhole it holds together
+            ...(Array.isArray(n.fastens) ? [{ key: "fastens", label: "Fastens", unit: "", type: "readonly", value: `${trimName(find(nodes, n.a), n.fastens[0])} of ${label(n.a)} – ${trimName(find(nodes, n.b), n.fastens[1])} of ${label(n.b)}` }] : []),
             { key: "remove", label: "Remove tack", unit: "", type: "action", value: null },
         ];
     }
@@ -163,7 +166,8 @@ export function simOps(selection, nodes, key, value) {
         const list = (n.internal ?? []).map((l) => ({ ...l }));
         const l = list[selection.index];
         if (!l) throw new Error("that line is gone");
-        if (key === "remove") return setPattern(nodes, id, { internal: list.filter((_, i) => i !== selection.index) });
+        // topstitch along the line goes with it, along a later line is re-pointed (S3)
+        if (key === "remove") return [...setPattern(nodes, id, { internal: list.filter((_, i) => i !== selection.index) }), ...lineRemovedOps(nodes, id, selection.index)];
         if (key === "line_kind") {
             l.kind = value;
             // a fold's angle and strength are for fold lines only (the kernel refuses them on another)
