@@ -30,6 +30,8 @@
 //     ATELIER_A2_ONLY=1 ...                              # only the A2 block (place on avatar, the gizmo), on the sample
 //     ATELIER_S2_ONLY=1 ...                              # only the S2 block (darts closed and rotated, a pleat set, simulated)
 //     ATELIER_SHOT_S2=s2.png ...                         # S2: s2-rotate.png (the hover preview), s2-pleat.png, s2-sim.png
+//     ATELIER_S3_ONLY=1 ...                              # only the S3 block (trims: topstitch, button, buttonhole, fasten, zipper, simulated)
+//     ATELIER_SHOT_S3=s3.png ...                         # S3: s3-2d.png (the trims in 2D), s3-sim.png (on the cloth)
 //     ATELIER_SHOT_GIZMO=gizmo.png ...                   # also the gizmo over the sample's Front, its X arrow hovered
 //     ATELIER_SHOT_PLACE=place.png ...                   # also a sleeve placed on an arm by Place (wrapped round it)
 //     ATELIER_SHOT_MN=mn.png ...                         # also the M:N group selected in 2D (its seams numbered)
@@ -656,6 +658,124 @@ async function check(cdp, base) {
                 await until("an empty document after the darts", async () => (await patternCount()) === 0, 30000);
                 failIfErrors();
             };
+            // S3 (trims): the T-shirt opened; the Front's hem topstitched with a click on its edge, a
+            // button and a buttonhole placed with a click each and fastened (a click on each), a
+            // zipper on the right side seam; the button picked in 2D, deleted (its fastening with it)
+            // and undone; then the garment simulates and the trims item's vertices follow the cloth.
+            // Alone: ATELIER_S3_ONLY=1; shots on ATELIER_SHOT_S3 (-2d, -sim).
+            const s3Block = async () => {
+                const saveDoc = async () => { await key("s", "KeyS", 83, 2); return JSON.parse(await takeFile("garment.json")); };
+                const nodeIn = (doc, id) => doc.nodes.find((n) => n.id === id);
+                const statusNow = () => evaluate(`document.getElementById("status-text").textContent`);
+                const simNow = () => evaluate(`document.body.dataset.sim ?? "off"`);
+                const healthNow = () => evaluate(`document.getElementById("health").textContent`);
+                const frameNow = async () => Number(/frame (\d+)/.exec(await healthNow())?.[1] ?? -1);
+                const tool = (name) => evaluate(`document.querySelector('#tools2d [data-tool=${name}]').click()`);
+                const shot = async (what) => {
+                    if (!process.env.ATELIER_SHOT_S3) return;
+                    await sleep(500); await frames();
+                    const { data } = await send("Page.captureScreenshot", { format: "png" });
+                    writeFileSync(process.env.ATELIER_SHOT_S3.replace(/(\.png)?$/i, `-${what}.png`), Buffer.from(data, "base64"));
+                    ok(`screenshot ${what}`);
+                };
+                const failing = (what) => async (e) => { throw new Error(`${what}: ${e.message}: status "${await statusNow()}"`); };
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty document for the trims", async () => (await patternCount()) === 0, 30000);
+                await pickInto("menu-open", join(root, "assets", "tshirt.json"), ".json");
+                await until("the T-shirt", async () => (await patternCount()) === 4 && (await seamCount()) === 10, 30000);
+                await tool("edit");
+                await evaluate(`document.querySelector('#tools2d [data-command=fit]').click()`);
+                await sleep(500);
+                const [ux, uy, uw, uh] = await windowBox("rect2d");
+                const P0 = [Math.round(ux + uw / 2), Math.round(uy + uh / 2)];
+                const W0 = (await hoverInfo(P0)).world, W1 = (await hoverInfo([P0[0] + 60, P0[1]])).world, W2 = (await hoverInfo([P0[0], P0[1] + 60])).world;
+                const sx = (W1[0] - W0[0]) / 60, sy = (W2[1] - W0[1]) / 60;
+                const screenOf = ([x, y]) => [P0[0] + (x - W0[0]) / sx, P0[1] + (y - W0[1]) / sy];
+                // a click at the first of `points` (pattern mm) that makes `done` true, each tried after a fresh arm of `name`
+                const clickUntil = async (name, points, done, what) => {
+                    for (const p of points) {
+                        await tool(name);
+                        await click(screenOf(p));
+                        try { await until(what, done, 4000); return p; } catch { /* the next point */ }
+                    }
+                    throw new Error(`${what}: no point took (status "${await statusNow()}")`);
+                };
+                let doc = await saveDoc();
+                // Topstitch: a click on the Front's hem (its first side, y = 280)
+                await clickUntil("topstitch", [[0, 280], [40, 280], [-60, 280]], async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 1), "the hem topstitched");
+                const ts = nodeIn(doc, "p1").trims[0];
+                if (ts.kind !== "topstitch" || ts.on !== "outline" || Math.abs(ts.from) > 1e-6 || Math.abs(ts.to - 500) > 1e-3) throw new Error(`the topstitch: ${JSON.stringify(ts)}`);
+                await noStatusError();
+                ok(`Topstitch: a click on the hem stitched its side (${ts.from.toFixed(0)}-${ts.to.toFixed(0)} mm, ${ts.offset} mm in)`);
+                // Button and Buttonhole: a click each on the Front
+                await tool("button");
+                await click(screenOf([-20, 600]));
+                await until("the button", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 2), 30000).catch(failing("the button"));
+                await tool("buttonhole");
+                await click(screenOf([20, 600]));
+                await until("the buttonhole", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 3), 30000).catch(failing("the buttonhole"));
+                const [, b, h] = nodeIn(doc, "p1").trims;
+                if (b.kind !== "button" || h.kind !== "buttonhole" || Math.hypot(b.at[0] + 20, b.at[1] - 600) > 3 || Math.hypot(h.at[0] - 20, h.at[1] - 600) > 3)
+                    throw new Error(`the button and buttonhole: ${JSON.stringify([b, h])}`);
+                await noStatusError();
+                ok(`Button (${b.diameter} mm, ${b.holes} holes, ${b.mass} g) and Buttonhole (${h.length} mm) placed with a click each`);
+                // Fasten: a click on the button's drawing, then one on the buttonhole's
+                const rim = (c, r) => [[c[0] + r, c[1]], [c[0], c[1]], [c[0] - r, c[1]], [c[0], c[1] + r], [c[0], c[1] - r]];
+                await clickUntil("fasten", rim(b.at, b.diameter / 2), async () => /now click a buttonhole/.test(await statusNow()), "the button picked");
+                let fastened = false;
+                for (const p of [h.at, [h.at[0], h.at[1] + 0.75], [h.at[0] + h.length / 2, h.at[1]], [h.at[0] - h.length / 2, h.at[1]]]) {
+                    await click(screenOf(p));
+                    try {
+                        await until("the fastening", async () => ((doc = await saveDoc()), doc.nodes.some((n) => n.kind === "garment.tack" && n.fastens)), 4000);
+                        fastened = true; break;
+                    } catch { /* the next point on the bar */ }
+                }
+                if (!fastened) throw new Error(`no fastening: status "${await statusNow()}"`);
+                const tack = doc.nodes.find((n) => n.kind === "garment.tack" && n.fastens);
+                if (tack.a !== "p1" || tack.b !== "p1" || tack.fastens.join() !== "1,2") throw new Error(`the fastening: ${JSON.stringify(tack)}`);
+                await noStatusError();
+                ok(`Fasten: a click on the button, one on the buttonhole: tack ${tack.id} fastens [${tack.fastens}]`);
+                // Zipper: a click on the Front's right side seam (s3, x = 250)
+                await clickUntil("zipper", [[250, 490], [250, 520], [250, 450]], async () => ((doc = await saveDoc()), !!nodeIn(doc, "s3").zipper), "the zipper");
+                const zip = nodeIn(doc, "s3").zipper;
+                await until("the seam selected with its zipper rows", () => evaluate(`!!${field("zipper_tooth_pitch")}`), 10000);
+                await noStatusError();
+                ok(`Zipper: a click on the side seam closed it (${zip.tooth_pitch} mm pitch, ${zip.tape_width} mm tape); its rows in the seam's panel`);
+                await evaluate(`document.getElementById("view").focus()`);
+                await key("Escape", "Escape", 27);
+                await shot("2d");
+                // the button picked in 2D: its panel; Delete takes its fastening; Ctrl+Z brings both back
+                await clickUntil("edit", rim(b.at, b.diameter / 2), () => evaluate(`/^Button 1 on Front/.test(document.querySelector("#props h3")?.textContent ?? "")`), "the button selected");
+                await evaluate(`document.getElementById("view").focus()`);
+                await key("Delete", "Delete", 46);
+                await until("the button deleted", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 2 && !doc.nodes.some((n) => n.kind === "garment.tack")), 30000).catch(failing("Delete"));
+                await key("z", "KeyZ", 90, 2);
+                await until("the button back", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 3 && doc.nodes.some((n) => n.kind === "garment.tack" && n.fastens)), 30000).catch(failing("undo"));
+                await noStatusError();
+                ok("trims in 2D: the button selected by a click, Delete removed it and its fastening, Ctrl+Z brought both back");
+                // simulate: the trims item drawn on the cloth, its vertices following it
+                await evaluate(`document.getElementById("sim-toggle").click()`);
+                await until("the cloth running", async () => (await simNow()) === "running", 120000).catch(failing("simulate"));
+                await until("two frames", async () => (await frameNow()) >= 2, 180000);
+                const p0 = await until("the trims drawn", () => evaluate(`window.atelierTrims()`), 60000);
+                const f0 = await frameNow();
+                await until("ten more frames", async () => (await frameNow()) >= f0 + 10, 180000);
+                const p1 = await evaluate(`window.atelierTrims()`);
+                if (!p1 || p1.item !== p0.item && p1.engine === "cpu") throw new Error(`the trims item changed: ${JSON.stringify([p0, p1])}`);
+                const moved = Math.hypot(...p1.sum.map((v, i) => (v - p0.sum[i]) / p0.vertices));
+                if (!(p0.vertices > 1000) || !(moved > 0.01)) throw new Error(`the trims did not move with the cloth: ${p0.vertices} vertices, ${moved} mm on average`);
+                if (p0.first.some((v) => !Number.isFinite(v))) throw new Error(`a trim vertex is not finite: ${p0.first}`);
+                await shot("sim");
+                await noStatusError();
+                failIfErrors();
+                ok(`trims on the cloth (${p0.engine}): item ${p1.item}, ${p0.vertices} vertices, moved ${moved.toFixed(2)} mm on average over frames ${f0}-${await frameNow()}; ${await healthNow()}`);
+                await evaluate(`document.getElementById("sim-reset").click()`);
+                await until("reset", async () => (await simNow()) === "off", 30000);
+                await evaluate(`document.getElementById("menu-new").click()`);
+                await until("an empty document after the trims", async () => (await patternCount()) === 0, 30000);
+                failIfErrors();
+            };
+            if (process.env.ATELIER_S3_ONLY === "1") { await s3Block(); failIfErrors(); ok("S3 block alone"); return; }
             if (process.env.ATELIER_S2_ONLY === "1") { await s2Block(); failIfErrors(); ok("S2 block alone"); return; }
             if (process.env.ATELIER_V3_ONLY === "1") { await v3(); failIfErrors(); ok("V3 block alone"); return; }
             if (process.env.ATELIER_A2_ONLY === "1") {
@@ -2377,6 +2497,8 @@ async function check(cdp, base) {
             }
             // 8a. S2: darts closed and rotated, a pleat set, simulated
             await s2Block();
+            // 8a''. S3: trims drawn with the tools, fastened, zippered, simulated
+            await s3Block();
             // 8a'. sewing a hole's edge (A2 spec §2): a front with an armhole cut as an ellipse hole
             // and a sleeve, built in Node and opened; Sew sides takes a click on the armhole (the
             // hole's side) and one on the sleeve's cap: one seam, its front end on the hole (a_loop
