@@ -769,6 +769,21 @@ async function check(cdp, base) {
                 await until("the button back", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 3 && doc.nodes.some((n) => n.kind === "garment.tack" && n.fastens)), 30000).catch(failing("undo"));
                 await noStatusError();
                 ok("trims in 2D: the button selected by a click, Delete removed it and its fastening, Ctrl+Z brought both back");
+                // Topstitch drag: along the Front's left side (x = -250, s 1874.5 at y 700 to 2294.5 at y 280)
+                // from y 350 to y 600 stitches that stretch, its ends where the drag pressed and let go
+                {
+                    let st = null;
+                    for (const x of [-250, -249, -251]) {
+                        await tool("topstitch");
+                        await drag(screenOf([x, 350]), screenOf([x, 600]), 10);
+                        try { await until("the stretch topstitched", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 4), 4000); st = nodeIn(doc, "p1").trims[3]; break; } catch { /* the next line */ }
+                    }
+                    if (!st) throw new Error(`no stretch topstitched: status "${await statusNow()}"`);
+                    if (st.kind !== "topstitch" || st.on !== "outline" || Math.abs(st.from - 1974.5) > 8 || Math.abs(st.to - 2224.5) > 8)
+                        throw new Error(`the dragged topstitch: ${JSON.stringify(st)} (expected about 1974.5-2224.5)`);
+                    await noStatusError();
+                    ok(`Topstitch drag: along the left side stitched ${st.from.toFixed(1)}-${st.to.toFixed(1)} mm (the drag's ends 1974.5-2224.5)`);
+                }
                 // simulate: the trims item drawn on the cloth, its vertices following it
                 await evaluate(`document.getElementById("sim-toggle").click()`);
                 await until("the cloth running", async () => (await simNow()) === "running", 120000).catch(failing("simulate"));
