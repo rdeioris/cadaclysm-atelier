@@ -78,7 +78,7 @@ export const SIM_TOOLS = { fold: foldTool, tack: tackTool };
 export const SIM_SNAPPING = ["fold", "tack"];
 
 // The tacks as item specs for the 2D window (scene2d.js specs2d's form), above every piece: a
-// marker at each end, a thin line between. A tack whose piece is not drawn is still drawn (its
+// marker at each end (a fastening's: none, its trims are), a thin line between. A tack whose piece is not drawn is still drawn (its
 // numbers are the document's).
 export function tackSpecs({ nodes = [], drawings = [], selection = null }) {
     const z = bandOf(drawings.length).seam;
@@ -88,7 +88,8 @@ export function tackSpecs({ nodes = [], drawings = [], selection = null }) {
         const colour = selection?.kind === "tack" && selection.id === t.id ? ACCENT : TACK;
         const what = { kind: "tack", id: t.id }, sig = JSON.stringify([t.a_at, t.b_at, z]);
         out.push({ key: `tack/${t.id}/line`, show: "lines", data: [t.a_at[0], t.a_at[1], z, t.b_at[0], t.b_at[1], z], colour, dash: { dash: 3, gap: 2 }, what, sig });
-        out.push({ key: `tack/${t.id}/ends`, show: "points", data: [t.a_at[0], t.a_at[1], z, t.b_at[0], t.b_at[1], z], colour, size: 7,
+        // a fastening's ends are its button and buttonhole (S3), drawn and picked as those: no discs over them
+        if (!t.fastens) out.push({ key: `tack/${t.id}/ends`, show: "points", data: [t.a_at[0], t.a_at[1], z, t.b_at[0], t.b_at[1], z], colour, size: 7,
             pointStyle: { shape: "disc", hollow: false }, onTop: true, what, sig });
     }
     return out;

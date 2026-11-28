@@ -747,7 +747,9 @@ async function check(cdp, base) {
                 await key("Escape", "Escape", 27);
                 await shot("2d");
                 // the button picked in 2D: its panel; Delete takes its fastening; Ctrl+Z brings both back
-                await clickUntil("edit", rim(b.at, b.diameter / 2), () => evaluate(`/^Button 1 on Front/.test(document.querySelector("#props h3")?.textContent ?? "")`), "the button selected");
+                await clickUntil("edit", rim(b.at, b.diameter / 2), () => evaluate(`/^Button 1 on Front/.test(document.querySelector("#props h3")?.textContent ?? "")`), "the button selected")
+                    .catch(async (e) => { const seen = []; for (const q of rim(b.at, b.diameter / 2)) seen.push(`${q.map((v) => v.toFixed(1))}: ${JSON.stringify(await hoverInfo(screenOf(q)))}`);
+                        throw new Error(`${e.message}; header "${await evaluate(`document.querySelector("#props h3")?.textContent ?? ""`)}"; hovers ${seen.join(" | ")}`); });
                 await evaluate(`document.getElementById("view").focus()`);
                 await key("Delete", "Delete", 46);
                 await until("the button deleted", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 2 && !doc.nodes.some((n) => n.kind === "garment.tack")), 30000).catch(failing("Delete"));

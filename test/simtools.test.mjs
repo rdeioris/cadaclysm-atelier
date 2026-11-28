@@ -109,5 +109,8 @@ assert.deepEqual(["pattern", "edge", "internal", "point", "handle", "hole", "tac
     assert.notEqual(specs[0].colour, tackSpecs({ nodes: tacked, drawings, selection: { kind: "tack", id: "t1" } })[0].colour);
     assert.deepEqual(hitOf(specs[1].what, { point: [10, 20, z], node: 0 }, new Map()), { kind: "tack", id: "t1" });
     assert.deepEqual(tackSpecs({ nodes, drawings }), []);
+    // a fastening (S3): the line only, its button and buttonhole picked as themselves
+    const fast = tackSpecs({ nodes: [...nodes, { ...tacked.at(-1), fastens: [1, 0] }], drawings });
+    assert.deepEqual(fast.map((s) => s.key), ["tack/t1/line"]);
 }
 console.log("simtools: ok");
