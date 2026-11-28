@@ -707,15 +707,17 @@ async function check(cdp, base) {
                 if (ts.kind !== "topstitch" || ts.on !== "outline" || Math.abs(ts.from) > 1e-6 || Math.abs(ts.to - 500) > 1e-3) throw new Error(`the topstitch: ${JSON.stringify(ts)}`);
                 await noStatusError();
                 ok(`Topstitch: a click on the hem stitched its side (${ts.from.toFixed(0)}-${ts.to.toFixed(0)} mm, ${ts.offset} mm in)`);
-                // Button and Buttonhole: a click each on the Front
+                // Button and Buttonhole: a click each on the Front, clear of its grain line (x = 0) and of
+                // each other: placing snaps (a click within the snap radius of the grain line's middle
+                // takes that point, as for every point tool)
                 await tool("button");
-                await click(screenOf([-20, 600]));
+                await click(screenOf([-120, 600]));
                 await until("the button", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 2), 30000).catch(failing("the button"));
                 await tool("buttonhole");
-                await click(screenOf([20, 600]));
+                await click(screenOf([120, 600]));
                 await until("the buttonhole", async () => ((doc = await saveDoc()), nodeIn(doc, "p1").trims?.length === 3), 30000).catch(failing("the buttonhole"));
                 const [, b, h] = nodeIn(doc, "p1").trims;
-                if (b.kind !== "button" || h.kind !== "buttonhole" || Math.hypot(b.at[0] + 20, b.at[1] - 600) > 3 || Math.hypot(h.at[0] - 20, h.at[1] - 600) > 3)
+                if (b.kind !== "button" || h.kind !== "buttonhole" || Math.hypot(b.at[0] + 120, b.at[1] - 600) > 3 || Math.hypot(h.at[0] - 120, h.at[1] - 600) > 3)
                     throw new Error(`the button and buttonhole: ${JSON.stringify([b, h])}`);
                 await noStatusError();
                 ok(`Button (${b.diameter} mm, ${b.holes} holes, ${b.mass} g) and Buttonhole (${h.length} mm) placed with a click each`);
