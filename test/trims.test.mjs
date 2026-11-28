@@ -179,7 +179,9 @@ console.log("ok - records");
     const ns0 = apply(nodes(), [{ op: "remove", id: "t1" }]);
     t = makeTool("fasten", { ...ctx, nodes: ns0 });
     assert.match(t.down([0, 0], { kind: "pattern", id: "p1" }).status, /click a button/);
-    t.down([0, 0], { kind: "trim", id: "p2", index: 0 });
+    assert.deepEqual(t.down([0, 0], { kind: "trim", id: "p2", index: 0 }).overlay.points, [[30, 40]], "a marker on the first");
+    // nothing drawn to the pointer: an overlay under it would be picked ahead of the second trim
+    assert.deepEqual(t.move([25, 35], { kind: "pattern", id: "p2" }), {});
     assert.match(t.down([0, 0], { kind: "trim", id: "p2", index: 0 }).status, /buttonhole too/);
     r = t.down([0, 0], { kind: "trim", id: "p1", index: 1 });
     assert.deepEqual(r.trim, { action: "fasten", button: { id: "p1", index: 1 }, hole: { id: "p2", index: 0 } });

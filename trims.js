@@ -336,11 +336,13 @@ function fastenTool(ctx) {
             if (k === first.k) return { status: `fasten: that is a ${k} too: click a ${k === "button" ? "buttonhole" : "button"}` };
             const button = first.k === "button" ? first : { id: h.id, index: h.index }, hole = first.k === "button" ? { id: h.id, index: h.index } : first;
             first = null;
-            return { trim: { action: "fasten", button: { id: button.id, index: button.index }, hole: { id: hole.id, index: hole.index } }, overlay: { lines: [] }, status: "fastened", error: false };
+            return { trim: { action: "fasten", button: { id: button.id, index: button.index }, hole: { id: hole.id, index: hole.index } }, overlay: { lines: [], points: [] }, status: "fastened", error: false };
         },
-        move(w) { return first ? { overlay: { lines: [[first.at, [...w]]], points: [first.at] } } : {}; },
+        // no line to the pointer: an overlay under the pointer is picked ahead of the trim there
+        // (pointer2d reads it as the piece), so the second click would miss its buttonhole
+        move() { return {}; },
         up() { return {}; },
-        key(k) { if (k === "Escape") { first = null; return { overlay: { lines: [] }, done: true }; } return {}; },
+        key(k) { if (k === "Escape") { first = null; return { overlay: { lines: [], points: [] }, done: true }; } return {}; },
         lastPoint() { return first ? [...first.at] : null; },
     };
 }
