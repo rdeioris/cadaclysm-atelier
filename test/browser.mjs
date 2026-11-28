@@ -724,15 +724,27 @@ async function check(cdp, base) {
                 // Fasten: a click on the button's drawing, then one on the buttonhole's
                 const rim = (c, r) => [[c[0] + r, c[1]], [c[0], c[1]], [c[0] - r, c[1]], [c[0], c[1] + r], [c[0], c[1] - r]];
                 await clickUntil("fasten", rim(b.at, b.diameter / 2), async () => /now click a buttonhole/.test(await statusNow()), "the button picked");
+                // each click on the bar waits for its own answer on the status line (every text it
+                // shows, recorded: a save's would hide it): "fastened" (then one save reads the tack),
+                // a refusal, or the tool's prompt again (the click hit no buttonhole)
+                await evaluate(`(() => { const el = document.getElementById("status-text"); window.__s3st = []; window.__s3obs?.disconnect();
+                    window.__s3obs = new MutationObserver(() => window.__s3st.push(el.textContent)); window.__s3obs.observe(el, { childList: true, characterData: true, subtree: true }); })()`);
                 let fastened = false;
+                const tried = [];
                 for (const p of [h.at, [h.at[0], h.at[1] + 0.75], [h.at[0] + h.length / 2, h.at[1]], [h.at[0] - h.length / 2, h.at[1]]]) {
+                    const hv = await hoverInfo(screenOf(p));
+                    await evaluate(`window.__s3st.length = 0`);
                     await click(screenOf(p));
-                    try {
-                        await until("the fastening", async () => ((doc = await saveDoc()), doc.nodes.some((n) => n.kind === "garment.tack" && n.fastens)), 4000);
+                    const answered = await until("the click's answer", () => evaluate(`window.__s3st.some((t) => /^fastened$|fasten:|refused|rror/.test(t))`), 30000).then(() => true, () => false);
+                    if (answered && await evaluate(`window.__s3st.includes("fastened")`)) {
+                        await until("the fastening", async () => ((doc = await saveDoc()), doc.nodes.some((n) => n.kind === "garment.tack" && n.fastens)), 30000)
+                            .catch(failing("the fastening written"));
                         fastened = true; break;
-                    } catch { /* the next point on the bar */ }
+                    }
+                    tried.push(`${p.map((v) => v.toFixed(1))}: hover ${hv.hit}/${hv.hover2d}, statuses ${JSON.stringify(await evaluate(`window.__s3st`))}${answered ? "" : " (no answer in 30 s)"}`);
                 }
-                if (!fastened) throw new Error(`no fastening: status "${await statusNow()}"`);
+                await evaluate(`window.__s3obs?.disconnect()`);
+                if (!fastened) throw new Error(`no fastening (sim ${await simNow()}): ${tried.join(" | ")}`);
                 const tack = doc.nodes.find((n) => n.kind === "garment.tack" && n.fastens);
                 if (tack.a !== "p1" || tack.b !== "p1" || tack.fastens.join() !== "1,2") throw new Error(`the fastening: ${JSON.stringify(tack)}`);
                 await noStatusError();
