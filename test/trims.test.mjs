@@ -150,17 +150,28 @@ console.log("ok - records");
 
 // the tools
 {
-    const drawings = new Map([["p1", { sides: [0, 100, 250, 400], holes: [{ sides: [0, 30, 60] }] }]]);
+    // p1's outline samples (s, x, y): (0,0) -> (100,0) -> (100,150) -> (-50,150), sides at those points
+    const samples = [0, 0, 0, 100, 100, 0, 250, 100, 150, 400, -50, 150];
+    const drawings = new Map([["p1", { samples, sides: [0, 100, 250, 400], holes: [{ sides: [0, 30, 60] }] }]]);
     const ctx = { nodes: nodes(), drawings, pxToWorld: 1, trimNext: T.trimDefaults() };
     // Topstitch: a click on an edge stitches its side
     let t = makeTool("topstitch", ctx);
     t.down([5, 0], { kind: "edge", id: "p1", s: 120, side: 1 });
     let r = t.up([5, 0], { kind: "edge", id: "p1", s: 120, side: 1 });
     assert.deepEqual([r.trim.action, r.trim.id, r.trim.record.from, r.trim.record.to, r.trim.record.loop], ["add", "p1", 100, 250, undefined]);
-    // a drag along it a stretch; a hole's side its loop
-    t.down([0, 0], { kind: "edge", id: "p1", s: 130, side: 1 });
-    r = t.up([50, 0], { kind: "edge", id: "p1", s: 180, side: 1 });
+    // a drag along it a stretch, its end from the outline under the pointer: the release is
+    // picked as the piece (the line drawn to the pointer is on top), not as the edge
+    t.down([100, 30], { kind: "edge", id: "p1", s: 130, side: 1 });
+    r = t.up([101, 80], { kind: "pattern", id: "p1" });
     assert.deepEqual([r.trim.record.from, r.trim.record.to], [130, 180]);
+    t.down([100, 80], { kind: "edge", id: "p1", s: 180, side: 1 });
+    r = t.up([100, 30], null);
+    assert.deepEqual([r.trim.record.from, r.trim.record.to], [130, 180], "dragged back");
+    // released far from the edge: the pressed side
+    t.down([100, 30], { kind: "edge", id: "p1", s: 130, side: 1 });
+    r = t.up([40, 70], { kind: "pattern", id: "p1" });
+    assert.deepEqual([r.trim.record.from, r.trim.record.to], [100, 250]);
+    // a hole's side its loop
     t.down([0, 0], { kind: "hole", id: "p1", index: 0, loop: 1, s: 40, side: 1 });
     r = t.up([0, 0], { kind: "hole", id: "p1", index: 0, loop: 1, s: 40, side: 1 });
     assert.deepEqual([r.trim.record.loop, r.trim.record.from, r.trim.record.to], [1, 30, 60]);

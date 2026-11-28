@@ -17,6 +17,7 @@
 import { addTack, removeTacks } from "./tacks.js";
 import { bandOf, ACCENT } from "./scene2d.js";
 import { TEMPLATE } from "./trimgeo.js";
+import { arcAt } from "./view2d.js";
 
 // ---- defaults: the builder's choices, all (estimated) ----
 export const TOPSTITCH_DEFAULT = Object.freeze({ offset: 6, stitch_length: 3, thread: 0.6, rows: 1, gap: 6, colour: [0.93, 0.89, 0.78] });
@@ -41,6 +42,7 @@ const round = (v) => Math.round(v * 1e6) / 1e6;
 const pt = (p) => [round(Number(p[0])), round(Number(p[1]))];
 const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
 const DRAG_PX = 3;
+const RELEASE_PX = 12;     // a Topstitch drag ends on its edge when released within this many pixels of it
 
 // ---- colours: [r, g, b] in 0..1 <-> "#rrggbb" ----
 export function hexOf(c) {
@@ -282,7 +284,8 @@ function topstitchTool(ctx) {
     const drag = DRAG_PX * (ctx.pxToWorld > 0 ? ctx.pxToWorld : 1);
     let press = null;
     const loopOfHit = (h) => (h?.kind === "hole" ? h.loop ?? h.index + 1 : 0);
-    const sidesOf = (id, loop) => { const d = ctx.drawings?.get?.(id); return loop ? d?.holes?.[loop - 1]?.sides : d?.sides; };
+    const loopOf = (id, loop) => { const d = ctx.drawings?.get?.(id); return loop ? d?.holes?.[loop - 1] : d; };
+    const sidesOf = (id, loop) => loopOf(id, loop)?.sides;
     const add = (on) => ({ trim: { action: "add", id: on.pattern, record: topstitchRecord(on, nextOf(ctx, "topstitch")) }, overlay: { lines: [] }, status: "topstitched", error: false });
     return {
         down(w, h) {
@@ -296,9 +299,11 @@ function topstitchTool(ctx) {
             if (!press) return {};
             const p = press.h, loop = loopOfHit(p), moved = dist(press.w, w);
             press = null;
-            const along = h && (h.kind === "edge" || h.kind === "hole") && h.id === p.id && loopOfHit(h) === loop && num(h.s);
-            if (along && moved > drag && Math.abs(h.s - p.s) > drag) {
-                const [from, to] = h.s > p.s ? [p.s, h.s] : [h.s, p.s];
+            // the release's place on the pressed edge from the piece's own samples (pattern mm), not
+            // the View's pick: the line drawn to the pointer is picked ahead of the edge under it
+            const l = loopOf(p.id, loop), at = l?.samples ? arcAt(l.samples, l.sides, w) : null;
+            if (at && at.d <= RELEASE_PX * drag / DRAG_PX && moved > drag && Math.abs(at.s - p.s) > drag) {
+                const [from, to] = at.s > p.s ? [p.s, at.s] : [at.s, p.s];
                 return add({ pattern: p.id, loop, from, to });
             }
             const sides = sidesOf(p.id, loop);
